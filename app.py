@@ -23,6 +23,11 @@ def get_data_from_gsheet():
         st.error(f"📡 Data Load Error: {e}")
         return None
 
+# Helper to safely clean and sort lists (Prevents TypeErrors)
+def safe_list(series):
+    # Converts all to string, drops empty values, gets unique, and sorts
+    return sorted([str(x) for x in series.dropna().unique() if str(x).strip() != ""])
+
 # --- 2. APP SETUP ---
 st.set_page_config(page_title="Patriot Fitting Engine", layout="wide")
 all_data = get_data_from_gsheet()
@@ -50,32 +55,32 @@ if all_data:
             curr_col = col_q1 if idx % 2 == 0 else col_q2
             options = []
 
-            # --- DYNAMIC DROPDOWN LOGIC ---
+            # --- IMPROVED DYNAMIC DROPDOWN LOGIC ---
             if q_type == "Dropdown":
                 if "Config:" in q_opt_raw:
                     conf_col = q_opt_raw.split(":")[1]
-                    options = conf_df[conf_col].replace('', pd.NA).dropna().tolist()
+                    options = safe_list(conf_df[conf_col])
                 
-                # HEADS LOGIC
+                # HEADS LOGIC (Q06 = Brand, Q07 = Model)
                 elif "Heads" in q_opt_raw:
                     if "Brand" in q_text or "Manufacturer" in q_text:
-                        options = sorted(all_data['Heads']['Manufacturer'].unique().tolist())
-                    else: # Pull Models instead of Brands
-                        options = sorted(all_data['Heads']['Model'].unique().tolist())
+                        options = safe_list(all_data['Heads']['Manufacturer'])
+                    else: 
+                        options = safe_list(all_data['Heads']['Model'])
                 
-                # SHAFTS LOGIC
+                # SHAFTS LOGIC (Q08 = Brand, Q09 = Flex, Q10 = Model)
                 elif "Shafts" in q_opt_raw:
                     if "Brand" in q_text:
-                        options = sorted(all_data['Shafts']['Brand'].unique().tolist())
+                        options = safe_list(all_data['Shafts']['Brand'])
                     elif "Flex" in q_text:
-                        options = sorted(all_data['Shafts']['Flex'].unique().tolist())
-                    else: # Pull Shaft Models
-                        options = sorted(all_data['Shafts']['Model'].unique().tolist())
+                        options = safe_list(all_data['Shafts']['Flex'])
+                    else: 
+                        options = safe_list(all_data['Shafts']['Model'])
                 
                 elif "," in q_opt_raw:
                     options = [x.strip() for x in q_opt_raw.split(",")]
                 else:
-                    options = resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'].tolist()
+                    options = safe_list(resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'])
 
             # RENDER INPUTS
             if q_type == "Dropdown" and options:
@@ -93,6 +98,7 @@ if all_data:
     with col1:
         st.subheader("📊 Phase 2: Analysis Parameters")
         
+        # Pull Logic from the Responses Tab
         target_flex = 6.0
         target_launch = 5.0
         
@@ -117,6 +123,7 @@ if all_data:
             df_s = all_data['Shafts'].copy()
             
             def calc_penalty(row):
+                # Standard weighting: Flex is 2x as important as Launch
                 p = (abs(pd.to_numeric(row['FlexScore'], errors='coerce') - t_flex) * 40)
                 p += (abs(pd.to_numeric(row['LaunchScore'], errors='coerce') - t_launch) * 20)
                 return p
