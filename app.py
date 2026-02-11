@@ -134,34 +134,46 @@ if all_data:
         df_s['LaunchScore'] = pd.to_numeric(df_s['LaunchScore'], errors='coerce')
         df_s['Weight'] = pd.to_numeric(df_s['Weight (g)'], errors='coerce')
 
-        # --- NEW ADVANCED STABILITY ENGINE ---
-        # 1. Ensure technical columns are numeric for math
+       # --- NEW ADVANCED STABILITY ENGINE WITH FITTER'S NOTES ---
         df_s['EI_Tip'] = pd.to_numeric(df_s['EI_Tip'], errors='coerce')
         df_s['StabilityIndex'] = pd.to_numeric(df_s['StabilityIndex'], errors='coerce')
         df_s['Torque'] = pd.to_numeric(df_s['Torque'], errors='coerce')
 
-        # 2. Baseline Penalty (Handle Flex & Launch)
+        # 1. Baseline Penalty (Flex & Launch)
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 30) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        # 3. SPEED & HOOK SHIELD (Logic for players like Craig)
+        # 2. Speed & Hook Logic
         if carry >= 190:
-            # Huge penalty for light shafts at tour speeds
             df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 500 
-            # Penalty for weak tips (EI_Tip < 12 is usually too soft for 195yd carry)
             df_s.loc[df_s['EI_Tip'] < 12.0, 'Penalty'] += 250
-            # Stability Index Filter
             df_s.loc[df_s['StabilityIndex'] < 7.5, 'Penalty'] += 200
         
         if "Hook" in miss:
-            # Penalize high Torque (Lower torque = Anti-hook)
-            # This adds 10 points of penalty for every 0.1 of torque
             df_s['Penalty'] += (df_s['Torque'] * 100) 
-            # Extra bonus for "Tip Stiff" shafts (EI_Tip > 13)
             df_s.loc[df_s['EI_Tip'] >= 13, 'Penalty'] -= 50
 
-        # 4. Final Recommendation Sort
-        # We sort by Penalty first, then by Stability Index to break ties
-        recs = df_s.sort_values(['Penalty', 'StabilityIndex'], ascending=[True, False]).head(5)
+        # 3. GENERATE DYNAMIC FITTER'S NOTES
+        def generate_notes(row):
+            notes = []
+            if row['EI_Tip'] >= 12.5: notes.append("Reinforced Tip (Anti-Hook)")
+            if row['StabilityIndex'] >= 8.0: notes.append("Tour-Grade Stability")
+            if row['Torque'] <= 1.4: notes.append("Low-Twist Face Control")
+            if row['Weight'] >= 125: notes.append("Heavy Tempo Control")
+            return " | ".join(notes) if notes else "Balanced Profile"
+
+        df_s['Fitters Note'] = df_s.apply(generate_notes, axis=1)
+
+        # 4. FINAL SORT (Prioritizing Flex Score to push 6.5 above 6.0 for high speed)
+        # We sort by Penalty (Low to High), then FlexScore (High to Low), then Stability (High to Low)
+        recs = df_s.sort_values(['Penalty', 'FlexScore', 'StabilityIndex'], 
+                               ascending=[True, False, False]).head(5)
+
+        st.divider()
+        st.subheader("🚀 Recommended Shaft Blueprints")
+        st.info(f"Targeting: Stiff-Plus to X-Stiff profiles with High Tip Stability.")
+        
+        # Display the table with the new Fitters Note column
+        st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Spin', 'Fitters Note']])
         
         # SPEED & HOOK SHIELD
         if carry > 185:
