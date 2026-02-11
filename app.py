@@ -12,6 +12,7 @@ def get_data_from_gsheet():
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         gc = gspread.authorize(creds)
+        # Use your specific Sheet URL
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         data = {}
@@ -32,32 +33,32 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         ws = sh.worksheet('Fittings')
         
-        # 24-column mapping
+        # Mapping 21 questions + results (Columns A to X)
         row = [
             str(datetime.datetime.now()),     # A: Timestamp
-            answers.get('Q01', ''),          # B
-            answers.get('Q02', ''),          # C
-            answers.get('Q03', ''),          # D
-            answers.get('Q04', ''),          # E
-            answers.get('Q05', ''),          # F
-            answers.get('Q06', ''),          # G
-            answers.get('Q07', ''),          # H
-            answers.get('Q08', ''),          # I
-            answers.get('Q09', ''),          # J
-            answers.get('Q10', ''),          # K
-            answers.get('Q11', ''),          # L
-            answers.get('Q12', ''),          # M
-            answers.get('Q13', ''),          # N
-            answers.get('Q14', ''),          # O
-            float(answers.get('Q15', 0)),    # P
-            answers.get('Q16', ''),          # Q
-            answers.get('Q17', ''),          # R
-            answers.get('Q18', ''),          # S
-            answers.get('Q19', ''),          # T
-            answers.get('Q20', ''),          # U
-            answers.get('Q21', ''),          # V
-            t_flex,                          # W
-            t_launch                         # X
+            answers.get('Q01', ''),          # B: Name
+            answers.get('Q02', ''),          # C: Email
+            answers.get('Q03', ''),          # D: Phone
+            answers.get('Q04', ''),          # E: Handedness
+            answers.get('Q05', ''),          # F: Glove Size
+            answers.get('Q06', ''),          # G: Grip Size
+            answers.get('Q07', ''),          # H: Ball
+            answers.get('Q08', ''),          # I: Head Brand
+            answers.get('Q09', ''),          # J: Head Model
+            answers.get('Q10', ''),          # K: Shaft Brand
+            answers.get('Q11', ''),          # L: Shaft Flex
+            answers.get('Q12', ''),          # M: Shaft Model
+            answers.get('Q13', ''),          # N: Club Length
+            answers.get('Q14', ''),          # O: Swing Weight
+            float(answers.get('Q15', 0)),    # P: Carry
+            answers.get('Q16', ''),          # Q: Current Flight
+            answers.get('Q17', ''),          # R: Target Flight
+            answers.get('Q18', ''),          # S: Miss
+            answers.get('Q19', ''),          # T: Current Feel
+            answers.get('Q20', ''),          # U: Target Feel
+            answers.get('Q21', ''),          # V: Priority
+            t_flex,                          # W: Result Flex
+            t_launch                         # X: Result Launch
         ]
         ws.append_row(row)
         return True
@@ -76,6 +77,10 @@ if 'interview_complete' not in st.session_state: st.session_state.interview_comp
 if 'answers' not in st.session_state:
     st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
     st.session_state['answers']['Q15'] = 0.0
+
+# Callback to ensure text inputs save immediately
+def sync_input(qid):
+    st.session_state['answers'][qid] = st.session_state[f"val_{qid}"]
 
 # --- 3. QUESTIONNAIRE ---
 if all_data:
@@ -96,11 +101,12 @@ if all_data:
             if qtype == "Dropdown":
                 options = [""] 
                 
-                # OPTION 1: Config Tab (STAYS IN SPREADSHEET ORDER)
+                # SPREADSHEET ORDER (Config Tab)
                 if "Config:" in qopts:
-                    options += all_data['Config'][qopts.split(":")[1]].dropna().unique().tolist()
+                    col_name = qopts.split(":")[1]
+                    options += all_data['Config'][col_name].dropna().unique().tolist()
                 
-                # OPTION 2: Heads Tab (SORTED A-Z)
+                # SORTED A-Z (Heads Tab)
                 elif "Heads" in qopts:
                     if "Brand" in qtext: 
                         options += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
@@ -109,7 +115,7 @@ if all_data:
                         models = all_data['Heads'][all_data['Heads']['Manufacturer'] == brand]['Model'].unique().tolist()
                         options += sorted(models)
                 
-                # OPTION 3: Shafts Tab (SORTED A-Z)
+                # SORTED A-Z (Shafts Tab)
                 elif "Shafts" in qopts:
                     brand = st.session_state['answers'].get('Q10', '')
                     if "Brand" in qtext: 
@@ -121,26 +127,26 @@ if all_data:
                         models = all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique().tolist()
                         options += sorted(models)
                 
-                # OPTION 4: Comma Separated (STAYS IN SPREADSHEET ORDER)
+                # SPREADSHEET ORDER (Comma Separated or Responses Tab)
                 elif "," in qopts: 
                     options += [x.strip() for x in qopts.split(",")]
-                
-                # OPTION 5: Responses Tab (STAYS IN SPREADSHEET ORDER)
                 else: 
+                    # Default: Pull from Responses tab in spreadsheet order
                     options += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].unique().tolist()
                 
                 current_ans = st.session_state['answers'].get(qid, "")
                 idx = options.index(current_ans) if current_ans in options else 0
-                choice = st.selectbox(qtext, options, index=idx, key=f"widget_{qid}")
+                choice = st.selectbox(qtext, options, index=idx, key=f"val_{qid}", on_change=sync_input, args=(qid,))
                 st.session_state['answers'][qid] = choice
             
             elif qtype == "Numeric":
                 curr_num = float(st.session_state['answers'].get(qid, 0.0))
-                val = st.number_input(qtext, value=curr_num, key=f"widget_{qid}")
+                val = st.number_input(qtext, value=curr_num, key=f"val_{qid}", on_change=sync_input, args=(qid,))
                 st.session_state['answers'][qid] = val
-            else:
+            
+            else: # Text Inputs (Name, Email, Phone)
                 curr_text = st.session_state['answers'].get(qid, "")
-                txt = st.text_input(qtext, value=curr_text, key=f"widget_{qid}")
+                txt = st.text_input(qtext, value=curr_text, key=f"val_{qid}", on_change=sync_input, args=(qid,))
                 st.session_state['answers'][qid] = txt
 
         st.divider()
@@ -156,6 +162,7 @@ if all_data:
                 st.rerun()
         else:
             if c2.button("🔥 Generate Prescription"):
+                # Logic calculation
                 tf, tl = 6.0, 5.0
                 for qid, ans in st.session_state['answers'].items():
                     logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -169,7 +176,7 @@ if all_data:
                     st.rerun()
 
     else:
-        # Results View
+        # Results View (Final Screen)
         st.title(f"🎯 Results for {st.session_state['answers'].get('Q01', 'Player')}")
         tf, tl = 6.0, 5.0
         for qid, ans in st.session_state['answers'].items():
@@ -193,3 +200,4 @@ if all_data:
             st.session_state.interview_complete = False
             st.session_state.form_step = 0
             st.rerun()
+            
