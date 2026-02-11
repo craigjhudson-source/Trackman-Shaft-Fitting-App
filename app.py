@@ -13,7 +13,6 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
         gc = gspread.authorize(creds)
-        # Your specific spreadsheet URL
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         
@@ -24,7 +23,6 @@ def get_data_from_gsheet():
             'Responses': pd.DataFrame(sh.worksheet('Responses').get_all_records()),
             'Config': pd.DataFrame(sh.worksheet('Config').get_all_records())
         }
-        # Clean up column names to prevent matching errors
         for df_key in data:
             data[df_key].columns = data[df_key].columns.str.strip()
         return data
@@ -32,26 +30,21 @@ def get_data_from_gsheet():
         st.error(f"📡 Connection Error: {e}"); return None
 
 def save_lead_to_gsheet(answers, t_flex, t_launch, q_ids):
-    """Saves the data to the 'Fittings' tab in the Google Sheet."""
     try:
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
         gc = gspread.authorize(creds)
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         ws = sh.worksheet('Fittings')
-        
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # Build the row: Timestamp + Answers (in order of Q-ID) + Calculated Targets
         row = [timestamp]
         for qid in q_ids:
             row.append(answers.get(qid, ""))
         row.extend([t_flex, t_launch])
-        
         ws.append_row(row)
         return True
     except Exception as e:
-        st.error(f"⚠️ Error saving to Google Sheets: {e}")
-        return False
+        st.error(f"⚠️ Error saving to Google Sheets: {e}"); return False
 
 # --- 2. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
@@ -61,7 +54,6 @@ if 'answers' not in st.session_state: st.session_state.answers = {}
 all_data = get_data_from_gsheet()
 
 def sync_answers(q_list):
-    """Syncs screen widget data to the permanent session storage."""
     for qid in q_list:
         key = f"widget_{qid}"
         if key in st.session_state: 
@@ -73,14 +65,10 @@ if all_data:
     
     if not st.session_state.interview_complete:
         st.title("Americas Best Shaft Fitting Engine")
-        
-        # Get Categories in Spreadsheet Order
         categories = list(dict.fromkeys(q_master['Category'].tolist()))
         st.progress(st.session_state.form_step / len(categories))
-        
         current_cat = categories[st.session_state.form_step]
         q_df = q_master[q_master['Category'] == current_cat]
-        
         st.subheader(f"Section: {current_cat}")
         
         for _, row in q_df.iterrows():
@@ -89,21 +77,16 @@ if all_data:
             
             if qtype == "Dropdown":
                 opts = [""]
-                # A: Config Tab Logic (Preserves vertical order of sheet)
                 if "Config:" in qopts:
                     col_name = qopts.split(":")[1].strip()
                     if col_name in all_data['Config'].columns:
                         opts += all_data['Config'][col_name].dropna().astype(str).tolist()
-                
-                # B: Heads Logic (Alphabetical)
                 elif "Heads" in qopts:
                     if "Brand" in qtext:
                         opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
                     else:
                         brand = st.session_state.get("widget_Q08", st.session_state.answers.get("Q08", ""))
                         opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand]['Model'].unique().tolist()) if brand else []
-                
-                # C: Shafts Logic (Alphabetical)
                 elif "Shafts" in qopts:
                     brand = st.session_state.get("widget_Q10", st.session_state.answers.get("Q10", ""))
                     if "Brand" in qtext: 
@@ -112,13 +95,10 @@ if all_data:
                         opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Flex'].unique().tolist()) if brand else []
                     else: 
                         opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique().tolist()) if brand else []
-                
-                # D: Responses Logic
                 else:
                     opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].astype(str).tolist()
                 
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
-            
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
             else:
@@ -136,10 +116,7 @@ if all_data:
                 st.session_state.form_step += 1; st.rerun()
         else:
             if c2.button("🔥 Generate Prescription"):
-                # 1. Capture all final answers
                 sync_answers(q_master['QuestionID'].tolist())
-                
-                # 2. Run Engine Logic
                 f_tf, f_tl = 6.0, 5.0
                 for qid, ans in st.session_state.answers.items():
                     logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -148,10 +125,7 @@ if all_data:
                         if "FlexScore:" in act: f_tf = float(act.split(":")[1])
                         if "LaunchScore:" in act: f_tl = float(act.split(":")[1])
                 
-                # 3. SAVE TO GOOGLE SHEET
                 save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
-                
-                # 4. Finalize session
                 st.session_state.update({'final_tf': f_tf, 'final_tl': f_tl, 'interview_complete': True})
                 st.rerun()
 
@@ -159,7 +133,6 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # Comprehensive Input Verification Summary
         with st.expander("📋 View Full Input Verification Summary", expanded=True):
             cols = st.columns(3)
             categories = list(dict.fromkeys(q_master['Category'].tolist()))
@@ -171,7 +144,7 @@ if all_data:
                         ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # Recommendation Engine calculations
+        # Recommendation Engine with Weight Guardrails
         tf, tl = st.session_state.final_tf, st.session_state.final_tl
         miss = st.session_state.answers.get('Q18', "Straight")
         carry = float(st.session_state.answers.get('Q15', 0))
@@ -180,8 +153,18 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
+        # Primary Penalty (Flex & Launch)
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 30)
         
+        # --- ADDED: SPEED-TO-WEIGHT GUARDRAILS ---
+        if carry > 175:
+            df_s.loc[df_s['Weight (g)'] < 115, 'Penalty'] += 500 # Heavy penalty for light shafts at high speed
+        elif 150 <= carry <= 170:
+            df_s.loc[df_s['Weight (g)'] > 125, 'Penalty'] += 200
+            df_s.loc[df_s['Weight (g)'] < 100, 'Penalty'] += 200
+        elif carry < 140:
+            df_s.loc[df_s['Weight (g)'] > 110, 'Penalty'] += 500 # Heavy penalty for heavy shafts at low speed
+
         # Miss Correction logic
         if miss in ["Push", "Slice"]:
             df_s.loc[df_s['EI_Tip'] > 12.5, 'Penalty'] += 200
@@ -200,13 +183,21 @@ if all_data:
 
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
 
+        
+
         st.subheader("🚀 Recommended Prescription")
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']])
 
-        # Narrative Summary
-        st.info(f"**Expert Analysis:** For your **{miss}**, we prioritized the **{recs.iloc[0]['Brand']} {recs.iloc[0]['Model']}**. Its profile is designed to {'help you turn the club over' if miss in ['Push', 'Slice'] else 'keep the face from closing'} while matching your **{carry}yd** speed.")
+        # --- ADDED: NARRATIVE WEIGHT WARNING ---
+        rec_w = recs.iloc[0]['Weight (g)']
+        weight_note = ""
+        if carry > 175 and rec_w < 110:
+            weight_note = f" ⚠️ Note: This shaft is lighter than traditional sets; ensure you maintain a smooth tempo."
+        elif carry < 140 and rec_w > 110:
+            weight_note = f" ⚠️ Note: This is a heavier build; focus on a full shoulder turn to maintain speed."
 
-        # Navigation Buttons
+        st.info(f"**Expert Analysis:** For your **{miss}**, we prioritized the **{recs.iloc[0]['Brand']} {recs.iloc[0]['Model']}**. Its profile is designed to {'help you turn the club over' if miss in ['Push', 'Slice'] else 'keep the face from closing'} while matching your **{carry}yd** speed.{weight_note}")
+
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
         if bt1.button("✏️ Edit Survey", use_container_width=True):
