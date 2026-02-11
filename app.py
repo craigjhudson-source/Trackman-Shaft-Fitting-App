@@ -57,7 +57,7 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         return False
 
 # --- 2. INITIALIZATION ---
-st.set_page_config(page_title="Americas Best Shaft Fitting", layout="wide")
+st.set_page_config(page_title="Americas Best Shaft Fitting Powered By Greggory", layout="wide")
 all_data = get_data_from_gsheet()
 
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
