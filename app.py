@@ -68,7 +68,7 @@ if 'answers' not in st.session_state:
 # --- 3. QUESTIONNAIRE ---
 if all_data:
     if not st.session_state.interview_complete:
-        st.title("Americas Best Shaft Fitting Engine")
+        st.title("Americas Best Shaft Fitting Engine Powered By Greggory")
         
         categories = all_data['Questions']['Category'].unique().tolist()
         current_cat = categories[st.session_state.form_step]
