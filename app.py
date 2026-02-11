@@ -171,11 +171,11 @@ if all_data:
 
         recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5).copy()
 
-        # --- DATA INTEGRITY FIXES ---
+        # --- DATA CLEANUP & FORMATTING ---
         recs['Weight (g)'] = recs['Weight (g)'].round(0).astype(int)
-        # Force Torque to 1 decimal place
+        # Torque to exactly 1 decimal place
         recs['Torque'] = recs['Torque'].apply(lambda x: f"{float(x):.1f}")
-        # Standardize Project X flex labels (e.g., 6 becomes 6.0)
+        # Standardize Project X Flex (6 becomes 6.0)
         recs['Flex'] = recs['Flex'].apply(lambda x: f"{x}.0" if str(x) == "6" else x)
 
         def generate_verdict(row):
@@ -187,8 +187,9 @@ if all_data:
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
 
         st.subheader("🚀 Recommended Prescription")
+        # CLEAN UP TABLE LOOK: Reset index to remove spreadsheet row numbers
         final_table = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']].reset_index(drop=True)
-        final_table.index += 1 
+        final_table.index += 1 # Starts visible index at 1
         st.table(final_table)
 
         # --- EXPANDED EXPERT ANALYSIS ---
@@ -198,20 +199,21 @@ if all_data:
             "KBS Tour": "Features a linear stiffness profile with a slightly more active tip section, making it much easier to square the clubface than a traditional Dynamic Gold.",
             "Modus Tour 115": "Known for a smoother mid-section that improves 'load' feel. Excellent for players who need better timing to correct a push.",
             "Project X LZ": "The 'Loading Zone' technology allows for a massive energy transfer while maintaining a stable handle, helping high-speed players square the face.",
-            "Dynamic Gold": "The industry standard for low-launch and stability. These appear because they match your speed, though they offer less 'kick' help than the KBS.",
+            "Dynamic Gold": "The industry standard for low-launch and stability. These appear because they match your profile, though they offer less 'kick' help than the KBS.",
             "AMT Black": "Uses Ascending Mass Technology. It provides more speed in your long irons and more control in your scoring clubs."
         }
 
-        # Clean carry for the narrative
+        # Clean carry (no decimals) for narrative
         clean_carry = int(carry)
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile designed to balance your swing speed with stable launch characteristics."))
+            blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile designed to balance your swing characteristics."))
             
             with st.container():
                 st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
-                st.caption(f"{blurb} Recommended for your **{clean_carry}yd** speed because it provides **{row['Weight (g)']}g** of stability.")
+                # Correct terminology: using "carry" instead of "speed"
+                st.caption(f"{blurb} Recommended for your **{clean_carry}yd carry** because it provides **{row['Weight (g)']}g** of stability.")
 
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
@@ -222,3 +224,4 @@ if all_data:
         if bt2.button("🆕 New Fitting", use_container_width=True):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
+            
