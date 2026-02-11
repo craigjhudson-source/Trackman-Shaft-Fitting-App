@@ -101,14 +101,26 @@ if all_data:
                 st.session_state.interview_complete = True; st.rerun()
 
     else:
-        # --- 4. MASTER FITTER REPORT ---
+        # --- 4. RESTORED MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
+        # RESTORED: Input Verification Summary
+        with st.expander("📋 View Full Input Verification Summary", expanded=False):
+            cols = st.columns(3)
+            for i, cat in enumerate(categories):
+                with cols[i % 3]:
+                    st.markdown(f"**{cat}**")
+                    cat_qs = q_master[q_master['Category'] == cat]
+                    for _, q_row in cat_qs.iterrows():
+                        qid_str = str(q_row['QuestionID']).strip()
+                        ans = st.session_state.answers.get(qid_str, "—")
+                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
+
         # Logic Calculation
         f_tf, f_tl = 5.0, 5.0
         push_miss, slice_miss = False, False
         min_w, hs_mandate = 0, False
-        curr_w = 115 # Default baseline
+        curr_w = 115 
 
         try:
             carry_6i = float(st.session_state.answers.get('Q15', 0))
@@ -117,7 +129,12 @@ if all_data:
             elif carry_6i < 140: f_tf = 4.0 
         except: pass
 
-        # Get Current Shaft Weight for Consistency Logic
+        # Get Miss Logic
+        primary_miss = st.session_state.answers.get('Q17', '')
+        if "Push" in primary_miss: push_miss = True
+        if "Slice" in primary_miss: slice_miss = True
+
+        # Weight Consistency Lookup
         c_brand = st.session_state.answers.get('Q10', '')
         c_model = st.session_state.answers.get('Q12', '')
         curr_shaft_data = all_data['Shafts'][(all_data['Shafts']['Brand'] == c_brand) & (all_data['Shafts']['Model'] == c_model)]
@@ -135,12 +152,17 @@ if all_data:
         # SCORING
         df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - f_tf) * 800.0
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - f_tl) * 75.0
-        
-        # WEIGHT CONSISTENCY LOGIC (The "Comfort" Filter)
-        # Apply a penalty if the weight jump is > 35g to avoid "straw-weight" feel issues
         df_s['Weight_Penalty'] = df_s['Weight (g)'].apply(lambda x: abs(x - curr_w) * 5 if abs(x - curr_w) > 35 else 0)
 
-        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Weight_Penalty']
+        # MISS CORRECTION LOGIC
+        if push_miss:
+            df_s['Miss_Correction'] = (df_s['Torque'] * 500.0) + ((10 - df_s['StabilityIndex']) * 200.0)
+        elif slice_miss or primary_miss == "Scattered":
+            df_s['Miss_Correction'] = (abs(df_s['Torque'] - 3.5) * 200.0) 
+        else:
+            df_s['Miss_Correction'] = 0
+
+        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Weight_Penalty'] + df_s['Miss_Correction']
         recs = df_s.sort_values('Total_Score').head(5).copy()
 
         st.subheader("🚀 Top Recommended Prescription")
