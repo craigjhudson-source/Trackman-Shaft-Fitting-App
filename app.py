@@ -239,4 +239,3 @@ if all_data:
         if b_new.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
-            
