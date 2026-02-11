@@ -104,6 +104,7 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
+        # [Input Verification Expandable]
         with st.expander("📋 View Full Input Verification Summary", expanded=False):
             ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
@@ -121,20 +122,18 @@ if all_data:
 
         try:
             carry_6i = float(st.session_state.answers.get('Q15', 0))
-            # SCALED FLEX LOGIC
-            if carry_6i >= 200: min_w, f_tf = 120, 9.0  # TX/X Territory
-            elif carry_6i >= 180: min_w, f_tf = 115, 7.5 # Strong X/S+
-            elif carry_6i >= 160: min_w, f_tf = 105, 6.0 # Stiff
-            elif carry_6i < 140: f_tf = 4.0             # Regular/Senior
+            if carry_6i >= 200: min_w, f_tf = 120, 9.0
+            elif carry_6i >= 180: min_w, f_tf = 115, 7.5
+            elif carry_6i >= 160: min_w, f_tf = 105, 6.0
+            elif carry_6i < 140: f_tf = 4.0 
         except: pass
 
-        # BRACKETING
         ideal_w = 115
         if carry_6i < 125: ideal_w = 70
         elif carry_6i < 145: ideal_w = 90
         elif carry_6i < 165: ideal_w = 105
         elif carry_6i < 185: ideal_w = 120
-        else: ideal_w = 130 # 200+ Yards
+        else: ideal_w = 130
 
         c_brand, c_model = st.session_state.answers.get('Q10', ''), st.session_state.answers.get('Q12', '')
         curr_shaft_data = all_data['Shafts'][(all_data['Shafts']['Brand'] == c_brand) & (all_data['Shafts']['Model'] == c_model)]
@@ -151,69 +150,104 @@ if all_data:
         df_all = df_all[~df_all['Model'].str.contains('|'.join(wedge_terms), case=False)]
 
         def score_shafts(df_in, mode="steel"):
-            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 1000.0 # Heavier flex penalty for speed
+            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 1000.0
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - f_tl) * 75.0
-            
-            # Weight Logic
             if mode == "steel":
-                if is_misfit:
-                    df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15
-                else:
-                    df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - curr_w) * 5 if abs(x - curr_w) > 35 else 0)
+                df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15 if is_misfit else 0
             else:
-                # GRAPHITE SAFETY FLOOR: If carry > 185, penalize graphite under 100g
-                if carry_6i > 185:
-                    df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - ideal_w) * 50 if x < (ideal_w - 20) else 0)
-                else:
-                    df_in['Weight_Penalty'] = 0
+                df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - ideal_w) * 50 if carry_6i > 185 and x < (ideal_w - 20) else 0)
             
-            # Miss correction
             if "Hook" in primary_miss or "Pull" in primary_miss:
-                # Reward low torque and high stability
                 df_in['Miss_Correction'] = (df_in['Torque'] * 600.0) + ((10 - df_in['StabilityIndex']) * 400.0)
-            elif "Slice" in primary_miss or "Push" in primary_miss or primary_miss == "Scattered":
+            elif "Slice" in primary_miss or "Push" in primary_miss:
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 200.0) 
             else:
                 df_in['Miss_Correction'] = 0
-                
             return df_in['Flex_Penalty'] + df_in['Launch_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction']
 
-        # COMBINED CALCULATION
         df_main = df_all[df_all['Weight (g)'] >= min_w].copy()
         df_main['Total_Score'] = score_shafts(df_main, mode="steel")
-        
         df_graph = df_all[df_all['Material'].str.contains('Graphite|Carbon', case=False, na=False)].copy()
         df_graph['Total_Score'] = score_shafts(df_graph, mode="graphite")
 
-        combined_recs = pd.concat([df_main, df_graph]).drop_duplicates(subset=['Brand', 'Model', 'Flex'])
-        combined_recs = combined_recs.sort_values('Total_Score').head(7)
+        candidates = pd.concat([df_main, df_graph]).drop_duplicates(subset=['Brand', 'Model', 'Flex']).sort_values('Total_Score')
+
+        # --- ARCHETYPE SELECTION ---
+        final_recs = []
+        # 1. Modern Power (Graphite)
+        modern = candidates[candidates['Material'].str.contains('Graphite', case=False)].head(1)
+        if not modern.empty:
+            modern['Archetype'] = '🚀 The "Modern Power" Pick'
+            final_recs.append(modern); candidates = candidates.drop(modern.index)
+        # 2. Tour Standard (Steel)
+        tour = candidates[candidates['Material'] == 'Steel'].head(1)
+        if not tour.empty:
+            tour['Archetype'] = '⚓ The "Tour Standard"'
+            final_recs.append(tour); candidates = candidates.drop(tour.index)
+        # 3. Feel Option
+        feel = candidates[candidates['Model'].str.contains('LZ|Modus|Elevate|KBS Tour', case=False)].head(1)
+        if not feel.empty:
+            feel['Archetype'] = '🎨 The "Feel" Option'
+            final_recs.append(feel); candidates = candidates.drop(feel.index)
+        # 4. Dispersion Killer
+        disp = candidates.sort_values(['StabilityIndex', 'Torque'], ascending=[False, True]).head(1)
+        if not disp.empty:
+            disp['Archetype'] = '🎯 The "Dispersion Killer"'
+            final_recs.append(disp); candidates = candidates.drop(disp.index)
+        # 5. Alt Tech
+        alt = candidates[candidates['Model'].str.contains('SteelFiber|MMT|Recoil|Axiom', case=False)].head(1)
+        if not alt.empty:
+            alt['Archetype'] = '🧪 The "Alternative Tech"'
+            final_recs.append(alt)
+
+        final_df = pd.concat(final_recs).head(5)
 
         st.subheader("🚀 Top Recommended Prescription")
         if is_misfit:
-            st.warning(f"⚠️ **Performance Alert:** Player is currently using a {curr_w}g shaft. For a {int(carry_6i)}yd carry, stability is paramount. Logic is prioritizing the {ideal_w}g+ weight class and X-Stiff profiles.")
+            st.warning(f"⚠️ **Performance Alert:** Player currently in {curr_w}g; logic prioritized stability for {int(carry_6i)}yd carry.")
         
-        st.table(combined_recs[['Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
+        st.table(final_df[['Archetype', 'Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch']].reset_index(drop=True))
 
+        # --- ENGINEERING ANALYSIS & GRIPS ---
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
-            "Dynamic Gold X100": "The heavy-weight standard for high-speed players; provides the lowest launch and spin in the industry.",
-            "Project X": "A stiff-profile steel shaft with a consistent taper, designed for 'load' stability and a piercing flight.",
-            "Axiom 125": "Fujikura's VeloCore technology in a heavy graphite build, offering steel-like stability with vibration dampening.",
-            "MMT 125": "Metal Mesh Technology braids stainless steel into the graphite to ensure the tip doesn't 'wheel' at high speeds.",
-            "Zelos": "Ultra-lightweight Japanese steel for smoother tempos.",
-            "NEO": "Active tip section specifically engineered to increase launch.",
-            "Modus3 Tour 120": "A unique profile with a stiff tip and soft mid, providing 'Tour' stability with a smoother feel."
+            "Axiom": "VeloCore tech in a heavy build; steel stability with elite dampening.",
+            "MMT": "Metal Mesh braids into the tip to prevent face 'wheeling' at speed.",
+            "C-Taper": "The ultimate spin-killer for piercing flight and zero ballooning.",
+            "Dynamic Gold": "The gold standard for heavy steel; keeps ball flight low.",
+            "LZ": "Loading Zone tech for enhanced feel without sacrificing tight dispersion.",
+            "SteelFiber": "Graphite core with steel wire wrap for the ultimate in precision.",
+            "Tour AD": "Premium Japanese graphite built for aggressive transitions."
         }
-        for i, (idx, row) in enumerate(combined_recs.iterrows(), 1):
+
+        for _, row in final_df.iterrows():
             brand_model = f"{row['Brand']} {row['Model']}"
             blurb = next((v for k, v in traits.items() if k in brand_model), "Selected for high-speed stability and torque resistance.")
-            st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
+            st.markdown(f"**{row['Archetype']}: {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
+
+        # --- 🧤 GRIP PRESCRIPTION ---
+        st.divider()
+        st.subheader("🧤 Final Touch: Grip Prescription")
+        g_size = st.session_state.answers.get('Q05', 'Medium')
+        
+        # Grip Logic
+        if g_size in ['Large', 'Extra Large']:
+            rec_g_size, tape = "Midsize", "+1 Wrap"
+            grip_model = "Golf Pride MCC Plus4" if carry_6i > 170 else "Winn Dri-Tac 2.0 Midsize"
+        else:
+            rec_g_size, tape = "Standard", "Standard"
+            grip_model = "Golf Pride Tour Velvet" if carry_6i > 170 else "Golf Pride CP2 Wrap"
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Recommended Size", rec_g_size)
+        c2.metric("Build Specification", tape)
+        c3.metric("Suggested Model", grip_model)
+        st.info(f"**Fitter's Note:** For a {g_size} glove and {int(carry_6i)}yd carry, the {grip_model} provides the necessary surface texture to prevent club rotation without increasing tension.")
 
         st.divider()
         b1, b2, _ = st.columns([1,1,4])
-        if b1.button("✏️ Edit Survey"):
-            st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
+        if b1.button("✏️ Edit Survey"): st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
         if b2.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
