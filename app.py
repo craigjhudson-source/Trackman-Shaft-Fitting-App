@@ -82,13 +82,29 @@ if all_data:
                 else:
                     options = safe_list(resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'])
 
-            # RENDER INPUTS
+          # RENDER INPUTS
+            # We look for a placeholder in your sheet; if it's empty, we use an empty string
+            placeholder_text = str(row['Placeholder']) if 'Placeholder' in q_df.columns else ""
+
             if q_type == "Dropdown" and options:
                 player_answers[q_id] = curr_col.selectbox(q_text, options, key=q_id)
+            
             elif q_type == "Numeric":
-                player_answers[q_id] = curr_col.number_input(q_text, value=0, key=q_id)
+                # Note: Numeric inputs use 'value', text inputs use 'placeholder'
+                # If you want a numeric example, it has to be a real number
+                try:
+                    p_val = int(placeholder_text) if placeholder_text.isdigit() else 0
+                except:
+                    p_val = 0
+                player_answers[q_id] = curr_col.number_input(q_text, value=p_val, key=q_id)
+            
             else:
-                player_answers[q_id] = curr_col.text_input(q_text, key=q_id)
+                # This applies the example text to Email, Phone, and Name
+                player_answers[q_id] = curr_col.text_input(
+                    q_text, 
+                    placeholder=placeholder_text, 
+                    key=q_id
+                )
 
     st.divider()
 
