@@ -134,8 +134,34 @@ if all_data:
         df_s['LaunchScore'] = pd.to_numeric(df_s['LaunchScore'], errors='coerce')
         df_s['Weight'] = pd.to_numeric(df_s['Weight (g)'], errors='coerce')
 
-        # Baseline Penalty
-        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 50) + (abs(df_s['LaunchScore'] - tl) * 20)
+        # --- NEW ADVANCED STABILITY ENGINE ---
+        # 1. Ensure technical columns are numeric for math
+        df_s['EI_Tip'] = pd.to_numeric(df_s['EI_Tip'], errors='coerce')
+        df_s['StabilityIndex'] = pd.to_numeric(df_s['StabilityIndex'], errors='coerce')
+        df_s['Torque'] = pd.to_numeric(df_s['Torque'], errors='coerce')
+
+        # 2. Baseline Penalty (Handle Flex & Launch)
+        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 30) + (abs(df_s['LaunchScore'] - tl) * 20)
+        
+        # 3. SPEED & HOOK SHIELD (Logic for players like Craig)
+        if carry >= 190:
+            # Huge penalty for light shafts at tour speeds
+            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 500 
+            # Penalty for weak tips (EI_Tip < 12 is usually too soft for 195yd carry)
+            df_s.loc[df_s['EI_Tip'] < 12.0, 'Penalty'] += 250
+            # Stability Index Filter
+            df_s.loc[df_s['StabilityIndex'] < 7.5, 'Penalty'] += 200
+        
+        if "Hook" in miss:
+            # Penalize high Torque (Lower torque = Anti-hook)
+            # This adds 10 points of penalty for every 0.1 of torque
+            df_s['Penalty'] += (df_s['Torque'] * 100) 
+            # Extra bonus for "Tip Stiff" shafts (EI_Tip > 13)
+            df_s.loc[df_s['EI_Tip'] >= 13, 'Penalty'] -= 50
+
+        # 4. Final Recommendation Sort
+        # We sort by Penalty first, then by Stability Index to break ties
+        recs = df_s.sort_values(['Penalty', 'StabilityIndex'], ascending=[True, False]).head(5)
         
         # SPEED & HOOK SHIELD
         if carry > 185:
