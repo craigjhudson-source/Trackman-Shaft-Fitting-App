@@ -62,25 +62,29 @@ def sync_answers(q_list):
 # --- 3. DYNAMIC QUESTIONNAIRE ---
 if all_data:
     q_master = all_data['Questions']
+    categories = list(dict.fromkeys(q_master['Category'].tolist()))
     
     if not st.session_state.interview_complete:
         st.title("Patriot Golf Performance Fitting")
-        categories = list(dict.fromkeys(q_master['Category'].tolist()))
         st.progress(st.session_state.form_step / len(categories))
-        current_cat = categories[current_cat_idx := st.session_state.form_step]
+        
+        current_cat = categories[st.session_state.form_step]
         q_df = q_master[q_master['Category'] == current_cat]
         st.subheader(f"Section: {current_cat}")
         
+        # Render Inputs
         for _, row in q_df.iterrows():
-            qid, qtext, qtype, qopts = str(row['QuestionID']).strip(), row['QuestionText'], row['InputType'], str(row['Options']).strip()
+            qid = str(row['QuestionID']).strip()
+            qtext = row['QuestionText']
+            qtype = row['InputType']
+            qopts = str(row['Options']).strip()
             ans_val = st.session_state.answers.get(qid, "")
             
             if qtype == "Dropdown":
                 opts = [""]
                 if "Config:" in qopts:
                     col_name = qopts.split(":")[1].strip()
-                    if col_name in all_data['Config'].columns:
-                        opts += all_data['Config'][col_name].dropna().astype(str).tolist()
+                    opts += all_data['Config'][col_name].dropna().astype(str).tolist()
                 elif "Heads" in qopts:
                     if "Brand" in qtext:
                         opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
@@ -107,6 +111,7 @@ if all_data:
         st.divider()
         c1, c2, _ = st.columns([1,1,4])
         
+        # Navigation Logic
         if c1.button("⬅️ Back") and st.session_state.form_step > 0:
             sync_answers(q_df['QuestionID'].tolist())
             st.session_state.form_step -= 1
@@ -121,7 +126,7 @@ if all_data:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
                 
-                # --- MASTER FITTER ENGINE CALCULATIONS ---
+                # --- CALCULATION LOGIC ---
                 f_tf, f_tl = 5.0, 5.0
                 push_miss, slice_miss = False, False
                 min_w, hs_mandate = 0, False
@@ -133,9 +138,10 @@ if all_data:
                     elif carry_6i >= 160: 
                         min_w, f_tf = 105, 6.0
                     elif carry_6i < 140:
-                        f_tf = 4.0 # Force Regular/Senior target
+                        f_tf = 4.0 
                 except: pass
 
+                # Logic Processing
                 for qid, ans in st.session_state.answers.items():
                     logic_rows = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & 
                                                        (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -161,6 +167,18 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
+        # Summary Expander
+        with st.expander("📋 View Full Input Verification Summary", expanded=False):
+            cols = st.columns(3)
+            for i, cat in enumerate(categories):
+                with cols[i % 3]:
+                    st.markdown(f"**{cat}**")
+                    cat_qs = q_master[q_master['Category'] == cat]
+                    for _, q_row in cat_qs.iterrows():
+                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
+                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
+
+        # Recommendation Logic
         tf, tl = st.session_state.get('final_tf', 5.0), st.session_state.get('final_tl', 5.0)
         push_miss, slice_miss = st.session_state.get('push_miss', False), st.session_state.get('slice_miss', False)
         min_w, hs_mandate = st.session_state.get('min_w', 0), st.session_state.get('hs_mandate', False)
@@ -172,24 +190,22 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # MASTER FILTERS: Hard Exclusion & Wedge Block
+        # Filters
         if curr_brand and curr_model:
             df_s = df_s[~((df_s['Brand'].str.lower() == curr_brand) & (df_s['Model'].str.lower() == curr_model))]
         df_s = df_s[~df_s['Model'].str.contains('Wedge', case=False)]
         df_s = df_s[df_s['Weight (g)'] >= min_w]
         
-        # SCORING ENGINE
+        # Scoring
         df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 800.0
         if hs_mandate:
-            df_s.loc[df_s['FlexScore'] < 6.8, 'Flex_Penalty'] += 2500.0 # Strict speed mandate
+            df_s.loc[df_s['FlexScore'] < 6.8, 'Flex_Penalty'] += 2500.0
         
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 75.0
         
-        # MISS CORRECTION LOGIC
         if push_miss:
             df_s['Miss_Correction'] = (df_s['Torque'] * 500.0) + ((10 - df_s['StabilityIndex']) * 200.0)
         elif slice_miss or st.session_state.answers.get('Q17') == "Scattered":
-            # Higher torque helps low-speed players square the face
             df_s['Miss_Correction'] = (abs(df_s['Torque'] - 3.5) * 200.0) 
         else:
             df_s['Miss_Correction'] = 0
@@ -220,6 +236,13 @@ if all_data:
             st.caption(f"{blurb}")
 
         st.divider()
-        if st.button("🆕 New Fitting"):
-            for key in list(st.session_state.keys()): del st.session_state[key]
+        # --- RESTORED FOOTER BUTTONS ---
+        b1, b2, _ = st.columns([1,1,4])
+        if b1.button("✏️ Edit Survey"):
+            st.session_state.interview_complete = False
+            st.session_state.form_step = 0
+            st.rerun()
+        if b2.button("🆕 New Fitting"):
+            for key in list(st.session_state.keys()): 
+                del st.session_state[key]
             st.rerun()
