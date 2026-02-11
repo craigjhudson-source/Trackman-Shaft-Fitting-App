@@ -122,11 +122,11 @@ if all_data:
                 anti_left, release_assist = False, False
                 min_w, max_w = 0, 200
 
-                # --- NEW SPEED-WEIGHT OVERRIDE LOGIC ---
+                # --- SPEED-WEIGHT SAFETY FLOOR ---
                 try:
                     carry_6i = float(st.session_state.answers.get('Q15', 0))
-                    if carry_6i >= 175: min_w = 110 # Power Player Floor
-                    elif carry_6i >= 155: min_w = 95
+                    if carry_6i >= 180: min_w = 115 
+                    elif carry_6i >= 165: min_w = 100
                 except: pass
 
                 for qid, ans in st.session_state.answers.items():
@@ -144,6 +144,12 @@ if all_data:
                         if "Anti-Left: True" in act: anti_left = True
                         if "Release: True" in act: release_assist = True
                 
+                # --- FLEX UP-SCALING FOR HIGH SPEED ---
+                try:
+                    if float(st.session_state.answers.get('Q15', 0)) > 180:
+                        f_tf += 1.0 # Bump Stiff to X-Stiff territory
+                except: pass
+
                 save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
                 st.session_state.update({
                     'final_tf': f_tf, 'final_tl': f_tl, 
@@ -178,23 +184,23 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # STEP A: HARD GATING (Incorporates Speed Floor)
+        # STEP A: HARD GATING
         df_s = df_s[(df_s['Weight (g)'] >= min_w) & (df_s['Weight (g)'] <= max_w)]
         
         # STEP B: MATHEMATICAL WEIGHTING
         df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 300.0
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
         
-        # Override: Push miss at high speed needs stability, not just release
-        is_high_speed = float(st.session_state.answers.get('Q15', 0)) > 170
-        
         if anti_left:
             df_s['Stability_Bias'] = (10 - df_s['StabilityIndex']) * 150.0
-        elif release_assist and not is_high_speed:
-            df_s['Stability_Bias'] = (df_s['EI_Tip'] - 14.0) * 40.0
-        elif release_assist and is_high_speed:
-            # For high speed pushes, look for active mid but STIFF tip
-            df_s['Stability_Bias'] = abs(df_s['StabilityIndex'] - 8) * 100.0
+        elif release_assist:
+            # High speed players with pushes need lower torque, not softer tips
+            try:
+                if float(st.session_state.answers.get('Q15', 0)) > 175:
+                    df_s['Stability_Bias'] = df_s['Torque'] * 100.0 # Penalize high torque
+                else:
+                    df_s['Stability_Bias'] = (df_s['EI_Tip'] - 14.0) * 40.0
+            except: pass
         else:
             df_s['Stability_Bias'] = 0
 
@@ -213,12 +219,16 @@ if all_data:
             "Project X LZ": "Active mid-section allows for easier release while maintaining tour weight.",
             "KBS Tour": "Linear stiffness profile that rewards smooth tempo.",
             "Dynamic Gold": "The gold standard for low-launch, low-spin control.",
-            "Modus3 Tour 120": "Unique multi-step profile that provides stiff-tip stability with mid-flex feel."
+            "L-Series": "Ultra-premium stability profile with low torque to square the face.",
+            "CT-115": "Japanese steel with high-fidelity feel and tip-stiff stability.",
+            "CT-125": "Heavyweight stability designed to neutralize high-speed misses."
         }
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile matched to your DNA."))
+            blurb = "A high-performance profile matched to your DNA."
+            for key in traits:
+                if key in brand_model: blurb = traits[key]
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
 
