@@ -13,8 +13,7 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         gc = gspread.authorize(creds)
-        SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
-        sh = gc.open_by_url(SHEET_URL)
+        sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         return {
             'Heads': pd.DataFrame(sh.worksheet('Heads').get_all_records()),
             'Shafts': pd.DataFrame(sh.worksheet('Shafts').get_all_records()),
@@ -23,8 +22,7 @@ def get_data_from_gsheet():
             'Config': pd.DataFrame(sh.worksheet('Config').get_all_records())
         }
     except Exception as e:
-        st.error(f"📡 Data Load Error: {e}")
-        return None
+        st.error(f"📡 Data Load Error: {e}"); return None
 
 def save_lead_to_gsheet(answers, t_flex, t_launch):
     try:
@@ -36,7 +34,7 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         row = [str(datetime.datetime.now())] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)] + [t_flex, t_launch]
         ws.append_row(row)
         return True
-    except Exception: return False
+    except: return False
 
 # --- 2. INITIALIZATION ---
 st.set_page_config(page_title="Patriot Fitting Engine", layout="wide")
@@ -44,13 +42,11 @@ all_data = get_data_from_gsheet()
 
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
-if 'answers' not in st.session_state:
-    st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
+if 'answers' not in st.session_state: st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
 
 def sync_answers(q_list):
     for qid in q_list:
-        if f"widget_{qid}" in st.session_state:
-            st.session_state['answers'][qid] = st.session_state[f"widget_{qid}"]
+        if f"widget_{qid}" in st.session_state: st.session_state['answers'][qid] = st.session_state[f"widget_{qid}"]
 
 # --- 3. QUESTIONNAIRE ---
 if all_data:
@@ -68,8 +64,7 @@ if all_data:
 
             if qtype == "Dropdown":
                 options = [""]
-                if "Config:" in qopts:
-                    options += all_data['Config'][qopts.split(":")[1]].dropna().unique().tolist()
+                if "Config:" in qopts: options += all_data['Config'][qopts.split(":")[1]].dropna().unique().tolist()
                 elif "Heads" in qopts:
                     if "Brand" in qtext: options += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
                     else:
@@ -98,70 +93,70 @@ if all_data:
             if c2.button("Next ➡️"):
                 sync_answers(current_qids); st.session_state.form_step += 1; st.rerun()
         elif c2.button("🔥 Generate Prescription"):
-            sync_answers(current_qids)
-            tf, tl = 6.0, 5.0 
-            for qid, ans in st.session_state['answers'].items():
-                logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
-                if not logic.empty:
-                    act = str(logic.iloc[0]['LogicAction'])
-                    if "FlexScore:" in act: tf = float(act.split(":")[1])
-                    if "LaunchScore:" in act: tl = float(act.split(":")[1])
-            if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
-                st.session_state.interview_complete = True; st.rerun()
+            sync_answers(current_qids); st.session_state.interview_complete = True; st.rerun()
 
     else:
         # --- 4. RESULTS VIEW ---
         st.title(f"🎯 Fitting Report: {st.session_state['answers'].get('Q01', 'Player')}")
         
-        # 1. VERIFICATION SUMMARY (Always visible for easy check)
-        st.subheader("📋 Input Verification Summary")
-        vcols = st.columns(4)
-        essential_qs = [('Q01','Name'), ('Q15','6i Carry'), ('Q18','Miss'), ('Q16','Flight'), ('Q10','Current Brand'), ('Q12','Current Model')]
-        for i, (qid, label) in enumerate(essential_qs):
-            vcols[i % 4].metric(label, st.session_state['answers'].get(qid, "N/A"))
-        
-        with st.expander("Show All Detailed Answers"):
-            dcols = st.columns(3)
-            for i, (qid, val) in enumerate(st.session_state['answers'].items()):
-                q_text = all_data['Questions'][all_data['Questions']['QuestionID'] == qid]['QuestionText'].values[0]
-                dcols[i % 3].write(f"**{q_text}:** {val}")
+        # 1. Verification Section
+        st.subheader("📋 Input Verification")
+        v1, v2, v3, v4 = st.columns(4)
+        carry = float(st.session_state['answers'].get('Q15', 0))
+        miss = st.session_state['answers'].get('Q18', "")
+        v1.metric("6i Carry", f"{carry} yds")
+        v2.metric("Miss", miss)
+        v3.metric("Email", st.session_state['answers'].get('Q02', ""))
+        v4.metric("Current Flex", st.session_state['answers'].get('Q11', ""))
 
-        # 2. CALCULATION LOGIC
-        tf, tl = 6.0, 5.0
-        anti_left = False
+        with st.expander("Show Full Survey Answers"):
+            cols = st.columns(3)
+            for i, (qid, val) in enumerate(st.session_state['answers'].items()):
+                q_txt = all_data['Questions'][all_data['Questions']['QuestionID'] == qid]['QuestionText'].values[0]
+                cols[i%3].write(f"**{q_txt}:** {val}")
+
+        # 2. Advanced Penalty Engine
+        tf, tl = 6.0, 5.0 # Fallbacks
         for qid, ans in st.session_state['answers'].items():
             logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
             if not logic.empty:
                 act = str(logic.iloc[0]['LogicAction'])
                 if "FlexScore:" in act: tf = float(act.split(":")[1])
                 if "LaunchScore:" in act: tl = float(act.split(":")[1])
-                if "Anti-Left" in act: anti_left = True
 
         df_s = all_data['Shafts'].copy()
-        # Convert necessary columns to numeric
         df_s['FlexScore'] = pd.to_numeric(df_s['FlexScore'], errors='coerce')
         df_s['LaunchScore'] = pd.to_numeric(df_s['LaunchScore'], errors='coerce')
         df_s['Weight'] = pd.to_numeric(df_s['Weight (g)'], errors='coerce')
 
-        # Advanced Penalty Logic
+        # Baseline Penalty
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 40) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        # Heavy Penalty for Hookers using Light Shafts
-        if anti_left:
-            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 100
-            df_s.loc[df_s['LaunchScore'] > 5, 'Penalty'] += 50
+        # SPEED & HOOK SHIELD (The Craig Correction)
+        if carry > 185:
+            # Penalize light shafts for high speed players
+            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 200 
+            # Force higher flex targets
+            df_s.loc[df_s['FlexScore'] < 6.5, 'Penalty'] += 100
         
-        # 3. DISPLAY RECOMMENDATIONS
+        if "Hook" in miss or "Pull" in miss:
+            # Penalize high launch/spin (usually softer tips)
+            df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 150
+            # Stability bonus for low torque / low launch
+            df_s.loc[df_s['LaunchScore'] <= 3, 'Penalty'] -= 20
+
         st.divider()
         st.subheader("🚀 Recommended Shaft Blueprints")
-        st.success(f"Algorithm Target -> Flex: {tf} | Launch: {tl}")
+        st.info(f"Targeting: Stiff-Plus to X-Stiff profiles with Low-Mid Launch stability.")
         
-        recs = df_s.sort_values(['Penalty', 'Brand']).head(5)
+        recs = df_s.sort_values(['Penalty', 'Weight'], ascending=[True, False]).head(5)
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Spin']])
         
-        col1, col2, _ = st.columns([1.5, 2, 4])
-        if col1.button("⬅️ Back to Edit"):
-            st.session_state.interview_complete = False; st.rerun()
-        if col2.button("🆕 Start New Fitting"):
+        if st.button("💾 Save Results to Google Sheets"):
+            if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
+                st.success("Results Uploaded Successfully!")
+            else: st.error("Upload Failed.")
+
+        if st.button("🆕 New Fitting"):
             st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
             st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
