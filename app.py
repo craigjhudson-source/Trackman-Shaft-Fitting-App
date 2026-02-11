@@ -128,10 +128,9 @@ if all_data:
 
                 try:
                     carry_6i = float(st.session_state.answers.get('Q15', 0))
-                    # SPEED OVERRIDE: 185 yards carry is physically impossible for most S-flex shafts to handle stably
                     if carry_6i >= 180: 
                         min_w = 118
-                        f_tf = 7.0 # Hard Floor for X-Stiff
+                        f_tf = 7.0 
                     elif carry_6i >= 165: 
                         min_w = 105
                 except: pass
@@ -161,6 +160,18 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
+        # RESTORED: Questionnaire Summary Block
+        with st.expander("📋 View Full Input Verification Summary", expanded=True):
+            cols = st.columns(3)
+            categories = list(dict.fromkeys(q_master['Category'].tolist()))
+            for i, cat in enumerate(categories):
+                with cols[i % 3]:
+                    st.markdown(f"**{cat}**")
+                    cat_qs = q_master[q_master['Category'] == cat]
+                    for _, q_row in cat_qs.iterrows():
+                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
+                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
+
         tf, tl = st.session_state.get('final_tf', 6.0), st.session_state.get('final_tl', 5.0)
         push_miss, min_w = st.session_state.get('push_miss', False), st.session_state.get('min_w', 0)
         
@@ -168,19 +179,14 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # Gating
         df_s = df_s[df_s['Weight (g)'] >= min_w]
         
-        # Scoring Logic
         df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 500.0
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
         
-        # MISS CORRECTION: Push misses require low torque and tip stability
         if push_miss:
-            df_s['Torque_Penalty'] = df_s['Torque'] * 300.0  # Penalize high torque heavily
-            df_s['Stability_Bonus'] = (10 - df_s['StabilityIndex']) * 100.0 # Reward high stability
-            
-            # MECHANICAL CONFLICT: LZ (Loading Zone) shafts are poor for high-speed push misses
+            df_s['Torque_Penalty'] = df_s['Torque'] * 300.0  
+            df_s['Stability_Bonus'] = (10 - df_s['StabilityIndex']) * 100.0 
             df_s.loc[df_s['Model'].str.contains('LZ', case=False), 'Flex_Penalty'] += 200
         else:
             df_s['Torque_Penalty'] = 0
