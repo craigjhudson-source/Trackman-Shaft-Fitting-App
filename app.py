@@ -128,6 +128,7 @@ if all_data:
 
                 try:
                     carry_6i = float(st.session_state.answers.get('Q15', 0))
+                    # MASTER FITTER: High Carry Mandate (180+ = X-Flex/7.0 only)
                     if carry_6i >= 180: 
                         min_w = 118
                         f_tf = 7.0 
@@ -160,7 +161,6 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # RESTORED: Questionnaire Summary Block
         with st.expander("📋 View Full Input Verification Summary", expanded=True):
             cols = st.columns(3)
             categories = list(dict.fromkeys(q_master['Category'].tolist()))
@@ -175,19 +175,29 @@ if all_data:
         tf, tl = st.session_state.get('final_tf', 6.0), st.session_state.get('final_tl', 5.0)
         push_miss, min_w = st.session_state.get('push_miss', False), st.session_state.get('min_w', 0)
         
+        # IDENTIFY CURRENT EQUIPMENT FOR EXCLUSION
+        curr_brand = str(st.session_state.answers.get('Q10', '')).strip().lower()
+        curr_model = str(st.session_state.answers.get('Q12', '')).strip().lower()
+
         df_s = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
+        # MASTER FITTER: 1. Hard Exclusion of Current Gear
+        if curr_brand and curr_model:
+            df_s = df_s[~((df_s['Brand'].str.lower() == curr_brand) & (df_s['Model'].str.lower() == curr_model))]
+
+        # MASTER FITTER: 2. Gating/Scoring
         df_s = df_s[df_s['Weight (g)'] >= min_w]
         
-        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 500.0
+        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 600.0 # Heavier flex penalty
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
         
         if push_miss:
-            df_s['Torque_Penalty'] = df_s['Torque'] * 300.0  
-            df_s['Stability_Bonus'] = (10 - df_s['StabilityIndex']) * 100.0 
-            df_s.loc[df_s['Model'].str.contains('LZ', case=False), 'Flex_Penalty'] += 200
+            df_s['Torque_Penalty'] = df_s['Torque'] * 400.0  
+            df_s['Stability_Bonus'] = (10 - df_s['StabilityIndex']) * 150.0 
+            # Penalize Active Mid-Sections (Loading Zones) for High Speed Pusher
+            df_s.loc[df_s['Model'].str.contains('LZ', case=False), 'Flex_Penalty'] += 300
         else:
             df_s['Torque_Penalty'] = 0
             df_s['Stability_Bonus'] = 0
