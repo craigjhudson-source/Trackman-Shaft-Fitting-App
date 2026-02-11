@@ -122,6 +122,13 @@ if all_data:
                 anti_left, release_assist = False, False
                 min_w, max_w = 0, 200
 
+                # --- NEW SPEED-WEIGHT OVERRIDE LOGIC ---
+                try:
+                    carry_6i = float(st.session_state.answers.get('Q15', 0))
+                    if carry_6i >= 175: min_w = 110 # Power Player Floor
+                    elif carry_6i >= 155: min_w = 95
+                except: pass
+
                 for qid, ans in st.session_state.answers.items():
                     logic_rows = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & 
                                                        (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -136,12 +143,6 @@ if all_data:
                             except: pass
                         if "Anti-Left: True" in act: anti_left = True
                         if "Release: True" in act: release_assist = True
-                        if "Filter: Weight >=" in act: 
-                            try: min_w = int(act.split(">=")[1].replace('g','').strip())
-                            except: pass
-                        if "Filter: Weight <=" in act: 
-                            try: max_w = int(act.split("<=")[1].replace('g','').strip())
-                            except: pass
                 
                 save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
                 st.session_state.update({
@@ -155,7 +156,6 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # --- RESTORED QUESTIONNAIRE SUMMARY ---
         with st.expander("📋 View Full Input Verification Summary", expanded=True):
             cols = st.columns(3)
             categories = list(dict.fromkeys(q_master['Category'].tolist()))
@@ -167,7 +167,6 @@ if all_data:
                         ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # --- ENGINE LOGIC ---
         tf = st.session_state.get('final_tf', 6.0)
         tl = st.session_state.get('final_tl', 5.0)
         anti_left = st.session_state.get('anti_left', False)
@@ -179,19 +178,23 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # STEP A: HARD GATING
+        # STEP A: HARD GATING (Incorporates Speed Floor)
         df_s = df_s[(df_s['Weight (g)'] >= min_w) & (df_s['Weight (g)'] <= max_w)]
-        if anti_left:
-            df_s = df_s[df_s['Torque'] <= 2.2]
-
+        
         # STEP B: MATHEMATICAL WEIGHTING
         df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 300.0
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
         
+        # Override: Push miss at high speed needs stability, not just release
+        is_high_speed = float(st.session_state.answers.get('Q15', 0)) > 170
+        
         if anti_left:
             df_s['Stability_Bias'] = (10 - df_s['StabilityIndex']) * 150.0
-        elif release_assist:
+        elif release_assist and not is_high_speed:
             df_s['Stability_Bias'] = (df_s['EI_Tip'] - 14.0) * 40.0
+        elif release_assist and is_high_speed:
+            # For high speed pushes, look for active mid but STIFF tip
+            df_s['Stability_Bias'] = abs(df_s['StabilityIndex'] - 8) * 100.0
         else:
             df_s['Stability_Bias'] = 0
 
@@ -207,10 +210,10 @@ if all_data:
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
             "Project X Rifle": "Highest stability tip. Designed for maximum dispersion control.",
-            "Project X LZ": "Active mid-section allows for easier release for push-biased players.",
+            "Project X LZ": "Active mid-section allows for easier release while maintaining tour weight.",
             "KBS Tour": "Linear stiffness profile that rewards smooth tempo.",
             "Dynamic Gold": "The gold standard for low-launch, low-spin control.",
-            "Project X LS": "Specifically designed to neutralize the left side (hook)."
+            "Modus3 Tour 120": "Unique multi-step profile that provides stiff-tip stability with mid-flex feel."
         }
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
