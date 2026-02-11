@@ -160,17 +160,22 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # Baseline Penalty
-        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 40) + (abs(df_s['LaunchScore'] - tl) * 20)
+        # 1. Baseline Penalty (80x multiplier makes Flex accuracy the top priority)
+        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 80) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        # Stability Overrides (Anti-Hook/High Speed)
-        if carry > 190:
-            df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 400
-            df_s.loc[df_s['EI_Tip'] < 11.0, 'Penalty'] += 250
+        # 2. High Speed Shield (The Craig Correction)
+        if carry >= 190:
+            # Strict weight floor for tour speeds
+            df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 500
+            # Stability floor: Penalize soft tips for high speed
+            df_s.loc[df_s['EI_Tip'] < 11.5, 'Penalty'] += 300
         
-        if "Hook" in miss or "Pull" in miss:
-            df_s['Penalty'] += (df_s['Torque'] * 100) # Lower torque is better
-            df_s.loc[df_s['StabilityIndex'] < 7.5, 'Penalty'] += 200
+        # 3. Anti-Hook Logic
+        if miss in ["Hook", "Pull-Hook", "Pull"]:
+            # Lower torque is rewarded (subtracted from penalty)
+            df_s['Penalty'] += (df_s['Torque'] * 150)
+            # Extra penalty for shafts with high launch/spin DNA
+            df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 200
 
         # Final Sorting
         recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5)
