@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+import plotly.express as px
 
 # --- 1. DATA ENGINE ---
 @st.cache_data(ttl=600)
@@ -39,8 +40,9 @@ if 'interview_complete' not in st.session_state: st.session_state.interview_comp
 all_data = get_data_from_gsheet()
 
 if all_data:
+    # --- PHASE 1: THE INTERVIEW ---
     if not st.session_state.interview_complete:
-        st.title("America's Best shaft Fitting Engine Built By Greggory")
+        st.title("Americas Best Shaft Fitting Engine Powered By Greggory")
         st.header("📋 Phase 1: Player Interview")
         
         categories = all_data['Questions']['Category'].unique().tolist()
@@ -48,7 +50,7 @@ if all_data:
         current_cat = categories[st.session_state.form_step]
 
         st.progress((st.session_state.form_step + 1) / total_steps)
-        st.subheader(f"Step {st.session_state.form_step + 1}: {current_cat}")
+        st.subheader(f"Section: {current_cat}")
 
         q_df = all_data['Questions'][all_data['Questions']['Category'] == current_cat]
         col_q1, col_q2 = st.columns(2)
@@ -62,7 +64,8 @@ if all_data:
             
             options = []
             if q_type == "Dropdown":
-                if "Config:" in q_opt_raw: options = get_ordered_list(all_data['Config'][q_opt_raw.split(":")[1]])
+                if "Config:" in q_opt_raw: 
+                    options = get_ordered_list(all_data['Config'][q_opt_raw.split(":")[1]])
                 elif "Heads" in q_opt_raw:
                     brand_sel = st.session_state.get('Q08', '')
                     options = get_sorted_list(all_data['Heads']['Manufacturer']) if "Brand" in q_text else get_sorted_list(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand_sel]['Model'])
@@ -75,12 +78,11 @@ if all_data:
                 else: options = get_ordered_list(all_data['Responses'][all_data['Responses']['QuestionID'] == q_id]['ResponseOption'])
 
             if q_type == "Dropdown" and options:
-                default_idx = options.index(st.session_state[q_id]) if st.session_state[q_id] in options else 0
-                st.session_state[q_id] = curr_col.selectbox(q_text, options, index=default_idx, key=f"in_{q_id}", on_change=st.rerun if "Brand" in q_text else None)
+                st.selectbox(q_text, options, key=q_id, on_change=st.rerun if "Brand" in q_text else None)
             elif q_type == "Numeric":
-                st.session_state[q_id] = curr_col.number_input(q_text, value=float(st.session_state[q_id]), key=f"in_{q_id}")
+                st.number_input(q_text, key=q_id)
             else:
-                st.session_state[q_id] = curr_col.text_input(q_text, value=st.session_state[q_id], placeholder=str(row.get('Placeholder','')), key=f"in_{q_id}")
+                st.text_input(q_text, placeholder=str(row.get('Placeholder','')), key=q_id)
 
         st.write("---")
         b_col1, b_col2, _ = st.columns([1, 1, 4])
@@ -91,12 +93,12 @@ if all_data:
         else:
             if b_col2.button("🔥 Generate Prescription"): st.session_state.interview_complete = True; st.rerun()
 
-    # --- PHASE 3: BASELINE & RECOMMENDATIONS ---
+    # --- PHASE 3: THE PRESCRIPTION & TESTING ---
     else:
         player_name = st.session_state.get('Q01', 'Player')
-        st.title(f"🎯 Fitting Prescription: {player_name}")
+        st.title(f"🎯 Prescription: {player_name}")
         
-        # 1. Calc Targets
+        # 1. Target Score Calculation
         t_flex, t_launch = 6.0, 5.0
         for q_id in all_data['Questions']['QuestionID']:
             ans = str(st.session_state.get(q_id, ''))
@@ -106,15 +108,13 @@ if all_data:
                 if "Target FlexScore:" in action: t_flex = float(action.split(":")[1])
                 if "Target LaunchScore:" in action: t_launch = float(action.split(":")[1])
 
-        # 2. Penalty Math
+        # 2. Score All Shafts
         df_s = all_data['Shafts'].copy()
-        df_s['Penalty'] = df_s.apply(lambda r: (abs(pd.to_numeric(r['FlexScore'], errors='coerce') - t_flex) * 40) + (abs(pd.to_numeric(r['LaunchScore'], errors='coerce') - t_launch) * 20), axis=1)
+        df_s['Penalty'] = ((abs(pd.to_numeric(df_s['FlexScore'], errors='coerce') - t_flex) * 40) + 
+                          (abs(pd.to_numeric(df_s['LaunchScore'], errors='coerce') - t_launch) * 20))
         
-        # 3. Baseline Search (By Brand/Model/Flex)
-        c_brand = st.session_state.get('Q10')
-        c_flex = st.session_state.get('Q11')
-        c_model = st.session_state.get('Q12')
-        
+        # 3. Display Baseline vs. Prescription
+        c_brand, c_model, c_flex = st.session_state.get('Q10'), st.session_state.get('Q12'), st.session_state.get('Q11')
         baseline = df_s[(df_s['Brand'] == c_brand) & (df_s['Model'] == c_model) & (df_s['Flex'] == c_flex)]
         
         col_res1, col_res2 = st.columns(2)
@@ -123,29 +123,37 @@ if all_data:
             if not baseline.empty:
                 b = baseline.iloc[0]
                 st.metric(f"{b['Brand']} {b['Model']}", f"Penalty: {round(b['Penalty'], 1)}")
-                st.caption(f"FlexScore: {b['FlexScore']} | LaunchScore: {b['LaunchScore']}")
-                if b['Penalty'] > 30: st.warning("⚠️ High Penalty: Significant improvement likely with new shaft.")
+                st.caption(f"Flex: {b['Flex']} | FlexScore: {b['FlexScore']} | Launch: {b['LaunchScore']}")
             else:
-                st.info(f"Current Shaft: {c_brand} {c_model} ({c_flex}) not in database.")
+                st.info(f"Baseline: {c_brand} {c_model} ({c_flex})")
 
         with col_res2:
             st.subheader("🏆 Prescription (Top 5)")
-            # Exclude current baseline from recommendations
-            recs = df_s[df_s['ShaftTag'] != baseline.iloc[0]['ShaftTag'] if not baseline.empty else True]
-            recs = recs.sort_values('Penalty').head(5)
-            st.dataframe(recs[['Brand', 'Model', 'Flex', 'FlexScore', 'LaunchScore', 'Penalty']], use_container_width=True, hide_index=True)
+            recs = df_s.sort_values('Penalty').head(5)
+            st.dataframe(recs[['Brand', 'Model', 'Flex', 'Penalty']], use_container_width=True, hide_index=True)
 
         st.divider()
 
-        # --- TESTING LAB ---
-        st.header("🔬 Testing Lab")
-        st.write(f"Record Trackman data for the **Prescription** shafts above. Upload the CSV below to compare performance vs Baseline.")
+        # --- TESTING LAB (TRACKMAN ANALYSIS) ---
+        st.header("🔬 Phase 2: Trackman Testing Lab")
+        st.write("Pull the shafts listed above. Upload the Trackman export below to find the winner.")
         
-        tm_file = st.file_uploader("Upload Trackman Export", type=["csv"])
+        tm_file = st.file_uploader("Upload Trackman CSV", type=["csv"])
         
         if tm_file:
-            st.success("Trackman Data Received. Processing visualization...")
-            # We will build the Trackman comparison charts in the next step!
+            tm_df = pd.read_csv(tm_file)
+            # Standard Trackman column cleaning
+            metrics = ["Carry Flat - Length [yds]", "Ball Speed [mph]", "Launch Angle [deg]", "Spin Rate [rpm]"]
+            if all(m in tm_df.columns for m in metrics):
+                summary = tm_df.groupby("ShaftTag")[metrics].mean().reset_index()
+                st.subheader("📊 Performance Comparison")
+                st.dataframe(summary.style.highlight_max(subset=["Carry Flat - Length [yds]", "Ball Speed [mph]"], color="lightgreen"), use_container_width=True)
+                
+                # Visual Chart
+                fig = px.bar(summary, x='ShaftTag', y='Carry Flat - Length [yds]', color='ShaftTag', title="Carry Distance Comparison")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("CSV uploaded, but columns don't match standard Trackman export.")
 
         if st.button("🔄 Start New Fitting"):
             st.session_state.interview_complete = False
