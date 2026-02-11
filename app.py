@@ -121,9 +121,11 @@ if all_data:
 
         try:
             carry_6i = float(st.session_state.answers.get('Q15', 0))
-            if carry_6i >= 180: min_w, f_tf = 118, 7.0
-            elif carry_6i >= 160: min_w, f_tf = 105, 6.0
-            elif carry_6i < 140: f_tf = 4.0 
+            # SCALED FLEX LOGIC
+            if carry_6i >= 200: min_w, f_tf = 120, 9.0  # TX/X Territory
+            elif carry_6i >= 180: min_w, f_tf = 115, 7.5 # Strong X/S+
+            elif carry_6i >= 160: min_w, f_tf = 105, 6.0 # Stiff
+            elif carry_6i < 140: f_tf = 4.0             # Regular/Senior
         except: pass
 
         # BRACKETING
@@ -132,7 +134,7 @@ if all_data:
         elif carry_6i < 145: ideal_w = 90
         elif carry_6i < 165: ideal_w = 105
         elif carry_6i < 185: ideal_w = 120
-        else: ideal_w = 130
+        else: ideal_w = 130 # 200+ Yards
 
         c_brand, c_model = st.session_state.answers.get('Q10', ''), st.session_state.answers.get('Q12', '')
         curr_shaft_data = all_data['Shafts'][(all_data['Shafts']['Brand'] == c_brand) & (all_data['Shafts']['Model'] == c_model)]
@@ -148,20 +150,28 @@ if all_data:
         wedge_terms = ['Wedge', 'Hi-Rev', 'Spinner', 'Onyx', 'Vokey', 'Full Face']
         df_all = df_all[~df_all['Model'].str.contains('|'.join(wedge_terms), case=False)]
 
-        def score_shafts(df_in, use_weight_logic=True):
-            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 800.0
+        def score_shafts(df_in, mode="steel"):
+            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 1000.0 # Heavier flex penalty for speed
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - f_tl) * 75.0
             
-            if is_misfit and use_weight_logic:
-                df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15
-            elif use_weight_logic:
-                df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - curr_w) * 5 if abs(x - curr_w) > 35 else 0)
+            # Weight Logic
+            if mode == "steel":
+                if is_misfit:
+                    df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15
+                else:
+                    df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - curr_w) * 5 if abs(x - curr_w) > 35 else 0)
             else:
-                df_in['Weight_Penalty'] = 0
+                # GRAPHITE SAFETY FLOOR: If carry > 185, penalize graphite under 100g
+                if carry_6i > 185:
+                    df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - ideal_w) * 50 if x < (ideal_w - 20) else 0)
+                else:
+                    df_in['Weight_Penalty'] = 0
             
-            if "Push" in primary_miss:
-                df_in['Miss_Correction'] = (df_in['Torque'] * 500.0) + ((10 - df_in['StabilityIndex']) * 200.0)
-            elif "Slice" in primary_miss or primary_miss == "Scattered":
+            # Miss correction
+            if "Hook" in primary_miss or "Pull" in primary_miss:
+                # Reward low torque and high stability
+                df_in['Miss_Correction'] = (df_in['Torque'] * 600.0) + ((10 - df_in['StabilityIndex']) * 400.0)
+            elif "Slice" in primary_miss or "Push" in primary_miss or primary_miss == "Scattered":
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 200.0) 
             else:
                 df_in['Miss_Correction'] = 0
@@ -170,34 +180,33 @@ if all_data:
 
         # COMBINED CALCULATION
         df_main = df_all[df_all['Weight (g)'] >= min_w].copy()
-        df_main['Total_Score'] = score_shafts(df_main, use_weight_logic=True)
+        df_main['Total_Score'] = score_shafts(df_main, mode="steel")
         
         df_graph = df_all[df_all['Material'].str.contains('Graphite|Carbon', case=False, na=False)].copy()
-        df_graph['Total_Score'] = score_shafts(df_graph, use_weight_logic=False)
+        df_graph['Total_Score'] = score_shafts(df_graph, mode="graphite")
 
-        # Concatenate and take top 7 overall
         combined_recs = pd.concat([df_main, df_graph]).drop_duplicates(subset=['Brand', 'Model', 'Flex'])
         combined_recs = combined_recs.sort_values('Total_Score').head(7)
 
         st.subheader("🚀 Top Recommended Prescription")
         if is_misfit:
-            st.warning(f"⚠️ **Performance Alert:** Player is currently using a {curr_w}g shaft. Based on carry distance, logic has shifted to favor the {ideal_w}g performance bracket.")
+            st.warning(f"⚠️ **Performance Alert:** Player is currently using a {curr_w}g shaft. For a {int(carry_6i)}yd carry, stability is paramount. Logic is prioritizing the {ideal_w}g+ weight class and X-Stiff profiles.")
         
-        # Display table with Material column
         st.table(combined_recs[['Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
 
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
-            "Zelos": "Ultra-lightweight Japanese steel designed to maximize clubhead speed for smoother tempos.",
-            "NEO": "Active tip section specifically engineered to increase launch and spin for modern distance irons.",
-            "Modus3 Tour 105": "Lightweight tour-profile steel; provides speed without losing the 'traditional' feel.",
-            "Recoil": "Ion-plated graphite designed with high-torque recovery for squaring the face at impact.",
-            "Steelfiber": "Graphite core with a steel wire wrap; the ultimate bridge between weight and feel.",
-            "MMT": "Metal Mesh Technology; braids 304 stainless steel into the tip for steel-like consistency in graphite."
+            "Dynamic Gold X100": "The heavy-weight standard for high-speed players; provides the lowest launch and spin in the industry.",
+            "Project X": "A stiff-profile steel shaft with a consistent taper, designed for 'load' stability and a piercing flight.",
+            "Axiom 125": "Fujikura's VeloCore technology in a heavy graphite build, offering steel-like stability with vibration dampening.",
+            "MMT 125": "Metal Mesh Technology braids stainless steel into the graphite to ensure the tip doesn't 'wheel' at high speeds.",
+            "Zelos": "Ultra-lightweight Japanese steel for smoother tempos.",
+            "NEO": "Active tip section specifically engineered to increase launch.",
+            "Modus3 Tour 120": "A unique profile with a stiff tip and soft mid, providing 'Tour' stability with a smoother feel."
         }
         for i, (idx, row) in enumerate(combined_recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = next((v for k, v in traits.items() if k in brand_model), "Selected for optimal weight-to-speed ratio and dynamic stability.")
+            blurb = next((v for k, v in traits.items() if k in brand_model), "Selected for high-speed stability and torque resistance.")
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
 
