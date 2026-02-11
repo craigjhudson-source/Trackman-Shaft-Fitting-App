@@ -104,7 +104,6 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # [Input Verification Expandable]
         with st.expander("📋 View Full Input Verification Summary", expanded=False):
             ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
@@ -208,21 +207,18 @@ if all_data:
         
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch']].reset_index(drop=True))
 
-        # --- ENGINEERING ANALYSIS & GRIPS ---
+        # --- DYNAMIC ENGINEERING ANALYSIS ---
         st.subheader("🔬 Expert Engineering Analysis")
-        traits = {
-            "Axiom": "VeloCore tech in a heavy build; steel stability with elite dampening.",
-            "MMT": "Metal Mesh braids into the tip to prevent face 'wheeling' at speed.",
-            "C-Taper": "The ultimate spin-killer for piercing flight and zero ballooning.",
-            "Dynamic Gold": "The gold standard for heavy steel; keeps ball flight low.",
-            "LZ": "Loading Zone tech for enhanced feel without sacrificing tight dispersion.",
-            "SteelFiber": "Graphite core with steel wire wrap for the ultimate in precision.",
-            "Tour AD": "Premium Japanese graphite built for aggressive transitions."
-        }
-
         for _, row in final_df.iterrows():
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = next((v for k, v in traits.items() if k in brand_model), "Selected for high-speed stability and torque resistance.")
+            
+            # Pull description directly from Google Sheet 'Description' column
+            blurb = row.get('Description', "")
+            
+            # Fallback if the description in the sheet is empty or missing
+            if pd.isna(blurb) or str(blurb).strip() == "":
+                blurb = "Selected for high-speed stability and torque resistance based on your performance profile."
+            
             st.markdown(f"**{row['Archetype']}: {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
 
@@ -231,7 +227,6 @@ if all_data:
         st.subheader("🧤 Final Touch: Grip Prescription")
         g_size = st.session_state.answers.get('Q05', 'Medium')
         
-        # Grip Logic
         if g_size in ['Large', 'Extra Large']:
             rec_g_size, tape = "Midsize", "+1 Wrap"
             grip_model = "Golf Pride MCC Plus4" if carry_6i > 170 else "Winn Dri-Tac 2.0 Midsize"
