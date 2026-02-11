@@ -11,7 +11,10 @@ st.set_page_config(page_title="Patriot Golf Fitting Engine", layout="wide", page
 def get_data_from_gsheet():
     try:
         creds_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+        creds = Credentials.from_service_account_info(
+            creds_info, 
+            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        )
         gc = gspread.authorize(creds)
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
@@ -104,7 +107,8 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        with st.expander("📋 View Full Input Verification Summary", expanded=False):
+        # [QUESTIONNAIRE SUMMARY]
+        with st.expander("📋 View Full Input Verification Summary", expanded=True):
             ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
                 with ver_cols[i % 3]:
@@ -134,6 +138,7 @@ if all_data:
         elif carry_6i < 185: ideal_w = 120
         else: ideal_w = 130
 
+        # Current Shaft Analysis
         c_brand, c_model = st.session_state.answers.get('Q10', ''), st.session_state.answers.get('Q12', '')
         curr_shaft_data = all_data['Shafts'][(all_data['Shafts']['Brand'] == c_brand) & (all_data['Shafts']['Model'] == c_model)]
         if not curr_shaft_data.empty:
@@ -141,12 +146,14 @@ if all_data:
 
         is_misfit = abs(curr_w - ideal_w) > 25
 
+        # Prep Data for Scoring
         df_all = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce')
         
+        # Filter out wedge-specific shafts for iron fitting
         wedge_terms = ['Wedge', 'Hi-Rev', 'Spinner', 'Onyx', 'Vokey', 'Full Face']
-        df_all = df_all[~df_all['Model'].str.contains('|'.join(wedge_terms), case=False)]
+        df_all = df_all[~df_all['Model'].str.contains('|'.join(wedge_terms), case=False, na=False)]
 
         def score_shafts(df_in, mode="steel"):
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 1000.0
@@ -171,10 +178,10 @@ if all_data:
 
         candidates = pd.concat([df_main, df_graph]).drop_duplicates(subset=['Brand', 'Model', 'Flex']).sort_values('Total_Score')
 
-        # --- ARCHETYPE SELECTION ---
+        # --- ARCHETYPE SELECTION (THE 5 SHAFTS) ---
         final_recs = []
         # 1. Modern Power (Graphite)
-        modern = candidates[candidates['Material'].str.contains('Graphite', case=False)].head(1)
+        modern = candidates[candidates['Material'].str.contains('Graphite|Carbon', case=False, na=False)].head(1)
         if not modern.empty:
             modern['Archetype'] = '🚀 The "Modern Power" Pick'
             final_recs.append(modern); candidates = candidates.drop(modern.index)
@@ -209,15 +216,12 @@ if all_data:
 
         # --- DYNAMIC ENGINEERING ANALYSIS ---
         st.subheader("🔬 Expert Engineering Analysis")
+        
         for _, row in final_df.iterrows():
             brand_model = f"{row['Brand']} {row['Model']}"
-            
-            # Pull description directly from Google Sheet 'Description' column
-            blurb = row.get('Description', "")
-            
-            # Fallback if the description in the sheet is empty or missing
+            blurb = row.get('Description', "Selected for high-speed stability and torque resistance based on your performance profile.")
             if pd.isna(blurb) or str(blurb).strip() == "":
-                blurb = "Selected for high-speed stability and torque resistance based on your performance profile."
+                blurb = "Custom profile selected to optimize launch conditions and energy transfer."
             
             st.markdown(f"**{row['Archetype']}: {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
