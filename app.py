@@ -27,14 +27,17 @@ def get_data_from_gsheet():
 
 def save_lead_to_gsheet(answers, t_flex, t_launch):
     try:
-        # --- NEW: CRITICAL AUTOFILL FIX ---
-        # This force-grabs whatever is currently visible in the UI widgets 
-        # specifically for Q01 (Name), Q02 (Email), and Q03 (Phone)
+        # --- CRITICAL AUTOFILL FIX ---
+        # Instead of trusting the 'answers' dictionary, we force-grab 
+        # the literal value currently inside the UI widgets.
+        final_row_data = {}
         for i in range(1, 22):
             qid = f"Q{i:02d}"
-            if f"widget_{qid}" in st.session_state:
-                answers[qid] = st.session_state[f"widget_{qid}"]
-        # ----------------------------------
+            widget_key = f"widget_{qid}"
+            # Grab from live widget state, fallback to dict if widget isn't on screen
+            live_val = st.session_state.get(widget_key, answers.get(qid, ""))
+            final_row_data[qid] = str(live_val)
+        # -----------------------------
 
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
@@ -45,9 +48,10 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp]
         
+        # Build the final row using our forced-sync data
         for i in range(1, 22):
             qid = f"Q{i:02d}"
-            row.append(str(answers.get(qid, "")))
+            row.append(final_row_data.get(qid, ""))
             
         row.append(t_flex)
         row.append(t_launch)
@@ -118,6 +122,7 @@ if all_data:
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(prev_val) if prev_val else 0.0, key=f"widget_{qid}")
             else:
+                # Text Input (Name, Email, Phone)
                 st.text_input(qtext, value=str(prev_val), key=f"widget_{qid}")
 
         st.markdown("---")
@@ -134,11 +139,14 @@ if all_data:
                 st.session_state.form_step += 1
                 st.rerun()
         elif c2.button("🔥 Generate Prescription"):
-            sync_answers(current_qids)
+            # FINAL SYNC FOR ALL QUESTIONS
+            all_qids = [f"Q{i:02d}" for i in range(1, 22)]
+            sync_answers(all_qids)
             
-            # Final Score Calculation before switching pages
+            # Final Score Calculation
             f_tf, f_tl = 6.0, 5.0
             for qid, ans in st.session_state['answers'].items():
+                if not ans: continue
                 logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
                 if not logic.empty:
                     act = str(logic.iloc[0]['LogicAction'])
@@ -153,7 +161,6 @@ if all_data:
 
     else:
         # --- 4. RESULTS VIEW ---
-        # Fetch target scores
         tf = st.session_state.get('final_tf', 6.0)
         tl = st.session_state.get('final_tl', 5.0)
 
@@ -190,21 +197,17 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # Baseline Penalty
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        # Speed Shield (190+ yards)
         if carry >= 190:
             df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 500
             df_s.loc[df_s['FlexScore'] < 8.5, 'Penalty'] += 1000
             df_s.loc[df_s['EI_Tip'] < 11.5, 'Penalty'] += 300
         
-        # Anti-Hook/Left
         if miss in ["Hook", "Pull"]:
             df_s['Penalty'] += (df_s['Torque'] * 200)
             df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 300
 
-        # Anti-Push/Right (NEW Logic)
         if miss in ["Push", "Slice"]:
             df_s.loc[df_s['Torque'] < 1.6, 'Penalty'] += 150
             df_s.loc[df_s['EI_Tip'] > 13.0, 'Penalty'] += 200
