@@ -13,6 +13,7 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         gc = gspread.authorize(creds)
+        # Using your specific URL
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         return {
             'Heads': pd.DataFrame(sh.worksheet('Heads').get_all_records()),
@@ -34,9 +35,12 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp]
+        
+        # Build row for Q01-Q21
         for i in range(1, 22):
             qid = f"Q{i:02d}"
             row.append(str(answers.get(qid, "")))
+            
         row.append(t_flex)
         row.append(t_launch)
         
@@ -56,9 +60,11 @@ if 'needs_save' not in st.session_state: st.session_state.needs_save = False
 if 'answers' not in st.session_state: st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
 
 def sync_answers(q_list):
+    """Force syncs current widget values into the answers dictionary."""
     for qid in q_list:
-        if f"widget_{qid}" in st.session_state: 
-            st.session_state['answers'][qid] = st.session_state[f"widget_{qid}"]
+        widget_key = f"widget_{qid}"
+        if widget_key in st.session_state: 
+            st.session_state['answers'][qid] = st.session_state[widget_key]
 
 # --- 3. QUESTIONNAIRE ---
 if all_data:
@@ -99,15 +105,16 @@ if all_data:
                     options += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].unique().tolist()
                 
                 idx = options.index(prev_val) if prev_val in options else 0
-                st.selectbox(qtext, options, index=idx, key=f"widget_{qid}", on_change=sync_answers, args=(current_qids,))
+                st.selectbox(qtext, options, index=idx, key=f"widget_{qid}")
             
             elif qtype == "Numeric":
-                st.number_input(qtext, value=float(prev_val) if prev_val else 0.0, key=f"widget_{qid}", on_change=sync_answers, args=(current_qids,))
+                st.number_input(qtext, value=float(prev_val) if prev_val else 0.0, key=f"widget_{qid}")
             else:
-                st.text_input(qtext, value=str(prev_val), key=f"widget_{qid}", on_change=sync_answers, args=(current_qids,))
+                st.text_input(qtext, value=str(prev_val), key=f"widget_{qid}")
 
         st.markdown("---")
         c1, c2, _ = st.columns([1,1,4])
+        
         if st.session_state.form_step > 0 and c1.button("⬅️ Back"):
             sync_answers(current_qids)
             st.session_state.form_step -= 1
@@ -120,13 +127,26 @@ if all_data:
                 st.rerun()
         elif c2.button("🔥 Generate Prescription"):
             sync_answers(current_qids)
+            
+            # Pre-calculate scores for the auto-save row
+            final_tf, final_tl = 6.0, 5.0
+            for qid, ans in st.session_state['answers'].items():
+                logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
+                if not logic.empty:
+                    act = str(logic.iloc[0]['LogicAction'])
+                    if "FlexScore:" in act: final_tf = float(act.split(":")[1])
+                    if "LaunchScore:" in act: final_tl = float(act.split(":")[1])
+            
+            st.session_state.save_tf = final_tf
+            st.session_state.save_tl = final_tl
             st.session_state.interview_complete = True
-            st.session_state.needs_save = True # Trigger the auto-save on the next page load
+            st.session_state.needs_save = True
             st.rerun()
 
     else:
         # --- 4. RESULTS VIEW ---
-        # Calculation of scores (Needed for both display and save)
+        
+        # RE-CALCULATE SCORES FOR DISPLAY
         tf, tl = 6.0, 5.0
         for qid, ans in st.session_state['answers'].items():
             logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -137,22 +157,24 @@ if all_data:
 
         # AUTO-SAVE HANDLER
         if st.session_state.get('needs_save', False):
-            if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
-                st.toast("✅ Lead automatically saved to Google Sheets")
-            st.session_state.needs_save = False # Ensure it only saves once
+            # Pull calculated scores from session state to ensure accuracy
+            s_tf = st.session_state.get('save_tf', tf)
+            s_tl = st.session_state.get('save_tl', tl)
+            if save_lead_to_gsheet(st.session_state['answers'], s_tf, s_tl):
+                st.toast("✅ Lead automatically saved to Google Sheets", icon="💾")
+            st.session_state.needs_save = False 
 
         st.title(f"🎯 Fitting Report: {st.session_state['answers'].get('Q01', 'Player')}")
         
+        # 1. Verification Summary
         st.subheader("📋 Input Verification Summary")
         sum_col1, sum_col2 = st.columns(2)
-        
         with sum_col1:
             st.markdown("##### **Player & Current Setup**")
             st.write(f"**Handedness:** {st.session_state['answers'].get('Q04', 'N/A')}")
             st.write(f"**Current Head:** {st.session_state['answers'].get('Q08', '')} {st.session_state['answers'].get('Q09', '')}")
             st.write(f"**Current Shaft:** {st.session_state['answers'].get('Q10', '')} {st.session_state['answers'].get('Q12', '')} ({st.session_state['answers'].get('Q11', '')})")
             st.write(f"**Club Specs:** {st.session_state['answers'].get('Q13', 'Std')} Length | {st.session_state['answers'].get('Q14', 'D2')} SW")
-
         with sum_col2:
             st.markdown("##### **Performance & Goals**")
             carry = float(st.session_state['answers'].get('Q15', 0))
@@ -164,11 +186,12 @@ if all_data:
 
         st.divider()
 
-        # Calculation Engine for Shafts
+        # 2. Calculation Engine
         df_s = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
+        # Logic for Shaft Penalties
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 20)
         
         if carry >= 190:
@@ -182,6 +205,7 @@ if all_data:
 
         recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5)
 
+        # 3. Recommendations Table
         st.subheader("🚀 Top 5 Shaft Recommendations")
         def generate_note(row):
             notes = []
@@ -193,19 +217,20 @@ if all_data:
         recs['Analysis'] = recs.apply(generate_note, axis=1)
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque', 'Analysis']])
 
+        # 4. Action Buttons
         st.divider()
-        btn_col1, btn_col2, btn_col3, _ = st.columns([2, 2, 2, 2])
+        b_col1, b_col2, b_col3, _ = st.columns([2, 2, 2, 2])
         
-        if btn_col1.button("💾 Manual Save (Duplicate)"):
+        if b_col1.button("💾 Manual Save"):
             if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
                 st.success("Entry Saved!")
             else: st.error("Save Error.")
 
-        if btn_col2.button("✏️ Edit Survey"):
+        if b_col2.button("✏️ Edit Survey"):
             st.session_state.interview_complete = False
             st.rerun()
 
-        if btn_col3.button("🆕 New Fitting"):
+        if b_col3.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
