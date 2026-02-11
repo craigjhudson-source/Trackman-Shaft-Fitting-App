@@ -3,8 +3,8 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. DATA ENGINE (With Caching to fix Quota Error) ---
-@st.cache_data(ttl=600)  # Remembers data for 10 minutes
+# --- 1. DATA ENGINE ---
+@st.cache_data(ttl=600)
 def get_data_from_gsheet():
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -24,13 +24,18 @@ def get_data_from_gsheet():
         st.error(f"📡 Data Load Error: {e}")
         return None
 
-def safe_list(series):
-    return sorted([str(x) for x in series.dropna().unique() if str(x).strip() != ""])
+# HELPER: Keeps the EXACT order from your spreadsheet (Used for Config/Glove Size)
+def get_ordered_list(series):
+    # Removes empty cells but keeps the sequence from the sheet
+    return list(dict.fromkeys([str(x) for x in series.dropna() if str(x).strip() != ""]))
+
+# HELPER: Sorts Alphabetically (Used for Brands and Models)
+def get_sorted_list(series):
+    return sorted(get_ordered_list(series))
 
 # --- 2. APP SETUP ---
 st.set_page_config(page_title="Patriot Fitting Engine", layout="wide")
 
-# Initialize Session State
 if 'form_step' not in st.session_state:
     st.session_state.form_step = 0
 
@@ -46,11 +51,9 @@ if all_data:
     total_steps = len(categories)
     current_cat = categories[st.session_state.form_step]
 
-    # Progress Bar
     st.progress((st.session_state.form_step + 1) / total_steps)
     st.subheader(f"Step {st.session_state.form_step + 1}: {current_cat}")
 
-    # Render Questions for current category
     q_df = all_data['Questions'][all_data['Questions']['Category'] == current_cat]
     resp_df = all_data['Responses']
     conf_df = all_data['Config']
@@ -65,31 +68,34 @@ if all_data:
         placeholder_text = str(row['Placeholder']) if 'Placeholder' in row else ""
         
         curr_col = col_q1 if idx % 2 == 0 else col_q2
-        
-        # Determine Options
         options = []
+
+        # --- SMART DROPDOWN LOGIC ---
         if q_type == "Dropdown":
+            # If it's from the Config tab, use the ORDERED list
             if "Config:" in q_opt_raw:
                 conf_col = q_opt_raw.split(":")[1]
-                options = safe_list(conf_df[conf_col])
+                options = get_ordered_list(conf_df[conf_col])
+            
+            # If it's Brands or Models, use the ALPHABETICAL list (Easier to find)
             elif "Heads" in q_opt_raw:
-                options = safe_list(all_data['Heads']['Manufacturer']) if "Brand" in q_text else safe_list(all_data['Heads']['Model'])
+                options = get_sorted_list(all_data['Heads']['Manufacturer']) if "Brand" in q_text else get_sorted_list(all_data['Heads']['Model'])
             elif "Shafts" in q_opt_raw:
-                if "Brand" in q_text: options = safe_list(all_data['Shafts']['Brand'])
-                elif "Flex" in q_text: options = safe_list(all_data['Shafts']['Flex'])
-                else: options = safe_list(all_data['Shafts']['Model'])
+                if "Brand" in q_text: options = get_sorted_list(all_data['Shafts']['Brand'])
+                elif "Flex" in q_text: options = get_ordered_list(all_data['Shafts']['Flex']) # Flex should be ordered!
+                else: options = get_sorted_list(all_data['Shafts']['Model'])
+            
+            # Static comma-separated lists
             elif "," in q_opt_raw:
                 options = [x.strip() for x in q_opt_raw.split(",")]
             else:
-                options = safe_list(resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'])
+                options = get_ordered_list(resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'])
 
-        # Session State for Inputs
+        # Render Inputs
         if q_id not in st.session_state:
             st.session_state[q_id] = 0.0 if q_type == "Numeric" else ""
 
-        # Render
         if q_type == "Dropdown" and options:
-            # Handle if previous answer no longer in options
             default_idx = options.index(st.session_state[q_id]) if st.session_state[q_id] in options else 0
             st.session_state[q_id] = curr_col.selectbox(q_text, options, index=default_idx, key=f"in_{q_id}")
         elif q_type == "Numeric":
@@ -97,7 +103,7 @@ if all_data:
         else:
             st.session_state[q_id] = curr_col.text_input(q_text, value=st.session_state[q_id], placeholder=placeholder_text, key=f"in_{q_id}")
 
-    # Navigation Buttons
+    # Navigation
     btn_col1, btn_col2, _ = st.columns([1, 1, 4])
     with btn_col1:
         if st.session_state.form_step > 0:
@@ -112,12 +118,10 @@ if all_data:
 
     st.divider()
 
-    # --- PHASE 2: PARAMETERS & TRACKMAN ---
+    # --- PHASE 2 & 3: ANALYSIS ---
     col1, col2 = st.columns([1, 1.2])
     with col1:
         st.subheader("📊 Phase 2: Analysis Parameters")
-        
-        # Auto-Logic Logic
         target_flex, target_launch = 6.0, 5.0
         for q_id in all_data['Questions']['QuestionID']:
             if q_id in st.session_state:
