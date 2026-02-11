@@ -1,115 +1,162 @@
 import streamlit as st
 import pandas as pd
-import os
-import glob
+import gspread
+from google.oauth2.service_account import Credentials
+import datetime
 
-# --- 1. SMART FILE LOADER ---
-@st.cache_data
-def load_data():
-    # This looks for any file in your folder that contains 'Shafts' or 'Fittings'
-    # This solves the "File Not Found" error caused by the long Google Sheets names
-    shaft_files = glob.glob("*Shafts.csv")
-    fitting_files = glob.glob("*Fittings.csv")
-    
-    if not shaft_files or not fitting_files:
-        # Debugging info for the sidebar
-        current_files = os.listdir('.')
-        st.sidebar.error(f"Missing CSV files! Found: {current_files}")
-        st.stop()
+# --- 1. DATA ENGINE ---
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+@st.cache_data(ttl=600)
+def get_data_from_gsheet():
+    try:
+        creds_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
+        return {
+            'Heads': pd.DataFrame(sh.worksheet('Heads').get_all_records()),
+            'Shafts': pd.DataFrame(sh.worksheet('Shafts').get_all_records()),
+            'Questions': pd.DataFrame(sh.worksheet('Questions').get_all_records()),
+            'Responses': pd.DataFrame(sh.worksheet('Responses').get_all_records()),
+            'Config': pd.DataFrame(sh.worksheet('Config').get_all_records())
+        }
+    except Exception as e:
+        st.error(f"📡 Data Load Error: {e}"); return None
+
+def save_lead_to_gsheet(answers, t_flex, t_launch):
+    try:
+        creds_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
+        ws = sh.worksheet('Fittings')
+        row = [str(datetime.datetime.now())] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)] + [t_flex, t_launch]
+        ws.append_row(row)
+        return True
+    except: return False
+
+# --- 2. INITIALIZATION ---
+st.set_page_config(page_title="Patriot Fitting Engine", layout="wide")
+all_data = get_data_from_gsheet()
+
+if 'form_step' not in st.session_state: st.session_state.form_step = 0
+if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
+if 'answers' not in st.session_state: st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
+
+def sync_answers(q_list):
+    for qid in q_list:
+        if f"widget_{qid}" in st.session_state: st.session_state['answers'][qid] = st.session_state[f"widget_{qid}"]
+
+# --- 3. QUESTIONNAIRE ---
+if all_data:
+    if not st.session_state.interview_complete:
+        st.title("Americas Best Shaft Fitting Engine")
+        categories = all_data['Questions']['Category'].unique().tolist()
+        current_cat = categories[st.session_state.form_step]
+        q_df = all_data['Questions'][all_data['Questions']['Category'] == current_cat]
+        current_qids = q_df['QuestionID'].tolist()
+
+        st.subheader(f"Section: {current_cat}")
+        for _, row in q_df.iterrows():
+            qid, qtext, qtype, qopts = row['QuestionID'], row['QuestionText'], row['InputType'], str(row['Options'])
+            prev_val = st.session_state['answers'].get(qid, "")
+
+            if qtype == "Dropdown":
+                options = [""]
+                if "Config:" in qopts: options += all_data['Config'][qopts.split(":")[1]].dropna().unique().tolist()
+                elif "Heads" in qopts:
+                    if "Brand" in qtext: options += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
+                    else:
+                        brand = st.session_state.get("widget_Q08", st.session_state['answers'].get('Q08', ""))
+                        if brand: options += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand]['Model'].unique().tolist())
+                elif "Shafts" in qopts:
+                    brand = st.session_state.get("widget_Q10", st.session_state['answers'].get('Q10', ""))
+                    if "Brand" in qtext: options += sorted(all_data['Shafts']['Brand'].unique().tolist())
+                    elif brand:
+                        if "Flex" in qtext: options += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Flex'].unique().tolist())
+                        else: options += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique().tolist())
+                elif "," in qopts: options += [x.strip() for x in qopts.split(",")]
+                else: options += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].unique().tolist()
+                
+                idx = options.index(prev_val) if prev_val in options else 0
+                st.selectbox(qtext, options, index=idx, key=f"widget_{qid}", on_change=sync_answers, args=(current_qids,))
+            elif qtype == "Numeric":
+                st.number_input(qtext, value=float(prev_val) if prev_val else 0.0, key=f"widget_{qid}", on_change=sync_answers, args=(current_qids,))
+            else:
+                st.text_input(qtext, value=str(prev_val), key=f"widget_{qid}", on_change=sync_answers, args=(current_qids,))
+
+        c1, c2, _ = st.columns([1,1,4])
+        if st.session_state.form_step > 0 and c1.button("⬅️ Back"):
+            sync_answers(current_qids); st.session_state.form_step -= 1; st.rerun()
+        if st.session_state.form_step < len(categories) - 1:
+            if c2.button("Next ➡️"):
+                sync_answers(current_qids); st.session_state.form_step += 1; st.rerun()
+        elif c2.button("🔥 Generate Prescription"):
+            sync_answers(current_qids); st.session_state.interview_complete = True; st.rerun()
+
+    else:
+        # --- 4. RESULTS VIEW ---
+        st.title(f"🎯 Fitting Report: {st.session_state['answers'].get('Q01', 'Player')}")
         
-    df_shafts = pd.read_csv(shaft_files[0])
-    df_fittings = pd.read_csv(fitting_files[0])
-    
-    # Standardize column names (remove whitespace)
-    df_shafts.columns = df_shafts.columns.str.strip()
-    df_fittings.columns = df_fittings.columns.str.strip()
-    
-    return df_shafts, df_fittings
+        # 1. Verification Section
+        st.subheader("📋 Input Verification")
+        v1, v2, v3, v4 = st.columns(4)
+        carry = float(st.session_state['answers'].get('Q15', 0))
+        miss = st.session_state['answers'].get('Q18', "")
+        v1.metric("6i Carry", f"{carry} yds")
+        v2.metric("Miss", miss)
+        v3.metric("Email", st.session_state['answers'].get('Q02', ""))
+        v4.metric("Current Flex", st.session_state['answers'].get('Q11', ""))
 
-# --- 2. CONFIG & THEME ---
-st.set_page_config(page_title="Shaft Optimizer", layout="wide")
+        with st.expander("Show Full Survey Answers"):
+            cols = st.columns(3)
+            for i, (qid, val) in enumerate(st.session_state['answers'].items()):
+                q_txt = all_data['Questions'][all_data['Questions']['QuestionID'] == qid]['QuestionText'].values[0]
+                cols[i%3].write(f"**{q_txt}:** {val}")
 
-try:
-    df_shafts, df_fittings = load_data()
-    # Filter out empty rows from the Google Sheet
-    df_fittings = df_fittings.dropna(subset=['Name', 'Current 6i Carry'])
-except Exception as e:
-    st.error(f"Initialization Error: {e}")
-    st.stop()
+        # 2. Advanced Penalty Engine
+        tf, tl = 6.0, 5.0 # Fallbacks
+        for qid, ans in st.session_state['answers'].items():
+            logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
+            if not logic.empty:
+                act = str(logic.iloc[0]['LogicAction'])
+                if "FlexScore:" in act: tf = float(act.split(":")[1])
+                if "LaunchScore:" in act: tl = float(act.split(":")[1])
 
-# --- 3. PLAYER SELECTION ---
-st.title("⛳ Precision Shaft Optimizer")
-st.markdown("### Stability-First Recommendation Engine")
+        df_s = all_data['Shafts'].copy()
+        df_s['FlexScore'] = pd.to_numeric(df_s['FlexScore'], errors='coerce')
+        df_s['LaunchScore'] = pd.to_numeric(df_s['LaunchScore'], errors='coerce')
+        df_s['Weight'] = pd.to_numeric(df_s['Weight (g)'], errors='coerce')
 
-player_list = df_fittings['Name'].unique().tolist()
-selected_name = st.selectbox("Select Player Profile", player_list)
-p = df_fittings[df_fittings['Name'] == selected_name].iloc[0]
+        # Baseline Penalty
+        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 40) + (abs(df_s['LaunchScore'] - tl) * 20)
+        
+        # SPEED & HOOK SHIELD (The Craig Correction)
+        if carry > 185:
+            # Penalize light shafts for high speed players
+            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 200 
+            # Force higher flex targets
+            df_s.loc[df_s['FlexScore'] < 6.5, 'Penalty'] += 100
+        
+        if "Hook" in miss or "Pull" in miss:
+            # Penalize high launch/spin (usually softer tips)
+            df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 150
+            # Stability bonus for low torque / low launch
+            df_s.loc[df_s['LaunchScore'] <= 3, 'Penalty'] -= 20
 
-# --- 4. DATA MAPPING & TARGETS ---
-# Inputs pre-filled from the Google Sheet data
-col1, col2, col3 = st.columns(3)
-with col1:
-    carry = st.number_input("6-Iron Carry (yards)", value=float(p['Current 6i Carry']))
-with col2:
-    miss = st.selectbox("Primary Miss", ["Hook", "Slice", "Push", "Pull", "Straight"], 
-                        index=["Hook", "Slice", "Push", "Pull", "Straight"].index(p['Primary Miss']))
-with col3:
-    target_flight = st.selectbox("Target Flight", ["Low", "Mid-Low", "Mid", "Mid-High", "High"],
-                                index=["Low", "Mid-Low", "Mid", "Mid-High", "High"].index(p['Target Flight']))
+        st.divider()
+        st.subheader("🚀 Recommended Shaft Blueprints")
+        st.info(f"Targeting: Stiff-Plus to X-Stiff profiles with Low-Mid Launch stability.")
+        
+        recs = df_s.sort_values(['Penalty', 'Weight'], ascending=[True, False]).head(5)
+        st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Spin']])
+        
+        if st.button("💾 Save Results to Google Sheets"):
+            if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
+                st.success("Results Uploaded Successfully!")
+            else: st.error("Upload Failed.")
 
-# Logic Constants (from your Responses/Config logic)
-target_flex = 10.0 if carry >= 195 else 8.5 if carry >= 180 else 7.0
-flight_map = {"Low": 2.0, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
-target_launch = flight_map.get(target_flight, 5.0)
-
-# --- 5. THE OPTIMIZATION ENGINE ---
-df_s = df_shafts.copy()
-
-# A. BASE PENALTY (Launch & Flex Match)
-df_s['Penalty'] = (abs(df_s['FlexScore'] - target_flex) * 35) + \
-                  (abs(df_s['LaunchScore'] - target_launch) * 15)
-
-# B. STABILITY RULES (The "Craig Hudson" Adjustment)
-if carry >= 190:
-    # 1. Weight Penalty: High speed needs mass for tempo
-    df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 500 
-    
-    # 2. Tip Stiffness (The KBS Fix): 
-    # Since KBS Tour X is 10.0 and PX/DG are 12.0, we penalize the 10.0 tip for elite speed.
-    df_s.loc[df_s['EI_Tip'] <= 10.5, 'Penalty'] += 300 
-
-if miss == "Hook":
-    # 3. Torque Penalty: Lower torque is better for hookers
-    df_s['Penalty'] += (df_s['Torque'] * 150)
-    
-    # 4. Anti-Left Bonus: Reward the ultra-stable 12.0 tips
-    df_s.loc[df_s['EI_Tip'] >= 11.5, 'Penalty'] -= 100
-
-# C. GENERATE FITTER NOTES
-def get_notes(row):
-    notes = []
-    if row['EI_Tip'] >= 12.0: notes.append("Reinforced Tip (Anti-Hook)")
-    if row['Torque'] <= 1.3: notes.append("Low-Twist Face Control")
-    if row['Weight (g)'] >= 130: notes.append("Heavy Tempo Control")
-    if row['EI_Tip'] <= 10.0 and carry > 190: notes.append("Active Tip (Potential Draw)")
-    return " | ".join(notes) if notes else "Balanced Profile"
-
-df_s['Fitters Note'] = df_s.apply(get_fitter_notes, axis=1)
-
-# D. SORTING
-# Lowest penalty first. Break ties with higher FlexScore (stiffer is safer for high speed).
-recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5)
-
-# --- 6. DISPLAY ---
-st.divider()
-st.subheader(f"Top 5 Recommendations for {selected_name}")
-
-if carry >= 190 and miss == "Hook":
-    st.info("💡 **Logic Note:** We are prioritizing shafts with **EI_Tip >= 12.0** and **Low Torque** to stabilize the face through impact for your speed.")
-
-display_df = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'EI_Tip', 'Torque', 'Fitters Note']]
-st.table(display_df)
-
-# CHART
-st.write("### Profile Comparison: Tip Stiffness vs Stability Index")
-st.scatter_chart(data=recs, x="EI_Tip", y="StabilityIndex", color="Model")
+        if st.button("🆕 New Fitting"):
+            st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
+            st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
