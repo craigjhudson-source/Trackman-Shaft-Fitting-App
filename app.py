@@ -47,23 +47,34 @@ if all_data:
             q_type = row['InputType']
             q_opt_raw = str(row['Options'])
             
-            # Select Column
             curr_col = col_q1 if idx % 2 == 0 else col_q2
-            
-            # DETERMINE OPTIONS
             options = []
+
+            # --- DYNAMIC DROPDOWN LOGIC ---
             if q_type == "Dropdown":
                 if "Config:" in q_opt_raw:
                     conf_col = q_opt_raw.split(":")[1]
                     options = conf_df[conf_col].replace('', pd.NA).dropna().tolist()
-                elif "Dynamic from Heads" in q_opt_raw:
-                    options = sorted(all_data['Heads']['Manufacturer'].unique().tolist())
-                elif "Dynamic from Shafts" in q_opt_raw:
-                    options = sorted(all_data['Shafts']['Brand'].unique().tolist())
+                
+                # HEADS LOGIC
+                elif "Heads" in q_opt_raw:
+                    if "Brand" in q_text or "Manufacturer" in q_text:
+                        options = sorted(all_data['Heads']['Manufacturer'].unique().tolist())
+                    else: # Pull Models instead of Brands
+                        options = sorted(all_data['Heads']['Model'].unique().tolist())
+                
+                # SHAFTS LOGIC
+                elif "Shafts" in q_opt_raw:
+                    if "Brand" in q_text:
+                        options = sorted(all_data['Shafts']['Brand'].unique().tolist())
+                    elif "Flex" in q_text:
+                        options = sorted(all_data['Shafts']['Flex'].unique().tolist())
+                    else: # Pull Shaft Models
+                        options = sorted(all_data['Shafts']['Model'].unique().tolist())
+                
                 elif "," in q_opt_raw:
                     options = [x.strip() for x in q_opt_raw.split(",")]
                 else:
-                    # Fallback to Responses tab
                     options = resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'].tolist()
 
             # RENDER INPUTS
@@ -82,15 +93,13 @@ if all_data:
     with col1:
         st.subheader("📊 Phase 2: Analysis Parameters")
         
-        # LOGIC MAPPING from Responses Tab
-        # Automatically updates Target Flex/Launch based on Interview selections
         target_flex = 6.0
         target_launch = 5.0
         
         for q_id, answer in player_answers.items():
             logic = resp_df[(resp_df['QuestionID'] == q_id) & (resp_df['ResponseOption'] == str(answer))]
             if not logic.empty:
-                action = logic.iloc[0]['LogicAction']
+                action = str(logic.iloc[0]['LogicAction'])
                 if "Target FlexScore:" in action:
                     target_flex = float(action.split(":")[1])
                 if "Target LaunchScore:" in action:
@@ -107,7 +116,6 @@ if all_data:
         if st.button("🔥 Run Analysis"):
             df_s = all_data['Shafts'].copy()
             
-            # PENALTY CALCULATION
             def calc_penalty(row):
                 p = (abs(pd.to_numeric(row['FlexScore'], errors='coerce') - t_flex) * 40)
                 p += (abs(pd.to_numeric(row['LaunchScore'], errors='coerce') - t_launch) * 20)
