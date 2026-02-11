@@ -126,7 +126,7 @@ if all_data:
             elif carry_6i < 140: f_tf = 4.0 
         except: pass
 
-        # --- PERFORMANCE WEIGHT BRACKETING ---
+        # BRACKETING
         ideal_w = 115
         if carry_6i < 125: ideal_w = 70
         elif carry_6i < 145: ideal_w = 90
@@ -139,10 +139,8 @@ if all_data:
         if not curr_shaft_data.empty:
             curr_w = pd.to_numeric(curr_shaft_data.iloc[0]['Weight (g)'], errors='coerce')
 
-        # Detect Mis-Fit
         is_misfit = abs(curr_w - ideal_w) > 25
 
-        # DATA CLEANING
         df_all = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce')
@@ -155,10 +153,8 @@ if all_data:
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - f_tl) * 75.0
             
             if is_misfit and use_weight_logic:
-                # Force player toward their IDEAL bracket
                 df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15
             elif use_weight_logic:
-                # Traditional comfort-based logic
                 df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - curr_w) * 5 if abs(x - curr_w) > 35 else 0)
             else:
                 df_in['Weight_Penalty'] = 0
@@ -172,26 +168,23 @@ if all_data:
                 
             return df_in['Flex_Penalty'] + df_in['Launch_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction']
 
+        # COMBINED CALCULATION
         df_main = df_all[df_all['Weight (g)'] >= min_w].copy()
-        df_main['Total_Score'] = score_shafts(df_main)
-        recs_main = df_main.sort_values('Total_Score').head(5)
-
+        df_main['Total_Score'] = score_shafts(df_main, use_weight_logic=True)
+        
         df_graph = df_all[df_all['Material'].str.contains('Graphite|Carbon', case=False, na=False)].copy()
-        if not df_graph.empty:
-            df_graph['Total_Score'] = score_shafts(df_graph, use_weight_logic=False)
-            recs_graph = df_graph.sort_values('Total_Score').head(3)
-        else:
-            recs_graph = pd.DataFrame()
+        df_graph['Total_Score'] = score_shafts(df_graph, use_weight_logic=False)
+
+        # Concatenate and take top 7 overall
+        combined_recs = pd.concat([df_main, df_graph]).drop_duplicates(subset=['Brand', 'Model', 'Flex'])
+        combined_recs = combined_recs.sort_values('Total_Score').head(7)
 
         st.subheader("🚀 Top Recommended Prescription")
         if is_misfit:
-            st.warning(f"⚠️ **Performance Alert:** Player is currently using a {curr_w}g shaft. Based on a {carry_6i}yd carry, their ideal performance bracket is {ideal_w}g. Logic has been adjusted to prioritize speed induction over current feel.")
+            st.warning(f"⚠️ **Performance Alert:** Player is currently using a {curr_w}g shaft. Based on carry distance, logic has shifted to favor the {ideal_w}g performance bracket.")
         
-        st.table(recs_main[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
-
-        if not recs_graph.empty:
-            st.subheader("🌫️ Recommended Graphite Alternatives")
-            st.table(recs_graph[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
+        # Display table with Material column
+        st.table(combined_recs[['Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
 
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
@@ -199,9 +192,10 @@ if all_data:
             "NEO": "Active tip section specifically engineered to increase launch and spin for modern distance irons.",
             "Modus3 Tour 105": "Lightweight tour-profile steel; provides speed without losing the 'traditional' feel.",
             "Recoil": "Ion-plated graphite designed with high-torque recovery for squaring the face at impact.",
-            "Steelfiber": "Graphite core with a steel wire wrap; the ultimate bridge between weight and feel."
+            "Steelfiber": "Graphite core with a steel wire wrap; the ultimate bridge between weight and feel.",
+            "MMT": "Metal Mesh Technology; braids 304 stainless steel into the tip for steel-like consistency in graphite."
         }
-        for i, (idx, row) in enumerate(recs_main.iterrows(), 1):
+        for i, (idx, row) in enumerate(combined_recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
             blurb = next((v for k, v in traits.items() if k in brand_model), "Selected for optimal weight-to-speed ratio and dynamic stability.")
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
