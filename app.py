@@ -13,7 +13,6 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
         gc = gspread.authorize(creds)
-        # Master Sheet URL
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         
@@ -65,7 +64,7 @@ if all_data:
     q_master = all_data['Questions']
     
     if not st.session_state.interview_complete:
-        st.title("Americas Best Shaft Fitting Engine")
+        st.title("Patriot Golf Performance Fitting")
         categories = list(dict.fromkeys(q_master['Category'].tolist()))
         st.progress(st.session_state.form_step / len(categories))
         current_cat = categories[st.session_state.form_step]
@@ -119,12 +118,10 @@ if all_data:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
                 
-                # --- INITIALIZE LOGIC DEFAULTS ---
                 f_tf, f_tl = 6.0, 5.0
                 anti_left, release_assist = False, False
                 min_w, max_w = 0, 200
 
-                # --- SCAN RESPONSES FOR NEW LOGIC STRINGS ---
                 for qid, ans in st.session_state.answers.items():
                     logic_rows = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & 
                                                        (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -148,12 +145,10 @@ if all_data:
                             except: pass
                 
                 save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
-                
                 st.session_state.update({
                     'final_tf': f_tf, 'final_tl': f_tl, 
                     'anti_left': anti_left, 'release_assist': release_assist,
-                    'min_w': min_w, 'max_w': max_w,
-                    'interview_complete': True
+                    'min_w': min_w, 'max_w': max_w, 'interview_complete': True
                 })
                 st.rerun()
 
@@ -172,7 +167,6 @@ if all_data:
                         ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # --- SAFE ENGINE ACCESS ---
         tf = st.session_state.get('final_tf', 6.0)
         tl = st.session_state.get('final_tl', 5.0)
         anti_left = st.session_state.get('anti_left', False)
@@ -180,56 +174,53 @@ if all_data:
         min_w = st.session_state.get('min_w', 0)
         max_w = st.session_state.get('max_w', 200)
         
-        miss = st.session_state.answers.get('Q18', "Straight")
         carry = float(st.session_state.answers.get('Q15', 0) if str(st.session_state.answers.get('Q15')).replace('.','').isdigit() else 0)
         
         df_s = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # --- ENGINE: DNA MATCHING ---
-        df_s['Flex_Diff'] = abs(df_s['FlexScore'] - tf) * 200
+        # --- ENGINE: HARD GATING FILTERS ---
+        # 1. HARD WEIGHT FILTER
+        df_s = df_s[(df_s['Weight (g)'] >= min_w) & (df_s['Weight (g)'] <= max_w)]
+        
+        # 2. ANTI-LEFT TORQUE GATE
+        if anti_left:
+            df_s = df_s[df_s['Torque'] <= 2.0]
+
+        # --- ENGINE: DNA SCORING ---
+        df_s['Flex_Diff'] = abs(df_s['FlexScore'] - tf) * 300 # Increased Weight
         df_s['Launch_Diff'] = abs(df_s['LaunchScore'] - tl) * 50
         
-        # Apply Hard Weight Filters
-        df_s['Weight_Penalty'] = df_s['Weight (g)'].apply(lambda x: 0 if min_w <= x <= max_w else 1000)
-
-        # Apply Stability Adjustments
         if anti_left:
-            df_s['Stability_Adj'] = (10 - df_s['StabilityIndex']) * 100
+            df_s['Stability_Adj'] = (10 - df_s['StabilityIndex']) * 150
         elif release_assist:
-            df_s['Stability_Adj'] = (df_s['EI_Tip']) * 10  # Lower EI_Tip is better for release
+            # Shafts with lower EI_Tip "kick" more for release
+            df_s['Stability_Adj'] = (df_s['EI_Tip'] - 10) * 40 
         else:
             df_s['Stability_Adj'] = 0
 
-        df_s['Total_Score'] = df_s['Flex_Diff'] + df_s['Launch_Diff'] + df_s['Weight_Penalty'] + df_s['Stability_Adj']
-
+        df_s['Total_Score'] = df_s['Flex_Diff'] + df_s['Launch_Diff'] + df_s['Stability_Adj']
         recs = df_s.sort_values('Total_Score').head(5).copy()
 
-        # Formatting for display
+        # Formatting
         recs['Weight (g)'] = recs['Weight (g)'].round(0).astype(int)
         recs['Torque'] = recs['Torque'].apply(lambda x: f"{float(x):.1f}")
-        recs['Flex'] = recs['Flex'].apply(lambda x: f"{x}.0" if str(x) in ["5", "6"] else x)
 
         def generate_verdict(row):
-            if anti_left and row['StabilityIndex'] > 8.0: return "🛡️ Stability King"
-            if release_assist and row['EI_Tip'] < 11.5: return "✅ Release Assistant"
-            if row['Weight (g)'] < 100 and carry > 175: return "⚡ Speed Play"
+            if anti_left and row['StabilityIndex'] > 8.5: return "🛡️ Stability King"
+            if release_assist and row['EI_Tip'] < 14.0: return "✅ Release Assistant"
+            if row['Weight (g)'] > 120: return "💎 Tour Mass"
             return "🎯 Balanced Fit"
 
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
-
-        
 
         st.subheader("🚀 Recommended Prescription")
         final_table = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']].reset_index(drop=True)
         final_table.index += 1
         st.table(final_table)
 
-        # --- ANALYSIS ---
         st.subheader("🔬 Detailed Expert Insights")
-        
-        
         traits = {
             "Project X Rifle": "A classic constant-weight shaft with a very stable tip section for precise control.",
             "Project X LZ": "Features a unique mid-section 'Loading Zone' that improves feel and energy transfer.",
@@ -241,16 +232,13 @@ if all_data:
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
             blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile tailored to your specific swing data."))
-            with st.container():
-                st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
-                st.caption(f"{blurb} Selected for your **{int(carry)}yd carry** and stability profile.")
+            st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
+            st.caption(f"{blurb} Selected for your **{int(carry)}yd carry** and stability profile.")
 
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
         if bt1.button("✏️ Edit Survey", use_container_width=True):
-            st.session_state.interview_complete = False
-            st.session_state.form_step = 0
-            st.rerun()
+            st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
         if bt2.button("🆕 New Fitting", use_container_width=True):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
