@@ -4,28 +4,50 @@ import gspread
 from google.oauth2.service_account import Credentials
 import datetime
 
-# --- 1. DATA CONNECTION ---
+# --- 1. DATA CONNECTION & ROBUST CLEANING ---
 st.set_page_config(page_title="Patriot Golf Fitting Engine", layout="wide", page_icon="⛳")
 
 @st.cache_data(ttl=600)
 def get_data_from_gsheet():
     try:
         creds_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+        creds = Credentials.from_service_account_info(
+            creds_info, 
+            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        )
         gc = gspread.authorize(creds)
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         
-        data = {
-            'Heads': pd.DataFrame(sh.worksheet('Heads').get_all_records()),
-            'Shafts': pd.DataFrame(sh.worksheet('Shafts').get_all_records()),
-            'Questions': pd.DataFrame(sh.worksheet('Questions').get_all_records()),
-            'Responses': pd.DataFrame(sh.worksheet('Responses').get_all_records()),
-            'Config': pd.DataFrame(sh.worksheet('Config').get_all_records())
+        def get_clean_df(worksheet_name):
+            # Get raw values to handle empty/duplicate headers manually
+            rows = sh.worksheet(worksheet_name).get_all_values()
+            if not rows: return pd.DataFrame()
+            
+            headers = rows[0]
+            seen = {}
+            new_headers = []
+            for i, h in enumerate(headers):
+                h = h.strip()
+                if not h: h = f"EmptyCol_{i}"
+                if h in seen:
+                    seen[h] += 1
+                    new_headers.append(f"{h}_{seen[h]}")
+                else:
+                    seen[h] = 0
+                    new_headers.append(h)
+            # Create DF and drop columns that are purely 'EmptyCol' artifacts
+            df = pd.DataFrame(rows[1:], columns=new_headers)
+            return df.loc[:, ~df.columns.str.startswith('EmptyCol')]
+
+        return {
+            'Heads': get_clean_df('Heads'),
+            'Shafts': get_clean_df('Shafts'),
+            'Questions': get_clean_df('Questions'),
+            'Responses': get_clean_df('Responses'),
+            'Config': get_clean_df('Config'),
+            'Descriptions': get_clean_df('Descriptions')  # New sheet for blurbs
         }
-        for df_key in data:
-            data[df_key].columns = data[df_key].columns.str.strip()
-        return data
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
@@ -81,6 +103,7 @@ if all_data:
                         opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique().tolist()) if brand else []
                 else:
                     opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].astype(str).tolist()
+                
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
@@ -104,7 +127,6 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # [Input Verification Expandable]
         with st.expander("📋 View Full Input Verification Summary", expanded=False):
             ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
@@ -116,138 +138,70 @@ if all_data:
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
         # ENGINE LOGIC
-        f_tf, f_tl, min_w, curr_w = 5.0, 5.0, 0, 115
+        carry_6i = float(st.session_state.answers.get('Q15', 150))
         primary_miss = st.session_state.answers.get('Q17', '')
-        carry_6i = 0.0
-
-        try:
-            carry_6i = float(st.session_state.answers.get('Q15', 0))
-            if carry_6i >= 200: min_w, f_tf = 120, 9.0
-            elif carry_6i >= 180: min_w, f_tf = 115, 7.5
-            elif carry_6i >= 160: min_w, f_tf = 105, 6.0
-            elif carry_6i < 140: f_tf = 4.0 
-        except: pass
-
-        ideal_w = 115
-        if carry_6i < 125: ideal_w = 70
-        elif carry_6i < 145: ideal_w = 90
-        elif carry_6i < 165: ideal_w = 105
-        elif carry_6i < 185: ideal_w = 120
-        else: ideal_w = 130
-
-        c_brand, c_model = st.session_state.answers.get('Q10', ''), st.session_state.answers.get('Q12', '')
-        curr_shaft_data = all_data['Shafts'][(all_data['Shafts']['Brand'] == c_brand) & (all_data['Shafts']['Model'] == c_model)]
-        if not curr_shaft_data.empty:
-            curr_w = pd.to_numeric(curr_shaft_data.iloc[0]['Weight (g)'], errors='coerce')
-
-        is_misfit = abs(curr_w - ideal_w) > 25
+        
+        # Flex/Weight targets
+        if carry_6i >= 200: min_w, f_tf, ideal_w = 120, 9.0, 130
+        elif carry_6i >= 180: min_w, f_tf, ideal_w = 115, 7.5, 125
+        elif carry_6i >= 160: min_w, f_tf, ideal_w = 105, 6.0, 115
+        else: min_w, f_tf, ideal_w = 0, 4.0, 95
 
         df_all = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
-            df_all[col] = pd.to_numeric(df_all[col], errors='coerce')
+            df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
-        wedge_terms = ['Wedge', 'Hi-Rev', 'Spinner', 'Onyx', 'Vokey', 'Full Face']
-        df_all = df_all[~df_all['Model'].str.contains('|'.join(wedge_terms), case=False)]
-
-        def score_shafts(df_in, mode="steel"):
-            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 1000.0
-            df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - f_tl) * 75.0
-            if mode == "steel":
-                df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15 if is_misfit else 0
-            else:
-                df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - ideal_w) * 50 if carry_6i > 185 and x < (ideal_w - 20) else 0)
-            
-            if "Hook" in primary_miss or "Pull" in primary_miss:
-                df_in['Miss_Correction'] = (df_in['Torque'] * 600.0) + ((10 - df_in['StabilityIndex']) * 400.0)
-            elif "Slice" in primary_miss or "Push" in primary_miss:
-                df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 200.0) 
+        def score_shafts(df_in):
+            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 100
+            df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
+            # Miss correction
+            if any(x in primary_miss for x in ["Hook", "Pull"]):
+                df_in['Miss_Correction'] = (df_in['Torque'] * 50) + ((10 - df_in['StabilityIndex']) * 50)
+            elif any(x in primary_miss for x in ["Slice", "Push"]):
+                df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 30)
             else:
                 df_in['Miss_Correction'] = 0
-            return df_in['Flex_Penalty'] + df_in['Launch_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction']
+            return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction']
 
-        df_main = df_all[df_all['Weight (g)'] >= min_w].copy()
-        df_main['Total_Score'] = score_shafts(df_main, mode="steel")
-        df_graph = df_all[df_all['Material'].str.contains('Graphite|Carbon', case=False, na=False)].copy()
-        df_graph['Total_Score'] = score_shafts(df_graph, mode="graphite")
+        df_all['Total_Score'] = score_shafts(df_all)
+        candidates = df_all.sort_values('Total_Score')
 
-        candidates = pd.concat([df_main, df_graph]).drop_duplicates(subset=['Brand', 'Model', 'Flex']).sort_values('Total_Score')
-
-        # --- ARCHETYPE SELECTION ---
+        # Archetype Selection
         final_recs = []
-        # 1. Modern Power (Graphite)
-        modern = candidates[candidates['Material'].str.contains('Graphite', case=False)].head(1)
-        if not modern.empty:
-            modern['Archetype'] = '🚀 The "Modern Power" Pick'
-            final_recs.append(modern); candidates = candidates.drop(modern.index)
-        # 2. Tour Standard (Steel)
-        tour = candidates[candidates['Material'] == 'Steel'].head(1)
-        if not tour.empty:
-            tour['Archetype'] = '⚓ The "Tour Standard"'
-            final_recs.append(tour); candidates = candidates.drop(tour.index)
-        # 3. Feel Option
-        feel = candidates[candidates['Model'].str.contains('LZ|Modus|Elevate|KBS Tour', case=False)].head(1)
-        if not feel.empty:
-            feel['Archetype'] = '🎨 The "Feel" Option'
-            final_recs.append(feel); candidates = candidates.drop(feel.index)
-        # 4. Dispersion Killer
-        disp = candidates.sort_values(['StabilityIndex', 'Torque'], ascending=[False, True]).head(1)
-        if not disp.empty:
-            disp['Archetype'] = '🎯 The "Dispersion Killer"'
-            final_recs.append(disp); candidates = candidates.drop(disp.index)
-        # 5. Alt Tech
-        alt = candidates[candidates['Model'].str.contains('SteelFiber|MMT|Recoil|Axiom', case=False)].head(1)
-        if not alt.empty:
-            alt['Archetype'] = '🧪 The "Alternative Tech"'
-            final_recs.append(alt)
+        final_recs.append(candidates[candidates['Material'].str.contains('Graphite', case=False)].head(1).assign(Archetype='🚀 Modern Power'))
+        final_recs.append(candidates[candidates['Material'] == 'Steel'].head(1).assign(Archetype='⚓ Tour Standard'))
+        final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False)].head(1).assign(Archetype='🎨 Feel Option'))
+        final_recs.append(candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype='🎯 Dispersion Killer'))
+        final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False)].head(1).assign(Archetype='🧪 Alt Tech'))
 
-        final_df = pd.concat(final_recs).head(5)
+        final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(5)
 
         st.subheader("🚀 Top Recommended Prescription")
-        if is_misfit:
-            st.warning(f"⚠️ **Performance Alert:** Player currently in {curr_w}g; logic prioritized stability for {int(carry_6i)}yd carry.")
-        
-        st.table(final_df[['Archetype', 'Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch']].reset_index(drop=True))
+        st.table(final_df[['Archetype', 'Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch']])
 
-        # --- ENGINEERING ANALYSIS & GRIPS ---
         st.subheader("🔬 Expert Engineering Analysis")
-        traits = {
-            "Axiom": "VeloCore tech in a heavy build; steel stability with elite dampening.",
-            "MMT": "Metal Mesh braids into the tip to prevent face 'wheeling' at speed.",
-            "C-Taper": "The ultimate spin-killer for piercing flight and zero ballooning.",
-            "Dynamic Gold": "The gold standard for heavy steel; keeps ball flight low.",
-            "LZ": "Loading Zone tech for enhanced feel without sacrificing tight dispersion.",
-            "SteelFiber": "Graphite core with steel wire wrap for the ultimate in precision.",
-            "Tour AD": "Premium Japanese graphite built for aggressive transitions."
-        }
-
+        
+        desc_lookup = dict(zip(all_data['Descriptions'].iloc[:,0], all_data['Descriptions'].iloc[:,1]))
+        
         for _, row in final_df.iterrows():
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = next((v for k, v in traits.items() if k in brand_model), "Selected for high-speed stability and torque resistance.")
-            st.markdown(f"**{row['Archetype']}: {brand_model} ({row['Flex']})**")
+            blurb = desc_lookup.get(row['Model'], "High-stability profile selected for speed and trajectory control.")
+            st.markdown(f"**{row['Archetype']}: {brand_model}**")
             st.caption(f"{blurb}")
 
-        # --- 🧤 GRIP PRESCRIPTION ---
+        # --- GRIP PRESCRIPTION ---
         st.divider()
         st.subheader("🧤 Final Touch: Grip Prescription")
-        g_size = st.session_state.answers.get('Q05', 'Medium')
+        g_size = st.session_state.answers.get('Q05', 'Large')
+        rec_size = "Midsize" if g_size in ['Large', 'Extra Large'] else "Standard"
+        grip_model = "Golf Pride MCC Plus4" if carry_6i > 170 else "Golf Pride CP2 Wrap"
         
-        # Grip Logic
-        if g_size in ['Large', 'Extra Large']:
-            rec_g_size, tape = "Midsize", "+1 Wrap"
-            grip_model = "Golf Pride MCC Plus4" if carry_6i > 170 else "Winn Dri-Tac 2.0 Midsize"
-        else:
-            rec_g_size, tape = "Standard", "Standard"
-            grip_model = "Golf Pride Tour Velvet" if carry_6i > 170 else "Golf Pride CP2 Wrap"
-
         c1, c2, c3 = st.columns(3)
-        c1.metric("Recommended Size", rec_g_size)
-        c2.metric("Build Specification", tape)
-        c3.metric("Suggested Model", grip_model)
-        st.info(f"**Fitter's Note:** For a {g_size} glove and {int(carry_6i)}yd carry, the {grip_model} provides the necessary surface texture to prevent club rotation without increasing tension.")
+        c1.metric("Recommended Size", rec_size)
+        c2.metric("Suggested Model", grip_model)
+        c3.metric("Tape Spec", "+1 Wrap" if rec_size == "Midsize" else "Standard")
 
         st.divider()
-        b1, b2, _ = st.columns([1,1,4])
-        if b1.button("✏️ Edit Survey"): st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
-        if b2.button("🆕 New Fitting"):
+        if st.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
