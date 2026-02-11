@@ -171,8 +171,9 @@ if all_data:
 
         recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5).copy()
 
-        # CLEAN UP WEIGHT: Round to whole grams
+        # CLEAN UP VALUES: Round weight to whole, Torque to 1 decimal
         recs['Weight (g)'] = recs['Weight (g)'].round(0).astype(int)
+        recs['Torque'] = recs['Torque'].round(1)
 
         def generate_verdict(row):
             if miss in ["Push", "Slice"] and row['EI_Tip'] < 11.5: return "✅ Release Assistant"
@@ -188,7 +189,6 @@ if all_data:
         # --- EXPANDED EXPERT ANALYSIS FOR ALL RECOMMENDED SHAFTS ---
         st.subheader("🔬 Detailed Expert Insights")
         
-        # Dictionary of specific technical traits for the narrative
         traits = {
             "KBS Tour": "Features a linear stiffness profile with a slightly more active tip section, making it much easier to square the clubface than a traditional Dynamic Gold.",
             "Modus Tour 115": "Known for a smoother mid-section that improves 'load' feel. Excellent for players who need better timing to correct a push.",
@@ -197,12 +197,13 @@ if all_data:
             "AMT Black": "Uses Ascending Mass Technology. It provides more speed in your long irons and more control in your scoring clubs."
         }
 
-        for i, row in recs.iterrows():
+        # Use enumerate(..., 1) to get clean 1, 2, 3 numbering
+        for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
             blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile designed to balance your swing speed with stable launch characteristics."))
             
             with st.container():
-                st.markdown(f"**{i+1}. {brand_model} ({row['Flex']})**")
+                st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
                 st.caption(f"{blurb} Recommended for your **{carry}yd** speed because it provides **{row['Weight (g)']}g** of stability.")
 
         st.divider()
@@ -214,4 +215,3 @@ if all_data:
         if bt2.button("🆕 New Fitting", use_container_width=True):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
-            
