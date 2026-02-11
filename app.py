@@ -2,39 +2,41 @@ import streamlit as st
 import pandas as pd
 import os
 
-# --- 1. DATA LOADING (Updated Paths) ---
+# --- 1. DATA LOADING (SMART PATHING) ---
 @st.cache_data
 def load_data():
-    # We use the exact filenames provided in your environment
-    shaft_file = 'Trackman testing data for colab 2/10/26 - Shafts.csv'
-    fitting_file = 'Trackman testing data for colab 2/10/26 - Fittings.csv'
+    # These are the exact names from your root folder
+    SHAFT_FILE = "Trackman testing data for colab 2/10/26 - Shafts.csv"
+    FITTING_FILE = "Trackman testing data for colab 2/10/26 - Fittings.csv"
     
-    # Check if the "folder style" name exists, if not, try the local name
-    if not os.path.exists(shaft_file):
-        shaft_file = 'Shafts.csv'
-    if not os.path.exists(fitting_file):
-        fitting_file = 'Fittings.csv'
+    # Fallback names in case you rename them later
+    fallback_shaft = "Shafts.csv"
+    fallback_fitting = "Fittings.csv"
 
-    df_shafts = pd.read_csv(shaft_file)
-    df_fittings = pd.read_csv(fitting_file)
+    # Select the correct path for Shafts
+    s_path = SHAFT_FILE if os.path.exists(SHAFT_FILE) else fallback_shaft
+    # Select the correct path for Fittings
+    f_path = FITTING_FILE if os.path.exists(FITTING_FILE) else fallback_fitting
+
+    if not os.path.exists(s_path) or not os.path.exists(f_path):
+        # This will trigger if NEITHER name works
+        found_files = os.listdir('.')
+        raise FileNotFoundError(f"Could not find CSVs. Root contains: {found_files}")
+
+    df_shafts = pd.read_csv(s_path)
+    df_fittings = pd.read_csv(f_path)
     return df_shafts, df_fittings
 
 # --- 2. APP SETUP ---
 st.set_page_config(page_title="Shaft Optimizer", layout="wide")
 
-# DEBUGGER IN SIDEBAR (To help you find the right names)
-with st.sidebar:
-    if st.checkbox("Show File Debugger"):
-        st.write("Files found in root:")
-        st.write(os.listdir('.'))
-
 try:
     df_shafts, df_fittings = load_data()
-    # Clean up empty rows in fittings
+    # Remove empty rows from the Google Sheet export
     df_fittings = df_fittings.dropna(subset=['Name', 'Current 6i Carry'])
 except Exception as e:
-    st.error(f"⚠️ Error: {e}")
-    st.info("Check the 'File Debugger' in the sidebar to ensure the CSV names match exactly.")
+    st.error("⚠️ File Connection Error")
+    st.info(f"Details: {e}")
     st.stop()
 
 # --- 3. PLAYER SELECTION ---
@@ -44,11 +46,12 @@ player_names = df_fittings['Name'].unique().tolist()
 selected_player = st.selectbox("Select Player Profile", player_names)
 p_data = df_fittings[df_fittings['Name'] == selected_player].iloc[0]
 
-# --- 4. INPUTS (Pre-filled from Fittings.csv) ---
+# --- 4. INPUTS (Mapping exactly to your column headers) ---
 col1, col2, col3 = st.columns(3)
 with col1:
     carry = st.number_input("6-Iron Carry (yards)", value=float(p_data['Current 6i Carry']))
 with col2:
+    # Match the miss to your Config.csv values
     miss = st.selectbox("Primary Miss", ["Hook", "Slice", "Push", "Pull", "Straight"], 
                         index=["Hook", "Slice", "Push", "Pull", "Straight"].index(p_data['Primary Miss']))
 with col3:
@@ -58,22 +61,26 @@ with col3:
 # --- 5. LOGIC ENGINE ---
 df_s = df_shafts.copy()
 
-# Target Mapping (Dynamic)
-target_flex = 10.0 if carry > 190 else 8.5 if carry > 180 else 7.0
+# Scoring Logic (Craig Hudson Special: 195 carry + Hook miss)
+target_flex = 10.0 if carry >= 195 else 8.5 if carry > 180 else 7.0
 target_launch = 2.0 if miss == "Hook" else 5.0
 
-# Calculate Penalty Score
+# Calculate Penalty
 df_s['Penalty'] = (abs(df_s['FlexScore'] - target_flex) * 25) + \
                   (abs(df_s['LaunchScore'] - target_launch) * 15)
 
-# Stability Rules for High Speed / Hooks
+# Stability Penalties (The Hook-Killer Logic)
 if carry >= 190:
-    df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 200
-    df_s.loc[df_s['EI_Tip'] < 11.5, 'Penalty'] += 150 # Corrected: 10.0 tip now penalized for Craig
+    # 130g+ is preferred; anything under 115g is heavily penalized
+    df_s.loc[df_s['Weight (g)'] < 115, 'Penalty'] += 500
+    # EI_Tip 10.0 (KBS Tour X) gets a penalty compared to 12.0 (DG/PX)
+    df_s.loc[df_s['EI_Tip'] <= 10.0, 'Penalty'] += 200
 
 if miss == "Hook":
+    # Prioritize low torque
     df_s['Penalty'] += (df_s['Torque'] * 100)
-    df_s.loc[df_s['EI_Tip'] >= 12.0, 'Penalty'] -= 50 # Bonus for the stiffest tips
+    # Reward ultra-stiff tips
+    df_s.loc[df_s['EI_Tip'] >= 12.0, 'Penalty'] -= 50 
 
 # Generate Notes
 def get_notes(row):
@@ -82,21 +89,20 @@ def get_notes(row):
     if row['Torque'] <= 1.3: notes.append("Low-Twist Control")
     if row['Weight (g)'] >= 130: notes.append("Heavy Tempo")
     if row['StabilityIndex'] >= 8.5: notes.append("Tour Stability")
-    return " | ".join(notes) if notes else "Balanced"
+    return " | ".join(notes) if notes else "Balanced Profile"
 
 df_s['Fitters Note'] = df_s.apply(get_notes, axis=1)
 
-# Sort: Top matches have lowest penalty, then highest FlexScore
+# Sort: Lowest Penalty first, then highest FlexScore (to break ties with 6.5 vs 6.0)
 recommendations = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5)
 
 # --- 6. DISPLAY ---
 st.divider()
-st.subheader(f"Top 5 Recommendations for {selected_player}")
+st.subheader(f"Recommendations for {selected_player}")
 
-# Format the table for display
 display_table = recommendations[['Brand', 'Model', 'Flex', 'Weight (g)', 'EI_Tip', 'Torque', 'Fitters Note']]
 st.dataframe(display_table, use_container_width=True)
 
-# Comparison Chart
-st.write("### Tip Stiffness vs Overall Stability")
+# Visual Comparison
+st.write("### Profile Analysis")
 st.scatter_chart(data=recommendations, x="EI_Tip", y="StabilityIndex", color="Model")
