@@ -33,18 +33,16 @@ def get_sorted_list(series):
 # --- 2. APP SETUP ---
 st.set_page_config(page_title="Patriot Fitting Engine", layout="wide")
 
-# Session State Initialization
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
 
 all_data = get_data_from_gsheet()
 
 if all_data:
-    st.title("🇺🇸 Patriot Fitting Engine")
-    
-    # --- PHASE 1: INTERVIEW ---
     if not st.session_state.interview_complete:
+        st.title("America's Best shaft Fitting Engine Built By Greggory")
         st.header("📋 Phase 1: Player Interview")
+        
         categories = all_data['Questions']['Category'].unique().tolist()
         total_steps = len(categories)
         current_cat = categories[st.session_state.form_step]
@@ -66,7 +64,8 @@ if all_data:
             if q_type == "Dropdown":
                 if "Config:" in q_opt_raw: options = get_ordered_list(all_data['Config'][q_opt_raw.split(":")[1]])
                 elif "Heads" in q_opt_raw:
-                    options = get_sorted_list(all_data['Heads']['Manufacturer']) if "Brand" in q_text else get_sorted_list(all_data['Heads'][all_data['Heads']['Manufacturer'] == st.session_state.get('Q08', '')]['Model'])
+                    brand_sel = st.session_state.get('Q08', '')
+                    options = get_sorted_list(all_data['Heads']['Manufacturer']) if "Brand" in q_text else get_sorted_list(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand_sel]['Model'])
                 elif "Shafts" in q_opt_raw:
                     brand_sel = st.session_state.get('Q10', '')
                     if "Brand" in q_text: options = get_sorted_list(all_data['Shafts']['Brand'])
@@ -94,9 +93,10 @@ if all_data:
 
     # --- PHASE 3: BASELINE & RECOMMENDATIONS ---
     else:
-        st.header(f"🎯 Fitting Prescription for {st.session_state.get('Q01', 'Player')}")
+        player_name = st.session_state.get('Q01', 'Player')
+        st.title(f"🎯 Fitting Prescription: {player_name}")
         
-        # 1. Calculate Targets
+        # 1. Calc Targets
         t_flex, t_launch = 6.0, 5.0
         for q_id in all_data['Questions']['QuestionID']:
             ans = str(st.session_state.get(q_id, ''))
@@ -106,37 +106,48 @@ if all_data:
                 if "Target FlexScore:" in action: t_flex = float(action.split(":")[1])
                 if "Target LaunchScore:" in action: t_launch = float(action.split(":")[1])
 
-        # 2. Analyze Current Shaft (Baseline)
+        # 2. Penalty Math
         df_s = all_data['Shafts'].copy()
         df_s['Penalty'] = df_s.apply(lambda r: (abs(pd.to_numeric(r['FlexScore'], errors='coerce') - t_flex) * 40) + (abs(pd.to_numeric(r['LaunchScore'], errors='coerce') - t_launch) * 20), axis=1)
         
-        current_brand, current_model, current_flex = st.session_state.get('Q10'), st.session_state.get('Q12'), st.session_state.get('Q11')
-        baseline_shaft = df_s[(df_s['Brand'] == current_brand) & (df_s['Model'] == current_model) & (df_s['Flex'] == current_flex)]
+        # 3. Baseline Search (By Brand/Model/Flex)
+        c_brand = st.session_state.get('Q10')
+        c_flex = st.session_state.get('Q11')
+        c_model = st.session_state.get('Q12')
         
-        col_res1, col_res2 = st.columns([1, 1])
+        baseline = df_s[(df_s['Brand'] == c_brand) & (df_s['Model'] == c_model) & (df_s['Flex'] == c_flex)]
+        
+        col_res1, col_res2 = st.columns(2)
         with col_res1:
             st.subheader("📉 Current Baseline")
-            if not baseline_shaft.empty:
-                b_row = baseline_shaft.iloc[0]
-                st.metric("Current Shaft", f"{b_row['Brand']} {b_row['Model']}")
-                st.write(f"**FlexScore:** {b_row['FlexScore']} | **Launch:** {b_row['Launch']}")
-                st.error(f"Fit Penalty: {round(b_row['Penalty'], 1)}")
+            if not baseline.empty:
+                b = baseline.iloc[0]
+                st.metric(f"{b['Brand']} {b['Model']}", f"Penalty: {round(b['Penalty'], 1)}")
+                st.caption(f"FlexScore: {b['FlexScore']} | LaunchScore: {b['LaunchScore']}")
+                if b['Penalty'] > 30: st.warning("⚠️ High Penalty: Significant improvement likely with new shaft.")
             else:
-                st.warning("Current shaft not found in database for comparison.")
+                st.info(f"Current Shaft: {c_brand} {c_model} ({c_flex}) not in database.")
 
         with col_res2:
-            st.subheader("🏆 Top 5 Suggested Shafts")
-            rec_df = df_s.sort_values('Penalty').head(5)
-            st.table(rec_df[['ShaftTag', 'FlexScore', 'LaunchScore', 'Penalty']])
+            st.subheader("🏆 Prescription (Top 5)")
+            # Exclude current baseline from recommendations
+            recs = df_s[df_s['ShaftTag'] != baseline.iloc[0]['ShaftTag'] if not baseline.empty else True]
+            recs = recs.sort_values('Penalty').head(5)
+            st.dataframe(recs[['Brand', 'Model', 'Flex', 'FlexScore', 'LaunchScore', 'Penalty']], use_container_width=True, hide_index=True)
 
         st.divider()
 
-        # 3. UNLOCK TRACKMAN LAB
-        st.subheader("📊 Phase 2: Trackman Testing Lab")
-        st.info("Pull the shafts listed above. Upload the Trackman export once testing is complete.")
-        tm_file = st.file_uploader("Upload Trackman Export", type=["xlsx", "csv"])
+        # --- TESTING LAB ---
+        st.header("🔬 Testing Lab")
+        st.write(f"Record Trackman data for the **Prescription** shafts above. Upload the CSV below to compare performance vs Baseline.")
         
-        if st.button("🔄 Restart Interview"):
+        tm_file = st.file_uploader("Upload Trackman Export", type=["csv"])
+        
+        if tm_file:
+            st.success("Trackman Data Received. Processing visualization...")
+            # We will build the Trackman comparison charts in the next step!
+
+        if st.button("🔄 Start New Fitting"):
             st.session_state.interview_complete = False
             st.session_state.form_step = 0
             st.rerun()
