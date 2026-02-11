@@ -122,18 +122,31 @@ if all_data:
         # --- 4. RESULTS VIEW ---
         st.title(f"🎯 Fitting Report: {st.session_state['answers'].get('Q01', 'Player')}")
         
-        # 1. Verification Bar
-        carry = float(st.session_state['answers'].get('Q15', 0))
-        miss = st.session_state['answers'].get('Q18', "")
+        # 1. DATA VERIFICATION SUMMARY (Replacing the Plotly Chart)
+        st.subheader("📋 Input Verification Summary")
         
-        with st.container(border=True):
-            v1, v2, v3, v4 = st.columns(4)
-            v1.metric("6i Carry", f"{carry} yds")
-            v2.metric("Primary Miss", miss)
-            v3.metric("Target Flight", st.session_state['answers'].get('Q17', "Mid"))
-            v4.metric("Current Flex", st.session_state['answers'].get('Q11', "N/A"))
+        # Grouping answers for readability
+        sum_col1, sum_col2 = st.columns(2)
+        
+        with sum_col1:
+            st.markdown("##### **Player & Current Setup**")
+            st.write(f"**Handedness:** {st.session_state['answers'].get('Q04', 'N/A')}")
+            st.write(f"**Current Head:** {st.session_state['answers'].get('Q08', '')} {st.session_state['answers'].get('Q09', '')}")
+            st.write(f"**Current Shaft:** {st.session_state['answers'].get('Q10', '')} {st.session_state['answers'].get('Q12', '')} ({st.session_state['answers'].get('Q11', '')})")
+            st.write(f"**Club Specs:** {st.session_state['answers'].get('Q13', 'Std')} Length | {st.session_state['answers'].get('Q14', 'D2')} SW")
 
-        # 2. Logic Processing
+        with sum_col2:
+            st.markdown("##### **Performance & Goals**")
+            carry = float(st.session_state['answers'].get('Q15', 0))
+            miss = st.session_state['answers'].get('Q18', "Straight")
+            st.write(f"**6i Carry:** :red[{carry} yards]")
+            st.write(f"**Primary Miss:** :orange[{miss}]")
+            st.write(f"**Flight Path:** {st.session_state['answers'].get('Q16', 'Mid')} → **Target:** {st.session_state['answers'].get('Q17', 'Mid')}")
+            st.write(f"**Feel Priority:** {st.session_state['answers'].get('Q21', 'N/A')}")
+
+        st.divider()
+
+        # 2. CALCULATION ENGINE
         tf, tl = 6.0, 5.0 # Fallbacks
         for qid, ans in st.session_state['answers'].items():
             logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -142,48 +155,49 @@ if all_data:
                 if "FlexScore:" in act: tf = float(act.split(":")[1])
                 if "LaunchScore:" in act: tl = float(act.split(":")[1])
 
-        # 3. Penalty Engine
         df_s = all_data['Shafts'].copy()
-        df_s['FlexScore'] = pd.to_numeric(df_s['FlexScore'], errors='coerce')
-        df_s['LaunchScore'] = pd.to_numeric(df_s['LaunchScore'], errors='coerce')
-        df_s['StabilityIndex'] = pd.to_numeric(df_s['StabilityIndex'], errors='coerce')
-        df_s['Weight'] = pd.to_numeric(df_s['Weight (g)'], errors='coerce')
+        # Convert numeric columns safely
+        for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
+            df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
+        # Baseline Penalty
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 40) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        # Apply Stability Overrides
-        if carry > 185:
-            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 300 
-            df_s.loc[df_s['FlexScore'] < 7.0, 'Penalty'] += 150
+        # Stability Overrides (Anti-Hook/High Speed)
+        if carry > 190:
+            df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 400
+            df_s.loc[df_s['EI_Tip'] < 11.0, 'Penalty'] += 250
         
         if "Hook" in miss or "Pull" in miss:
-            df_s.loc[df_s['StabilityIndex'] < 7.0, 'Penalty'] += 200
+            df_s['Penalty'] += (df_s['Torque'] * 100) # Lower torque is better
+            df_s.loc[df_s['StabilityIndex'] < 7.5, 'Penalty'] += 200
 
-        recs = df_s.sort_values(['Penalty', 'Weight'], ascending=[True, False]).head(5)
+        # Final Sorting
+        recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5)
 
-        # 4. Visualization: Shaft DNA Chart
-        st.subheader("📊 Recommendation Profile")
+        # 3. RECOMMENDATIONS TABLE
+        st.subheader("🚀 Top 5 Shaft Recommendations")
         
-        fig = px.scatter(recs, x="LaunchScore", y="StabilityIndex", 
-                         text="Model", size="Weight", color="Brand",
-                         labels={"LaunchScore": "Launch Profile (Low to High)", "StabilityIndex": "Stability (Tip Stiffness)"},
-                         title="Recommended Shaft DNA")
-        fig.add_hline(y=7.0, line_dash="dash", annotation_text="High Stability Zone")
-        st.plotly_chart(fig, use_container_width=True)
+        # Adding a custom "Fitters Note" column based on the profile
+        def generate_note(row):
+            notes = []
+            if row['StabilityIndex'] > 8: notes.append("Max Stability")
+            if row['Torque'] < 1.5: notes.append("Low Twist")
+            if row['Weight (g)'] > 125: notes.append("Heavy Tempo")
+            return " | ".join(notes) if notes else "Balanced"
 
-        # 5. Result Table
-        st.subheader("🚀 Top 5 Optimized Blueprints")
-        st.dataframe(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Spin', 'StabilityIndex']], use_container_width=True)
-        
-        # 6. Action Footer
+        recs['Analysis'] = recs.apply(generate_note, axis=1)
+
+        st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque', 'Analysis']])
+
+        # 4. ACTION BUTTONS
         st.divider()
-        f1, f2, _ = st.columns([2,2,3])
-        if f1.button("💾 Save Results to Cloud"):
-            with st.status("Uploading to Google Sheets..."):
-                if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
-                    st.success("Results Synchronized!")
-                else: st.error("Sync Failed.")
+        btn_col1, btn_col2, _ = st.columns([2,2,4])
+        if btn_col1.button("💾 Save to Google Sheets"):
+            if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
+                st.success("Entry Saved Successfully.")
+            else: st.error("Save Error.")
 
-        if f2.button("🆕 Start New Fitting"):
+        if btn_col2.button("🆕 New Fitting"):
             for key in st.session_state.keys(): del st.session_state[key]
             st.rerun()
