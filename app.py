@@ -13,9 +13,10 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
         gc = gspread.authorize(creds)
-        sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
+        # Your specific spreadsheet URL
+        SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
+        sh = gc.open_by_url(SHEET_URL)
         
-        # Load and Clean Column Names immediately to prevent "Key Errors"
         data = {
             'Heads': pd.DataFrame(sh.worksheet('Heads').get_all_records()),
             'Shafts': pd.DataFrame(sh.worksheet('Shafts').get_all_records()),
@@ -23,11 +24,34 @@ def get_data_from_gsheet():
             'Responses': pd.DataFrame(sh.worksheet('Responses').get_all_records()),
             'Config': pd.DataFrame(sh.worksheet('Config').get_all_records())
         }
+        # Clean up column names to prevent matching errors
         for df_key in data:
             data[df_key].columns = data[df_key].columns.str.strip()
         return data
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
+
+def save_lead_to_gsheet(answers, t_flex, t_launch, q_ids):
+    """Saves the data to the 'Fittings' tab in the Google Sheet."""
+    try:
+        creds_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
+        ws = sh.worksheet('Fittings')
+        
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Build the row: Timestamp + Answers (in order of Q-ID) + Calculated Targets
+        row = [timestamp]
+        for qid in q_ids:
+            row.append(answers.get(qid, ""))
+        row.extend([t_flex, t_launch])
+        
+        ws.append_row(row)
+        return True
+    except Exception as e:
+        st.error(f"⚠️ Error saving to Google Sheets: {e}")
+        return False
 
 # --- 2. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
@@ -37,9 +61,11 @@ if 'answers' not in st.session_state: st.session_state.answers = {}
 all_data = get_data_from_gsheet()
 
 def sync_answers(q_list):
+    """Syncs screen widget data to the permanent session storage."""
     for qid in q_list:
         key = f"widget_{qid}"
-        if key in st.session_state: st.session_state.answers[qid] = st.session_state[key]
+        if key in st.session_state: 
+            st.session_state.answers[qid] = st.session_state[key]
 
 # --- 3. DYNAMIC QUESTIONNAIRE ---
 if all_data:
@@ -48,6 +74,7 @@ if all_data:
     if not st.session_state.interview_complete:
         st.title("Americas Best Shaft Fitting Engine")
         
+        # Get Categories in Spreadsheet Order
         categories = list(dict.fromkeys(q_master['Category'].tolist()))
         st.progress(st.session_state.form_step / len(categories))
         
@@ -62,7 +89,7 @@ if all_data:
             
             if qtype == "Dropdown":
                 opts = [""]
-                # A: Config Tab Logic (Preserves vertical order)
+                # A: Config Tab Logic (Preserves vertical order of sheet)
                 if "Config:" in qopts:
                     col_name = qopts.split(":")[1].strip()
                     if col_name in all_data['Config'].columns:
@@ -88,7 +115,7 @@ if all_data:
                 
                 # D: Responses Logic
                 else:
-                    opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].tolist()
+                    opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].astype(str).tolist()
                 
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
             
@@ -109,7 +136,10 @@ if all_data:
                 st.session_state.form_step += 1; st.rerun()
         else:
             if c2.button("🔥 Generate Prescription"):
+                # 1. Capture all final answers
                 sync_answers(q_master['QuestionID'].tolist())
+                
+                # 2. Run Engine Logic
                 f_tf, f_tl = 6.0, 5.0
                 for qid, ans in st.session_state.answers.items():
                     logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -117,13 +147,19 @@ if all_data:
                         act = str(logic.iloc[0]['LogicAction'])
                         if "FlexScore:" in act: f_tf = float(act.split(":")[1])
                         if "LaunchScore:" in act: f_tl = float(act.split(":")[1])
-                st.session_state.update({'final_tf': f_tf, 'final_tl': f_tl, 'interview_complete': True}); st.rerun()
+                
+                # 3. SAVE TO GOOGLE SHEET
+                save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
+                
+                # 4. Finalize session
+                st.session_state.update({'final_tf': f_tf, 'final_tl': f_tl, 'interview_complete': True})
+                st.rerun()
 
     else:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # FIXED: Comprehensive Input Verification (Show everything by Category)
+        # Comprehensive Input Verification Summary
         with st.expander("📋 View Full Input Verification Summary", expanded=True):
             cols = st.columns(3)
             categories = list(dict.fromkeys(q_master['Category'].tolist()))
@@ -135,7 +171,7 @@ if all_data:
                         ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # Recommendation Engine
+        # Recommendation Engine calculations
         tf, tl = st.session_state.final_tf, st.session_state.final_tl
         miss = st.session_state.answers.get('Q18', "Straight")
         carry = float(st.session_state.answers.get('Q15', 0))
@@ -146,7 +182,7 @@ if all_data:
 
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 30)
         
-        # Miss Correction Logic
+        # Miss Correction logic
         if miss in ["Push", "Slice"]:
             df_s.loc[df_s['EI_Tip'] > 12.5, 'Penalty'] += 200
             df_s.loc[df_s['Torque'] < 1.6, 'Penalty'] += 100
@@ -170,7 +206,7 @@ if all_data:
         # Narrative Summary
         st.info(f"**Expert Analysis:** For your **{miss}**, we prioritized the **{recs.iloc[0]['Brand']} {recs.iloc[0]['Model']}**. Its profile is designed to {'help you turn the club over' if miss in ['Push', 'Slice'] else 'keep the face from closing'} while matching your **{carry}yd** speed.")
 
-        # FIXED: Prominent Navigation Buttons
+        # Navigation Buttons
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
         if bt1.button("✏️ Edit Survey", use_container_width=True):
