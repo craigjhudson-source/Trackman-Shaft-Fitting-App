@@ -60,7 +60,7 @@ if 'needs_save' not in st.session_state: st.session_state.needs_save = False
 if 'answers' not in st.session_state: st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
 
 def sync_answers(q_list):
-    """Force syncs current widget values into the answers dictionary."""
+    """Force syncs current widget values into the session answers dictionary."""
     for qid in q_list:
         widget_key = f"widget_{qid}"
         if widget_key in st.session_state: 
@@ -128,45 +128,36 @@ if all_data:
         elif c2.button("🔥 Generate Prescription"):
             sync_answers(current_qids)
             
-            # Pre-calculate scores for the auto-save row
-            final_tf, final_tl = 6.0, 5.0
+            # Final Score Calculation before switching pages
+            f_tf, f_tl = 6.0, 5.0
             for qid, ans in st.session_state['answers'].items():
                 logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
                 if not logic.empty:
                     act = str(logic.iloc[0]['LogicAction'])
-                    if "FlexScore:" in act: final_tf = float(act.split(":")[1])
-                    if "LaunchScore:" in act: final_tl = float(act.split(":")[1])
+                    if "FlexScore:" in act: f_tf = float(act.split(":")[1])
+                    if "LaunchScore:" in act: f_tl = float(act.split(":")[1])
             
-            st.session_state.save_tf = final_tf
-            st.session_state.save_tl = final_tl
+            st.session_state.final_tf = f_tf
+            st.session_state.final_tl = f_tl
             st.session_state.interview_complete = True
             st.session_state.needs_save = True
             st.rerun()
 
     else:
         # --- 4. RESULTS VIEW ---
-        
-        # RE-CALCULATE SCORES FOR DISPLAY
-        tf, tl = 6.0, 5.0
-        for qid, ans in st.session_state['answers'].items():
-            logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
-            if not logic.empty:
-                act = str(logic.iloc[0]['LogicAction'])
-                if "FlexScore:" in act: tf = float(act.split(":")[1])
-                if "LaunchScore:" in act: tl = float(act.split(":")[1])
+        # Fetch target scores
+        tf = st.session_state.get('final_tf', 6.0)
+        tl = st.session_state.get('final_tl', 5.0)
 
         # AUTO-SAVE HANDLER
         if st.session_state.get('needs_save', False):
-            # Pull calculated scores from session state to ensure accuracy
-            s_tf = st.session_state.get('save_tf', tf)
-            s_tl = st.session_state.get('save_tl', tl)
-            if save_lead_to_gsheet(st.session_state['answers'], s_tf, s_tl):
+            if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
                 st.toast("✅ Lead automatically saved to Google Sheets", icon="💾")
             st.session_state.needs_save = False 
 
         st.title(f"🎯 Fitting Report: {st.session_state['answers'].get('Q01', 'Player')}")
         
-        # 1. Verification Summary
+        # 1. Summary Dashboard
         st.subheader("📋 Input Verification Summary")
         sum_col1, sum_col2 = st.columns(2)
         with sum_col1:
@@ -191,21 +182,29 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # Logic for Shaft Penalties
+        # Baseline Penalty
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 20)
         
+        # Speed Shield (190+ yards)
         if carry >= 190:
             df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 500
             df_s.loc[df_s['FlexScore'] < 8.5, 'Penalty'] += 1000
             df_s.loc[df_s['EI_Tip'] < 11.5, 'Penalty'] += 300
         
+        # Anti-Hook/Left
         if miss in ["Hook", "Pull"]:
             df_s['Penalty'] += (df_s['Torque'] * 200)
             df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 300
 
+        # Anti-Push/Right (NEW Logic)
+        if miss in ["Push", "Slice"]:
+            df_s.loc[df_s['Torque'] < 1.6, 'Penalty'] += 150
+            df_s.loc[df_s['EI_Tip'] > 13.0, 'Penalty'] += 200
+            df_s.loc[df_s['LaunchScore'] < 4, 'Penalty'] += 150
+
         recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5)
 
-        # 3. Recommendations Table
+        # 3. Recommendations
         st.subheader("🚀 Top 5 Shaft Recommendations")
         def generate_note(row):
             notes = []
@@ -224,7 +223,6 @@ if all_data:
         if b_col1.button("💾 Manual Save"):
             if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
                 st.success("Entry Saved!")
-            else: st.error("Save Error.")
 
         if b_col2.button("✏️ Edit Survey"):
             st.session_state.interview_complete = False
