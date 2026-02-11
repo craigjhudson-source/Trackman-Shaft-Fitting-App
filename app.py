@@ -99,7 +99,7 @@ if all_data:
                 sync_answers(current_qids); st.session_state.form_step += 1; st.rerun()
         elif c2.button("🔥 Generate Prescription"):
             sync_answers(current_qids)
-            tf, tl = 6.0, 5.0 # Default fallback
+            tf, tl = 6.0, 5.0 
             for qid, ans in st.session_state['answers'].items():
                 logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
                 if not logic.empty:
@@ -113,31 +113,51 @@ if all_data:
         # --- 4. RESULTS VIEW ---
         st.title(f"🎯 Fitting Report: {st.session_state['answers'].get('Q01', 'Player')}")
         
-        # VERIFICATION SUMMARY (Human Error Check)
-        with st.expander("📋 Review Player Input Data", expanded=False):
-            cols = st.columns(3)
-            q_list = list(st.session_state['answers'].items())
-            for i, (qid, val) in enumerate(q_list):
+        # 1. VERIFICATION SUMMARY (Always visible for easy check)
+        st.subheader("📋 Input Verification Summary")
+        vcols = st.columns(4)
+        essential_qs = [('Q01','Name'), ('Q15','6i Carry'), ('Q18','Miss'), ('Q16','Flight'), ('Q10','Current Brand'), ('Q12','Current Model')]
+        for i, (qid, label) in enumerate(essential_qs):
+            vcols[i % 4].metric(label, st.session_state['answers'].get(qid, "N/A"))
+        
+        with st.expander("Show All Detailed Answers"):
+            dcols = st.columns(3)
+            for i, (qid, val) in enumerate(st.session_state['answers'].items()):
                 q_text = all_data['Questions'][all_data['Questions']['QuestionID'] == qid]['QuestionText'].values[0]
-                cols[i % 3].write(f"**{q_text}:** {val}")
+                dcols[i % 3].write(f"**{q_text}:** {val}")
 
-        # CALCULATION & SHAFT DISPLAY
+        # 2. CALCULATION LOGIC
         tf, tl = 6.0, 5.0
+        anti_left = False
         for qid, ans in st.session_state['answers'].items():
             logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
             if not logic.empty:
                 act = str(logic.iloc[0]['LogicAction'])
                 if "FlexScore:" in act: tf = float(act.split(":")[1])
                 if "LaunchScore:" in act: tl = float(act.split(":")[1])
+                if "Anti-Left" in act: anti_left = True
 
         df_s = all_data['Shafts'].copy()
-        df_s['Penalty'] = (abs(pd.to_numeric(df_s['FlexScore'], errors='coerce') - tf) * 40) + \
-                          (abs(pd.to_numeric(df_s['LaunchScore'], errors='coerce') - tl) * 20)
+        # Convert necessary columns to numeric
+        df_s['FlexScore'] = pd.to_numeric(df_s['FlexScore'], errors='coerce')
+        df_s['LaunchScore'] = pd.to_numeric(df_s['LaunchScore'], errors='coerce')
+        df_s['Weight'] = pd.to_numeric(df_s['Weight (g)'], errors='coerce')
+
+        # Advanced Penalty Logic
+        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 40) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        st.subheader("Top Recommended Shafts")
-        st.info(f"Prescription: Target Flex {tf} | Target Launch {tl}")
-        recs = df_s.sort_values(['Penalty', 'Brand', 'Model']).head(5)
-        st.dataframe(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Spin', 'Penalty']], hide_index=True, use_container_width=True)
+        # Heavy Penalty for Hookers using Light Shafts
+        if anti_left:
+            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 100
+            df_s.loc[df_s['LaunchScore'] > 5, 'Penalty'] += 50
+        
+        # 3. DISPLAY RECOMMENDATIONS
+        st.divider()
+        st.subheader("🚀 Recommended Shaft Blueprints")
+        st.success(f"Algorithm Target -> Flex: {tf} | Launch: {tl}")
+        
+        recs = df_s.sort_values(['Penalty', 'Brand']).head(5)
+        st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Spin']])
         
         col1, col2, _ = st.columns([1.5, 2, 4])
         if col1.button("⬅️ Back to Edit"):
