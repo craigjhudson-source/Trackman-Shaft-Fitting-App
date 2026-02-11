@@ -144,7 +144,6 @@ if all_data:
                         ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # Recommendation Engine with Weight Guardrails
         tf, tl = st.session_state.final_tf, st.session_state.final_tl
         miss = st.session_state.answers.get('Q18', "Straight")
         carry = float(st.session_state.answers.get('Q15', 0))
@@ -153,19 +152,16 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # Primary Penalty (Flex & Launch)
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 30)
         
-        # --- ADDED: SPEED-TO-WEIGHT GUARDRAILS ---
         if carry > 175:
-            df_s.loc[df_s['Weight (g)'] < 115, 'Penalty'] += 500 # Heavy penalty for light shafts at high speed
+            df_s.loc[df_s['Weight (g)'] < 115, 'Penalty'] += 500 
         elif 150 <= carry <= 170:
             df_s.loc[df_s['Weight (g)'] > 125, 'Penalty'] += 200
             df_s.loc[df_s['Weight (g)'] < 100, 'Penalty'] += 200
         elif carry < 140:
-            df_s.loc[df_s['Weight (g)'] > 110, 'Penalty'] += 500 # Heavy penalty for heavy shafts at low speed
+            df_s.loc[df_s['Weight (g)'] > 110, 'Penalty'] += 500 
 
-        # Miss Correction logic
         if miss in ["Push", "Slice"]:
             df_s.loc[df_s['EI_Tip'] > 12.5, 'Penalty'] += 200
             df_s.loc[df_s['Torque'] < 1.6, 'Penalty'] += 100
@@ -175,6 +171,9 @@ if all_data:
 
         recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5).copy()
 
+        # CLEAN UP WEIGHT: Round to whole grams
+        recs['Weight (g)'] = recs['Weight (g)'].round(0).astype(int)
+
         def generate_verdict(row):
             if miss in ["Push", "Slice"] and row['EI_Tip'] < 11.5: return "✅ Release Assistant"
             if miss in ["Hook", "Pull"] and row['StabilityIndex'] > 8.5: return "🛡️ Stability King"
@@ -183,20 +182,28 @@ if all_data:
 
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
 
-        
-
         st.subheader("🚀 Recommended Prescription")
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']])
 
-        # --- ADDED: NARRATIVE WEIGHT WARNING ---
-        rec_w = recs.iloc[0]['Weight (g)']
-        weight_note = ""
-        if carry > 175 and rec_w < 110:
-            weight_note = f" ⚠️ Note: This shaft is lighter than traditional sets; ensure you maintain a smooth tempo."
-        elif carry < 140 and rec_w > 110:
-            weight_note = f" ⚠️ Note: This is a heavier build; focus on a full shoulder turn to maintain speed."
+        # --- EXPANDED EXPERT ANALYSIS FOR ALL RECOMMENDED SHAFTS ---
+        st.subheader("🔬 Detailed Expert Insights")
+        
+        # Dictionary of specific technical traits for the narrative
+        traits = {
+            "KBS Tour": "Features a linear stiffness profile with a slightly more active tip section, making it much easier to square the clubface than a traditional Dynamic Gold.",
+            "Modus Tour 115": "Known for a smoother mid-section that improves 'load' feel. Excellent for players who need better timing to correct a push.",
+            "Project X LZ": "The 'Loading Zone' technology allows for a massive energy transfer while maintaining a stable handle, helping high-speed players square the face.",
+            "Dynamic Gold": "The industry standard for low-launch and stability. These appear because they match your speed, though they offer less 'kick' help than the KBS.",
+            "AMT Black": "Uses Ascending Mass Technology. It provides more speed in your long irons and more control in your scoring clubs."
+        }
 
-        st.info(f"**Expert Analysis:** For your **{miss}**, we prioritized the **{recs.iloc[0]['Brand']} {recs.iloc[0]['Model']}**. Its profile is designed to {'help you turn the club over' if miss in ['Push', 'Slice'] else 'keep the face from closing'} while matching your **{carry}yd** speed.{weight_note}")
+        for i, row in recs.iterrows():
+            brand_model = f"{row['Brand']} {row['Model']}"
+            blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile designed to balance your swing speed with stable launch characteristics."))
+            
+            with st.container():
+                st.markdown(f"**{i+1}. {brand_model} ({row['Flex']})**")
+                st.caption(f"{blurb} Recommended for your **{carry}yd** speed because it provides **{row['Weight (g)']}g** of stability.")
 
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
@@ -207,3 +214,4 @@ if all_data:
         if bt2.button("🆕 New Fitting", use_container_width=True):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
+            
