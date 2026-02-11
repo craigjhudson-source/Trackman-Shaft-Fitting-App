@@ -4,7 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import datetime
 
-# --- 1. DATA CONNECTION ---
+# --- 1. DATA CONNECTION & CLEANING ---
 st.set_page_config(page_title="Patriot Golf Fitting Engine", layout="wide", page_icon="⛳")
 
 @st.cache_data(ttl=600)
@@ -14,13 +14,18 @@ def get_data_from_gsheet():
         creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
         gc = gspread.authorize(creds)
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
-        return {
+        
+        # Load and Clean Column Names immediately to prevent "Key Errors"
+        data = {
             'Heads': pd.DataFrame(sh.worksheet('Heads').get_all_records()),
             'Shafts': pd.DataFrame(sh.worksheet('Shafts').get_all_records()),
             'Questions': pd.DataFrame(sh.worksheet('Questions').get_all_records()),
             'Responses': pd.DataFrame(sh.worksheet('Responses').get_all_records()),
             'Config': pd.DataFrame(sh.worksheet('Config').get_all_records())
         }
+        for df_key in data:
+            data[df_key].columns = data[df_key].columns.str.strip()
+        return data
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
@@ -38,14 +43,11 @@ def sync_answers(q_list):
 
 # --- 3. DYNAMIC QUESTIONNAIRE ---
 if all_data:
-    # Clean up Questions data
-    q_master = all_data['Questions'].copy()
-    q_master['QuestionID'] = q_master['QuestionID'].astype(str).str.strip()
+    q_master = all_data['Questions']
     
     if not st.session_state.interview_complete:
         st.title("Americas Best Shaft Fitting Engine")
         
-        # Get Ordered Categories
         categories = list(dict.fromkeys(q_master['Category'].tolist()))
         st.progress(st.session_state.form_step / len(categories))
         
@@ -55,21 +57,18 @@ if all_data:
         st.subheader(f"Section: {current_cat}")
         
         for _, row in q_df.iterrows():
-            qid = row['QuestionID']
-            qtext = row['QuestionText']
-            qtype = row['InputType']
-            qopts = str(row['Options']).strip()
+            qid, qtext, qtype, qopts = str(row['QuestionID']).strip(), row['QuestionText'], row['InputType'], str(row['Options']).strip()
             ans_val = st.session_state.answers.get(qid, "")
             
             if qtype == "Dropdown":
                 opts = [""]
-                # 1. Pull from Config Tab (ORDERED AS IN SHEET)
+                # A: Config Tab Logic (Preserves vertical order)
                 if "Config:" in qopts:
                     col_name = qopts.split(":")[1].strip()
                     if col_name in all_data['Config'].columns:
-                        opts += all_data['Config'][col_name].dropna().tolist()
+                        opts += all_data['Config'][col_name].dropna().astype(str).tolist()
                 
-                # 2. Dynamic Heads (ALPHABETICAL)
+                # B: Heads Logic (Alphabetical)
                 elif "Heads" in qopts:
                     if "Brand" in qtext:
                         opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
@@ -77,7 +76,7 @@ if all_data:
                         brand = st.session_state.get("widget_Q08", st.session_state.answers.get("Q08", ""))
                         opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand]['Model'].unique().tolist()) if brand else []
                 
-                # 3. Dynamic Shafts (ALPHABETICAL)
+                # C: Shafts Logic (Alphabetical)
                 elif "Shafts" in qopts:
                     brand = st.session_state.get("widget_Q10", st.session_state.answers.get("Q10", ""))
                     if "Brand" in qtext: 
@@ -87,11 +86,11 @@ if all_data:
                     else: 
                         opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique().tolist()) if brand else []
                 
-                # 4. Pull from Responses Tab
+                # D: Responses Logic
                 else:
                     opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].tolist()
                 
-                st.selectbox(qtext, opts, index=opts.index(ans_val) if ans_val in opts else 0, key=f"widget_{qid}")
+                st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
             
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
@@ -111,7 +110,6 @@ if all_data:
         else:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
-                # Scoring Logic
                 f_tf, f_tl = 6.0, 5.0
                 for qid, ans in st.session_state.answers.items():
                     logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
@@ -122,34 +120,37 @@ if all_data:
                 st.session_state.update({'final_tf': f_tf, 'final_tl': f_tl, 'interview_complete': True}); st.rerun()
 
     else:
-        # --- 4. RESULTS ---
+        # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # Restoration of Verification Summary
-        st.subheader("📋 Input Verification")
-        c_v1, c_v2 = st.columns(2)
-        with c_v1:
-            st.write(f"**Handedness:** {st.session_state.answers.get('Q04', 'N/A')}")
-            st.write(f"**Current Head:** {st.session_state.answers.get('Q08', '')} {st.session_state.answers.get('Q09', '')}")
-        with c_v2:
-            miss = st.session_state.answers.get('Q18', "Straight")
-            carry = float(st.session_state.answers.get('Q15', 0))
-            st.write(f"**6i Carry:** {carry} yards")
-            st.write(f"**Primary Miss:** {miss}")
+        # FIXED: Comprehensive Input Verification (Show everything by Category)
+        with st.expander("📋 View Full Input Verification Summary", expanded=True):
+            cols = st.columns(3)
+            categories = list(dict.fromkeys(q_master['Category'].tolist()))
+            for i, cat in enumerate(categories):
+                with cols[i % 3]:
+                    st.markdown(f"**{cat}**")
+                    cat_qs = q_master[q_master['Category'] == cat]
+                    for _, q_row in cat_qs.iterrows():
+                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
+                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # Fitter Logic
+        # Recommendation Engine
         tf, tl = st.session_state.final_tf, st.session_state.final_tl
+        miss = st.session_state.answers.get('Q18', "Straight")
+        carry = float(st.session_state.answers.get('Q15', 0))
+        
         df_s = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 30)
         
-        # Push/Hook Correction
+        # Miss Correction Logic
         if miss in ["Push", "Slice"]:
             df_s.loc[df_s['EI_Tip'] > 12.5, 'Penalty'] += 200
             df_s.loc[df_s['Torque'] < 1.6, 'Penalty'] += 100
-        if miss in ["Hook", "Pull"]:
+        elif miss in ["Hook", "Pull"]:
             df_s['Penalty'] += (df_s['Torque'] * 150)
             df_s.loc[df_s['StabilityIndex'] < 8.0, 'Penalty'] += 200
 
@@ -162,12 +163,20 @@ if all_data:
             return "🎯 Balanced Fit"
 
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
+
         st.subheader("🚀 Recommended Prescription")
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']])
 
-        # Narrative
+        # Narrative Summary
         st.info(f"**Expert Analysis:** For your **{miss}**, we prioritized the **{recs.iloc[0]['Brand']} {recs.iloc[0]['Model']}**. Its profile is designed to {'help you turn the club over' if miss in ['Push', 'Slice'] else 'keep the face from closing'} while matching your **{carry}yd** speed.")
 
+        # FIXED: Prominent Navigation Buttons
         st.divider()
-        if st.button("✏️ Edit Survey"):
-            st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
+        bt1, bt2, _ = st.columns([1, 1, 4])
+        if bt1.button("✏️ Edit Survey", use_container_width=True):
+            st.session_state.interview_complete = False
+            st.session_state.form_step = 0
+            st.rerun()
+        if bt2.button("🆕 New Fitting", use_container_width=True):
+            for key in list(st.session_state.keys()): del st.session_state[key]
+            st.rerun()
