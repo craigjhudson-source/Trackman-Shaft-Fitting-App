@@ -27,6 +27,15 @@ def get_data_from_gsheet():
 
 def save_lead_to_gsheet(answers, t_flex, t_launch):
     try:
+        # --- NEW: CRITICAL AUTOFILL FIX ---
+        # This force-grabs whatever is currently visible in the UI widgets 
+        # specifically for Q01 (Name), Q02 (Email), and Q03 (Phone)
+        for i in range(1, 22):
+            qid = f"Q{i:02d}"
+            if f"widget_{qid}" in st.session_state:
+                answers[qid] = st.session_state[f"widget_{qid}"]
+        # ----------------------------------
+
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         gc = gspread.authorize(creds)
@@ -36,7 +45,6 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp]
         
-        # Build row for Q01-Q21
         for i in range(1, 22):
             qid = f"Q{i:02d}"
             row.append(str(answers.get(qid, "")))
