@@ -117,16 +117,31 @@ if all_data:
         else:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
-                f_tf, f_tl = 6.0, 5.0
-                for qid, ans in st.session_state.answers.items():
-                    logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
-                    if not logic.empty:
-                        act = str(logic.iloc[0]['LogicAction'])
-                        if "FlexScore:" in act: f_tf = float(act.split(":")[1])
-                        if "LaunchScore:" in act: f_tl = float(act.split(":")[1])
                 
-                save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
-                st.session_state.update({'final_tf': f_tf, 'final_tl': f_tl, 'interview_complete': True})
+                # --- NEW: DYNAMIC LOGIC PARSING ---
+                target_tf, target_tl = 6.0, 5.0
+                anti_left = False
+                min_weight = 0
+
+                for qid, ans in st.session_state.answers.items():
+                    logic_row = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
+                    if not logic_row.empty:
+                        action = str(logic_row.iloc[0]['LogicAction'])
+                        if "Target FlexScore:" in action: target_tf = float(action.split(":")[1])
+                        if "Target LaunchScore:" in action: target_tl = float(action.split(":")[1])
+                        if "Anti-Left: True" in action: anti_left = True
+                        if "Filter: Weight >=" in action: 
+                            try: min_weight = int(action.split(">=")[1].replace('g','').strip())
+                            except: pass
+                
+                save_lead_to_gsheet(st.session_state.answers, target_tf, target_tl, q_master['QuestionID'].tolist())
+                st.session_state.update({
+                    'final_tf': target_tf, 
+                    'final_tl': target_tl, 
+                    'anti_left': anti_left,
+                    'min_weight': min_weight,
+                    'interview_complete': True
+                })
                 st.rerun()
 
     else:
@@ -144,7 +159,10 @@ if all_data:
                         ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
+        # ENGINE VARIABLES
         tf, tl = st.session_state.final_tf, st.session_state.final_tl
+        anti_left = st.session_state.anti_left
+        min_w = st.session_state.min_weight
         miss = st.session_state.answers.get('Q18', "Straight")
         carry = float(st.session_state.answers.get('Q15', 0))
         
@@ -152,68 +170,62 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 30)
+        # --- ADVANCED DNA MATCHING ALGORITHM ---
+        df_s['Flex_Diff'] = abs(df_s['FlexScore'] - tf) * 200    # Stiffness is Priority 1
+        df_s['Launch_Diff'] = abs(df_s['LaunchScore'] - tl) * 50 # Launch is Priority 2
         
-        if carry > 175:
-            df_s.loc[df_s['Weight (g)'] < 115, 'Penalty'] += 500 
-        elif 150 <= carry <= 170:
-            df_s.loc[df_s['Weight (g)'] > 125, 'Penalty'] += 200
-            df_s.loc[df_s['Weight (g)'] < 100, 'Penalty'] += 200
-        elif carry < 140:
-            df_s.loc[df_s['Weight (g)'] > 110, 'Penalty'] += 500 
+        # Apply Weight Filter from Logic
+        df_s['Weight_Penalty'] = df_s['Weight (g)'].apply(lambda x: 0 if x >= min_w else 500)
 
-        if miss in ["Push", "Slice"]:
-            df_s.loc[df_s['EI_Tip'] > 12.5, 'Penalty'] += 200
-            df_s.loc[df_s['Torque'] < 1.6, 'Penalty'] += 100
-        elif miss in ["Hook", "Pull"]:
-            df_s['Penalty'] += (df_s['Torque'] * 150)
-            df_s.loc[df_s['StabilityIndex'] < 8.0, 'Penalty'] += 200
+        # Apply Anti-Left / Stability Bonus
+        if anti_left:
+            # Reward high stability index, penalize weak stability
+            df_s['Stability_Adj'] = (10 - df_s['StabilityIndex']) * 100
+        else:
+            df_s['Stability_Adj'] = 0
 
-        recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5).copy()
+        df_s['Total_Score'] = df_s['Flex_Diff'] + df_s['Launch_Diff'] + df_s['Weight_Penalty'] + df_s['Stability_Adj']
 
-        # --- DATA CLEANUP & FORMATTING ---
+        recs = df_s.sort_values('Total_Score').head(5).copy()
+
+        # CLEANUP & FORMATTING
         recs['Weight (g)'] = recs['Weight (g)'].round(0).astype(int)
-        # Torque to exactly 1 decimal place
         recs['Torque'] = recs['Torque'].apply(lambda x: f"{float(x):.1f}")
-        # Standardize Project X Flex (6 becomes 6.0)
         recs['Flex'] = recs['Flex'].apply(lambda x: f"{x}.0" if str(x) == "6" else x)
 
         def generate_verdict(row):
+            if anti_left and row['StabilityIndex'] > 8.0: return "🛡️ Stability King"
             if miss in ["Push", "Slice"] and row['EI_Tip'] < 11.5: return "✅ Release Assistant"
-            if miss in ["Hook", "Pull"] and row['StabilityIndex'] > 8.5: return "🛡️ Stability King"
             if row['Weight (g)'] < 100 and carry > 175: return "⚡ Speed Play"
             return "🎯 Balanced Fit"
 
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
 
         st.subheader("🚀 Recommended Prescription")
-        # CLEAN UP TABLE LOOK: Reset index to remove spreadsheet row numbers
         final_table = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']].reset_index(drop=True)
-        final_table.index += 1 # Starts visible index at 1
+        final_table.index += 1 
         st.table(final_table)
 
-        # --- EXPANDED EXPERT ANALYSIS ---
+        # --- EXPERT ANALYSIS ---
         st.subheader("🔬 Detailed Expert Insights")
-        
         traits = {
-            "KBS Tour": "Features a linear stiffness profile with a slightly more active tip section, making it much easier to square the clubface than a traditional Dynamic Gold.",
-            "Modus Tour 115": "Known for a smoother mid-section that improves 'load' feel. Excellent for players who need better timing to correct a push.",
-            "Project X LZ": "The 'Loading Zone' technology allows for a massive energy transfer while maintaining a stable handle, helping high-speed players square the face.",
-            "Dynamic Gold": "The industry standard for low-launch and stability. These appear because they match your profile, though they offer less 'kick' help than the KBS.",
-            "AMT Black": "Uses Ascending Mass Technology. It provides more speed in your long irons and more control in your scoring clubs."
+            "KBS Tour": "Features a linear stiffness profile with a slightly more active tip section, making it much easier to square the clubface.",
+            "Modus Tour 115": "Known for a smoother mid-section that improves 'load' feel. Excellent for players who need better timing.",
+            "Project X LZ": "The 'Loading Zone' technology allows for a massive energy transfer while maintaining a stable handle.",
+            "Dynamic Gold": "The industry standard for low-launch and stability. A heavy-weight profile for aggressive transitions.",
+            "Project X LS": "Lowest Launch and Lowest Spin. This is for the high-speed player who needs maximum stability to prevent a hook."
         }
 
-        # Clean carry (no decimals) for narrative
         clean_carry = int(carry)
+        
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile designed to balance your swing characteristics."))
+            blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile designed for your specific swing DNA."))
             
             with st.container():
                 st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
-                # Correct terminology: using "carry" instead of "speed"
-                st.caption(f"{blurb} Recommended for your **{clean_carry}yd carry** because it provides **{row['Weight (g)']}g** of stability.")
+                st.caption(f"{blurb} Selected for your **{clean_carry}yd carry** profile with a stability rating of **{row['StabilityIndex']}**.")
 
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
@@ -224,4 +236,3 @@ if all_data:
         if bt2.button("🆕 New Fitting", use_container_width=True):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
-            
