@@ -118,7 +118,6 @@ if all_data:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
                 
-                # --- LOGIC DEFAULTS ---
                 f_tf, f_tl = 6.0, 5.0
                 anti_left, release_assist = False, False
                 min_w, max_w = 0, 200
@@ -156,7 +155,19 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # Pull State Variables
+        # --- RESTORED QUESTIONNAIRE SUMMARY ---
+        with st.expander("📋 View Full Input Verification Summary", expanded=True):
+            cols = st.columns(3)
+            categories = list(dict.fromkeys(q_master['Category'].tolist()))
+            for i, cat in enumerate(categories):
+                with cols[i % 3]:
+                    st.markdown(f"**{cat}**")
+                    cat_qs = q_master[q_master['Category'] == cat]
+                    for _, q_row in cat_qs.iterrows():
+                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
+                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
+
+        # --- ENGINE LOGIC ---
         tf = st.session_state.get('final_tf', 6.0)
         tl = st.session_state.get('final_tl', 5.0)
         anti_left = st.session_state.get('anti_left', False)
@@ -168,57 +179,45 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # --- STEP A: HARD GATING (Filtering out non-options) ---
-        # Weight Gating: If it's too light or too heavy, it's gone.
+        # STEP A: HARD GATING
         df_s = df_s[(df_s['Weight (g)'] >= min_w) & (df_s['Weight (g)'] <= max_w)]
-        
-        # Anti-Left Torque Gate: Hookers cannot play high torque
         if anti_left:
             df_s = df_s[df_s['Torque'] <= 2.2]
 
-        # --- STEP B: MATHEMATICAL SCORING ---
-        # 1. Flex Multiplier (300.0) - The primary driver
+        # STEP B: MATHEMATICAL WEIGHTING
         df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 300.0
-        
-        # 2. Launch Multiplier (50.0) - Secondary adjustment
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
         
-        # 3. Stability Adjustment
         if anti_left:
-            # Penalize low stability for hookers (Multiplier 150.0)
             df_s['Stability_Bias'] = (10 - df_s['StabilityIndex']) * 150.0
         elif release_assist:
-            # Reward active tips (Multiplier 40.0) 
-            # Baseline 14.0 is typical stiff iron tip; lower EI_Tip is active
             df_s['Stability_Bias'] = (df_s['EI_Tip'] - 14.0) * 40.0
         else:
             df_s['Stability_Bias'] = 0
 
-        # Calculate Total Score (Lower is better)
         df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Stability_Bias']
         recs = df_s.sort_values('Total_Score').head(5).copy()
 
-        # Display Results
+        # --- RESULTS DISPLAY ---
         st.subheader("🚀 Top Recommended Prescription")
         final_table = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True)
         final_table.index += 1
         st.table(final_table)
 
-        # Expert Traits & Analysis
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
-            "Project X Rifle": "Highest stability tip. Designed for maximum dispersion control at high speeds.",
-            "Project X LZ": "Active mid-section allows for enhanced feel and easier release for push-biased players.",
-            "KBS Tour": "Linear stiffness profile that rewards smooth tempo and consistent timing.",
-            "Dynamic Gold": "The gold standard for low-launch, low-spin control for powerful ball strikers.",
-            "Project X LS": "Low spin, high stability profile designed specifically to neutralize the left side."
+            "Project X Rifle": "Highest stability tip. Designed for maximum dispersion control.",
+            "Project X LZ": "Active mid-section allows for easier release for push-biased players.",
+            "KBS Tour": "Linear stiffness profile that rewards smooth tempo.",
+            "Dynamic Gold": "The gold standard for low-launch, low-spin control.",
+            "Project X LS": "Specifically designed to neutralize the left side (hook)."
         }
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
             blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile matched to your DNA."))
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
-            st.caption(f"{blurb} Recommended for your **{int(tf)} Flex Profile**.")
+            st.caption(f"{blurb}")
 
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
@@ -227,4 +226,3 @@ if all_data:
         if bt2.button("🆕 New Fitting", use_container_width=True):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
-            
