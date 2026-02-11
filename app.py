@@ -24,12 +24,9 @@ def get_data_from_gsheet():
         st.error(f"📡 Data Load Error: {e}")
         return None
 
-# HELPER: Keeps the EXACT order from your spreadsheet (Used for Config/Glove Size)
 def get_ordered_list(series):
-    # Removes empty cells but keeps the sequence from the sheet
     return list(dict.fromkeys([str(x) for x in series.dropna() if str(x).strip() != ""]))
 
-# HELPER: Sorts Alphabetically (Used for Brands and Models)
 def get_sorted_list(series):
     return sorted(get_ordered_list(series))
 
@@ -70,34 +67,63 @@ if all_data:
         curr_col = col_q1 if idx % 2 == 0 else col_q2
         options = []
 
-        # --- SMART DROPDOWN LOGIC ---
+        # Ensure session state exists for all IDs so filtering works immediately
+        if q_id not in st.session_state:
+            st.session_state[q_id] = "" if q_type != "Numeric" else 0.0
+
+        # --- FILTERED DROPDOWN LOGIC ---
         if q_type == "Dropdown":
-            # If it's from the Config tab, use the ORDERED list
             if "Config:" in q_opt_raw:
                 conf_col = q_opt_raw.split(":")[1]
                 options = get_ordered_list(conf_df[conf_col])
             
-            # If it's Brands or Models, use the ALPHABETICAL list (Easier to find)
+            # HEADS FILTERING
             elif "Heads" in q_opt_raw:
-                options = get_sorted_list(all_data['Heads']['Manufacturer']) if "Brand" in q_text else get_sorted_list(all_data['Heads']['Model'])
+                if "Brand" in q_text or "Manufacturer" in q_text:
+                    options = get_sorted_list(all_data['Heads']['Manufacturer'])
+                else:
+                    # Filter Model by selected Brand (Q08)
+                    selected_brand = st.session_state.get('Q08', '')
+                    if selected_brand:
+                        filtered_heads = all_data['Heads'][all_data['Heads']['Manufacturer'] == selected_brand]
+                        options = get_sorted_list(filtered_heads['Model'])
+                    else:
+                        options = ["Select Brand First..."]
+
+            # SHAFTS FILTERING
             elif "Shafts" in q_opt_raw:
-                if "Brand" in q_text: options = get_sorted_list(all_data['Shafts']['Brand'])
-                elif "Flex" in q_text: options = get_ordered_list(all_data['Shafts']['Flex']) # Flex should be ordered!
-                else: options = get_sorted_list(all_data['Shafts']['Model'])
+                if "Brand" in q_text:
+                    options = get_sorted_list(all_data['Shafts']['Brand'])
+                else:
+                    # Filter by selected Brand (Q10)
+                    selected_brand = st.session_state.get('Q10', '')
+                    if selected_brand:
+                        filtered_shafts = all_data['Shafts'][all_data['Shafts']['Brand'] == selected_brand]
+                        if "Flex" in q_text:
+                            options = get_ordered_list(filtered_shafts['Flex'])
+                        else: # Model
+                            options = get_sorted_list(filtered_shafts['Model'])
+                    else:
+                        options = ["Select Brand First..."]
             
-            # Static comma-separated lists
             elif "," in q_opt_raw:
                 options = [x.strip() for x in q_opt_raw.split(",")]
             else:
                 options = get_ordered_list(resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'])
 
         # Render Inputs
-        if q_id not in st.session_state:
-            st.session_state[q_id] = 0.0 if q_type == "Numeric" else ""
-
         if q_type == "Dropdown" and options:
+            # Automatic rerun when Brand changes to update Model list
+            is_brand_q = "Brand" in q_text
+            
             default_idx = options.index(st.session_state[q_id]) if st.session_state[q_id] in options else 0
-            st.session_state[q_id] = curr_col.selectbox(q_text, options, index=default_idx, key=f"in_{q_id}")
+            
+            val = curr_col.selectbox(
+                q_text, options, index=default_idx, key=f"in_{q_id}",
+                on_change=st.rerun if is_brand_q else None 
+            )
+            st.session_state[q_id] = val
+            
         elif q_type == "Numeric":
             st.session_state[q_id] = curr_col.number_input(q_text, value=float(st.session_state[q_id]), key=f"in_{q_id}")
         else:
