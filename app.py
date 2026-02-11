@@ -35,76 +35,82 @@ all_data = get_data_from_gsheet()
 if all_data:
     st.title("🇺🇸 Patriot Fitting Engine")
     
-    # --- PHASE 1: DYNAMIC INTERVIEW ---
+   # --- PHASE 1: STEP-THROUGH INTERVIEW ---
     st.header("📋 Phase 1: Player Interview")
-    player_answers = {}
     
-    with st.expander("Step 1: Complete Player Profile", expanded=True):
-        q_df = all_data['Questions']
-        resp_df = all_data['Responses']
-        conf_df = all_data['Config']
+    # 1. Initialize the step counter in session state
+    if 'form_step' not in st.session_state:
+        st.session_state.form_step = 0
+
+    categories = all_data['Questions']['Category'].unique().tolist()
+    total_steps = len(categories)
+    current_cat = categories[st.session_state.form_step]
+
+    # 2. Display Progress
+    progress_text = f"Step {st.session_state.form_step + 1} of {total_steps}: {current_cat}"
+    st.progress((st.session_state.form_step + 1) / total_steps)
+    st.subheader(progress_text)
+
+    # 3. Render Questions for the Current Step
+    player_answers = {} # Note: In a real app, you'd store these in st.session_state to keep them across steps
+    
+    cat_questions = all_data['Questions'][all_data['Questions']['Category'] == current_cat]
+    col_q1, col_q2 = st.columns(2)
+
+    for idx, row in cat_questions.reset_index().iterrows():
+        q_id = row['QuestionID']
+        q_text = row['QuestionText']
+        q_type = row['InputType']
+        q_opt_raw = str(row['Options'])
+        placeholder_text = str(row['Placeholder']) if 'Placeholder' in row else ""
         
-        col_q1, col_q2 = st.columns(2)
+        curr_col = col_q1 if idx % 2 == 0 else col_q2
         
-        for idx, row in q_df.iterrows():
-            q_id = row['QuestionID']
-            q_text = row['QuestionText']
-            q_type = row['InputType']
-            q_opt_raw = str(row['Options'])
-            
-            curr_col = col_q1 if idx % 2 == 0 else col_q2
-            options = []
-
-            # --- IMPROVED DYNAMIC DROPDOWN LOGIC ---
-            if q_type == "Dropdown":
-                if "Config:" in q_opt_raw:
-                    conf_col = q_opt_raw.split(":")[1]
-                    options = safe_list(conf_df[conf_col])
-                
-                # HEADS LOGIC (Q06 = Brand, Q07 = Model)
-                elif "Heads" in q_opt_raw:
-                    if "Brand" in q_text or "Manufacturer" in q_text:
-                        options = safe_list(all_data['Heads']['Manufacturer'])
-                    else: 
-                        options = safe_list(all_data['Heads']['Model'])
-                
-                # SHAFTS LOGIC (Q08 = Brand, Q09 = Flex, Q10 = Model)
-                elif "Shafts" in q_opt_raw:
-                    if "Brand" in q_text:
-                        options = safe_list(all_data['Shafts']['Brand'])
-                    elif "Flex" in q_text:
-                        options = safe_list(all_data['Shafts']['Flex'])
-                    else: 
-                        options = safe_list(all_data['Shafts']['Model'])
-                
-                elif "," in q_opt_raw:
-                    options = [x.strip() for x in q_opt_raw.split(",")]
-                else:
-                    options = safe_list(resp_df[resp_df['QuestionID'] == q_id]['ResponseOption'])
-
-          # RENDER INPUTS
-            # We look for a placeholder in your sheet; if it's empty, we use an empty string
-            placeholder_text = str(row['Placeholder']) if 'Placeholder' in q_df.columns else ""
-
-            if q_type == "Dropdown" and options:
-                player_answers[q_id] = curr_col.selectbox(q_text, options, key=q_id)
-            
-            elif q_type == "Numeric":
-                # Note: Numeric inputs use 'value', text inputs use 'placeholder'
-                # If you want a numeric example, it has to be a real number
-                try:
-                    p_val = int(placeholder_text) if placeholder_text.isdigit() else 0
-                except:
-                    p_val = 0
-                player_answers[q_id] = curr_col.number_input(q_text, value=p_val, key=q_id)
-            
+        # (Keep your existing DYNAMIC DROPDOWN LOGIC here to populate 'options')
+        options = []
+        if q_type == "Dropdown":
+            if "Config:" in q_opt_raw:
+                conf_col = q_opt_raw.split(":")[1]
+                options = safe_list(all_data['Config'][conf_col])
+            elif "Heads" in q_opt_raw:
+                options = safe_list(all_data['Heads']['Manufacturer']) if "Brand" in q_text else safe_list(all_data['Heads']['Model'])
+            elif "Shafts" in q_opt_raw:
+                if "Brand" in q_text: options = safe_list(all_data['Shafts']['Brand'])
+                elif "Flex" in q_text: options = safe_list(all_data['Shafts']['Flex'])
+                else: options = safe_list(all_data['Shafts']['Model'])
+            elif "," in q_opt_raw:
+                options = [x.strip() for x in q_opt_raw.split(",")]
             else:
-                # This applies the example text to Email, Phone, and Name
-                player_answers[q_id] = curr_col.text_input(
-                    q_text, 
-                    placeholder=placeholder_text, 
-                    key=q_id
-                )
+                options = safe_list(all_data['Responses'][all_data['Responses']['QuestionID'] == q_id]['ResponseOption'])
+
+        # Render Inputs (Using session state to remember values)
+        if q_id not in st.session_state:
+            st.session_state[q_id] = "" if q_type != "Numeric" else 0.0
+
+        if q_type == "Dropdown" and options:
+            st.session_state[q_id] = curr_col.selectbox(q_text, options, key=f"input_{q_id}")
+        elif q_type == "Numeric":
+            st.session_state[q_id] = curr_col.number_input(q_text, value=float(st.session_state[q_id]), key=f"input_{q_id}")
+        else:
+            st.session_state[q_id] = curr_col.text_input(q_text, value=st.session_state[q_id], placeholder=placeholder_text, key=f"input_{q_id}")
+
+    # 4. Navigation Buttons
+    st.write("---")
+    nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 4])
+
+    with nav_col1:
+        if st.session_state.form_step > 0:
+            if st.button("⬅️ Back"):
+                st.session_state.form_step -= 1
+                st.rerun()
+
+    with nav_col2:
+        if st.session_state.form_step < total_steps - 1:
+            if st.button("Next ➡️"):
+                st.session_state.form_step += 1
+                st.rerun()
+        else:
+            st.success("✅ Questionnaire Complete!")
 
     st.divider()
 
