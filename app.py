@@ -33,7 +33,7 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         ws = sh.worksheet('Fittings')
         
-        # This row construction matches your 22 headers EXACTLY
+        # MAPPING: Matches your sheet columns A -> X exactly
         row = [
             str(datetime.datetime.now()), # A: Timestamp
             answers.get('Q01', ''),      # B: Name
@@ -50,7 +50,7 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
             answers.get('Q12', ''),      # M: Current Shaft Model
             answers.get('Q13', ''),      # N: Club Length
             answers.get('Q14', ''),      # O: Swing Weight
-            answers.get('Q15', 0.0),     # P: Current 6i Carry (Numeric)
+            answers.get('Q15', 0.0),     # P: Current 6i Carry
             answers.get('Q16', ''),      # Q: Current Flight
             answers.get('Q17', ''),      # R: Target Flight
             answers.get('Q18', ''),      # S: Primary Miss
@@ -63,23 +63,28 @@ def save_lead_to_gsheet(answers, t_flex, t_launch):
         ws.append_row(row)
         return True
     except Exception as e:
-        st.error(f"⚠️ Sheet Sync Failed: {e}")
+        st.error(f"⚠️ Sheet Save Error: {e}")
         return False
 
-# --- 2. INITIALIZATION ---
+# --- 2. INITIALIZATION & STATE ---
+st.set_page_config(page_title="Americas Best Shaft Fitting Engine", layout="wide")
+
 all_data = get_data_from_gsheet()
 
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
 
-# Smart Initialization: Initialize based on Question Type to prevent TypeErrors
+# Robust Initialization: Ensures Q15 is ALWAYS a float, others are strings
 if all_data and 'initialized' not in st.session_state:
     for _, row in all_data['Questions'].iterrows():
         qid = row['QuestionID']
-        st.session_state[qid] = 0.0 if row['InputType'] == "Numeric" else ""
+        if row['InputType'] == "Numeric":
+            st.session_state[qid] = 0.0
+        else:
+            st.session_state[qid] = ""
     st.session_state['initialized'] = True
 
-# --- 3. QUESTIONNAIRE UI ---
+# --- 3. THE INTERVIEW ---
 if all_data:
     if not st.session_state.interview_complete:
         st.title("Americas Best Shaft Fitting Engine")
@@ -88,7 +93,7 @@ if all_data:
         current_cat = categories[st.session_state.form_step]
         
         st.progress((st.session_state.form_step + 1) / len(categories))
-        st.subheader(f"Section: {current_cat}")
+        st.subheader(f"Step {st.session_state.form_step + 1}: {current_cat}")
 
         q_df = all_data['Questions'][all_data['Questions']['Category'] == current_cat]
         
@@ -96,31 +101,41 @@ if all_data:
             qid, qtext, qtype, qopts = row['QuestionID'], row['QuestionText'], row['InputType'], str(row['Options'])
             
             if qtype == "Dropdown":
-                options = []
+                options = [""] # Default empty
                 if "Config:" in qopts:
-                    options = list(all_data['Config'][qopts.split(":")[1]].dropna().unique())
+                    options = sorted(list(all_data['Config'][qopts.split(":")[1]].dropna().unique()))
                 elif "Heads" in qopts:
-                    if "Brand" in qtext: options = sorted(list(all_data['Heads']['Manufacturer'].unique()))
+                    if "Brand" in qtext: 
+                        options = sorted(list(all_data['Heads']['Manufacturer'].unique()))
                     else:
                         brand = st.session_state.get('Q08', '')
                         options = sorted(list(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand]['Model'].unique()))
                 elif "Shafts" in qopts:
                     brand = st.session_state.get('Q10', '')
-                    if "Brand" in qtext: options = sorted(list(all_data['Shafts']['Brand'].unique()))
-                    elif "Flex" in qtext: options = list(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Flex'].unique())
-                    else: options = sorted(list(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique()))
-                elif "," in qopts: options = [x.strip() for x in qopts.split(",")]
-                else: options = list(all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].unique())
+                    if "Brand" in qtext: 
+                        options = sorted(list(all_data['Shafts']['Brand'].unique()))
+                    elif "Flex" in qtext: 
+                        options = list(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Flex'].unique())
+                    else: 
+                        options = sorted(list(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique()))
+                elif "," in qopts: 
+                    options = [x.strip() for x in qopts.split(",")]
+                else: 
+                    options = list(all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].unique())
                 
-                # Persistence logic
-                idx = 0
-                if st.session_state[qid] in options: idx = options.index(st.session_state[qid])
+                # Selection logic with fallback
+                curr_val = st.session_state.get(qid, "")
+                idx = options.index(curr_val) if curr_val in options else 0
                 st.selectbox(qtext, options, index=idx, key=qid)
             
             elif qtype == "Numeric":
-                st.number_input(qtext, value=float(st.session_state[qid]), key=qid)
+                # Ensure the value is float to prevent ValueError
+                val = st.session_state.get(qid, 0.0)
+                try: val = float(val)
+                except: val = 0.0
+                st.number_input(qtext, value=val, key=qid)
             else:
-                st.text_input(qtext, value=st.session_state[qid], key=qid)
+                st.text_input(qtext, value=st.session_state.get(qid, ""), key=qid)
 
         st.write("---")
         c1, c2, _ = st.columns([1,1,4])
@@ -135,14 +150,14 @@ if all_data:
                 st.rerun()
         else:
             if c2.button("🔥 Generate Prescription"):
-                # Calc targets
+                # Logic Scoring
                 tf, tl = 6.0, 5.0
                 for i in range(1, 22):
-                    qid = f"Q{i:02d}"
-                    val = str(st.session_state[qid])
-                    resp = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == val)]
-                    if not resp.empty:
-                        act = str(resp.iloc[0]['LogicAction'])
+                    cid = f"Q{i:02d}"
+                    ans = str(st.session_state.get(cid, ""))
+                    logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == cid) & (all_data['Responses']['ResponseOption'] == ans)]
+                    if not logic.empty:
+                        act = str(logic.iloc[0]['LogicAction'])
                         if "FlexScore:" in act: tf = float(act.split(":")[1])
                         if "LaunchScore:" in act: tl = float(act.split(":")[1])
                 
@@ -150,18 +165,18 @@ if all_data:
                     st.session_state.interview_complete = True
                     st.rerun()
 
-    # --- 4. RESULTS & RE-EDITING ---
+    # --- 4. RESULTS & EDITING ---
     else:
-        st.title(f"🎯 Results for {st.session_state['Q01']}")
+        st.title(f"🎯 Fitting Results: {st.session_state.get('Q01', 'Player')}")
         
-        # Calculate scores for dynamic update
+        # Calculate scores for dynamic recommendations
         tf, tl = 6.0, 5.0
         for i in range(1, 22):
-            qid = f"Q{i:02d}"
-            val = str(st.session_state[qid])
-            resp = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == val)]
-            if not resp.empty:
-                act = str(resp.iloc[0]['LogicAction'])
+            cid = f"Q{i:02d}"
+            ans = str(st.session_state.get(cid, ""))
+            logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == cid) & (all_data['Responses']['ResponseOption'] == ans)]
+            if not logic.empty:
+                act = str(logic.iloc[0]['LogicAction'])
                 if "FlexScore:" in act: tf = float(act.split(":")[1])
                 if "LaunchScore:" in act: tl = float(act.split(":")[1])
 
@@ -169,8 +184,9 @@ if all_data:
         df_s['Penalty'] = (abs(pd.to_numeric(df_s['FlexScore'], errors='coerce') - tf) * 40) + \
                           (abs(pd.to_numeric(df_s['LaunchScore'], errors='coerce') - tl) * 20)
         
+        recs = df_s.sort_values('Penalty').head(5)
         st.subheader(f"Top Recommended Shafts (Target Flex: {tf}, Launch: {tl})")
-        st.dataframe(df_s.sort_values('Penalty').head(5)[['Brand', 'Model', 'Flex', 'Penalty']], hide_index=True)
+        st.dataframe(recs[['Brand', 'Model', 'Flex', 'Penalty']], hide_index=True, use_container_width=True)
         
         st.divider()
         col_edit, col_new = st.columns(2)
@@ -180,9 +196,14 @@ if all_data:
             st.rerun()
             
         if col_new.button("🆕 Start New Fitting"):
-            for i in range(1, 22): 
-                qid = f"Q{i:02d}"
-                st.session_state[qid] = 0.0 if all_data['Questions'].loc[all_data['Questions']['QuestionID']==qid, 'InputType'].values[0] == "Numeric" else ""
+            # Deep Reset
+            for k in list(st.session_state.keys()):
+                if k.startswith("Q"):
+                    q_info = all_data['Questions'][all_data['Questions']['QuestionID'] == k]
+                    if not q_info.empty and q_info.iloc[0]['InputType'] == "Numeric":
+                        st.session_state[k] = 0.0
+                    else:
+                        st.session_state[k] = ""
             st.session_state.interview_complete = False
             st.session_state.form_step = 0
             st.rerun()
