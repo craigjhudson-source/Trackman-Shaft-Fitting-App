@@ -16,40 +16,46 @@ def get_data_from_gsheet():
             scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         )
         gc = gspread.authorize(creds)
+        # Verify this URL matches your active Google Sheet
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         
         def get_clean_df(worksheet_name):
-            # Get raw values to handle empty/duplicate headers manually
-            rows = sh.worksheet(worksheet_name).get_all_values()
-            if not rows: return pd.DataFrame()
-            
-            headers = rows[0]
-            seen = {}
-            new_headers = []
-            for i, h in enumerate(headers):
-                h = h.strip()
-                if not h: h = f"EmptyCol_{i}"
-                if h in seen:
-                    seen[h] += 1
-                    new_headers.append(f"{h}_{seen[h]}")
-                else:
-                    seen[h] = 0
-                    new_headers.append(h)
-            # Create DF and drop columns that are purely 'EmptyCol' artifacts
-            df = pd.DataFrame(rows[1:], columns=new_headers)
-            return df.loc[:, ~df.columns.str.startswith('EmptyCol')]
+            try:
+                # Get raw values to handle empty/duplicate headers manually
+                rows = sh.worksheet(worksheet_name).get_all_values()
+                if not rows: return pd.DataFrame()
+                
+                headers = rows[0]
+                seen = {}
+                new_headers = []
+                for i, h in enumerate(headers):
+                    h = h.strip()
+                    if not h: h = f"EmptyCol_{i}"
+                    if h in seen:
+                        seen[h] += 1
+                        new_headers.append(f"{h}_{seen[h]}")
+                    else:
+                        seen[h] = 0
+                        new_headers.append(h)
+                
+                df = pd.DataFrame(rows[1:], columns=new_headers)
+                return df.loc[:, ~df.columns.str.startswith('EmptyCol')]
+            except Exception:
+                # If a specific worksheet is missing, return an empty DF instead of crashing
+                return pd.DataFrame()
 
-        return {
+        data = {
             'Heads': get_clean_df('Heads'),
             'Shafts': get_clean_df('Shafts'),
             'Questions': get_clean_df('Questions'),
             'Responses': get_clean_df('Responses'),
             'Config': get_clean_df('Config'),
-            'Descriptions': get_clean_df('Descriptions')  # New sheet for blurbs
+            'Descriptions': get_clean_df('Descriptions')
         }
+        return data
     except Exception as e:
-        st.error(f"📡 Connection Error: {e}"); return None
+        st.error(f"📡 Global Connection Error: {e}"); return None
 
 # --- 2. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
@@ -86,7 +92,8 @@ if all_data:
                 opts = [""]
                 if "Config:" in qopts:
                     col_name = qopts.split(":")[1].strip()
-                    opts += all_data['Config'][col_name].dropna().astype(str).tolist()
+                    if col_name in all_data['Config'].columns:
+                        opts += all_data['Config'][col_name].dropna().astype(str).tolist()
                 elif "Heads" in qopts:
                     if "Brand" in qtext:
                         opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
@@ -104,7 +111,11 @@ if all_data:
                 else:
                     opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].astype(str).tolist()
                 
+                # Cleanup list
+                opts = [x for x in opts if x.strip() != ""]
+                opts = [""] + opts
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
+            
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
             else:
@@ -112,7 +123,7 @@ if all_data:
 
         st.divider()
         c1, c2, _ = st.columns([1,1,4])
-        if c1.button("⬅️ Back") and st.session_state.form_step > 0:
+        if c1.button("⬅️ Back") and st.session_step > 0:
             sync_answers(q_df['QuestionID'].tolist()); st.session_state.form_step -= 1; st.rerun()
         
         if st.session_state.form_step < len(categories) - 1:
@@ -127,7 +138,7 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        with st.expander("📋 View Full Input Verification Summary", expanded=False):
+        with st.expander("📋 View Full Questionnaire Summary", expanded=False):
             ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
                 with ver_cols[i % 3]:
@@ -138,14 +149,19 @@ if all_data:
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
         # ENGINE LOGIC
-        carry_6i = float(st.session_state.answers.get('Q15', 150))
-        primary_miss = st.session_state.answers.get('Q17', '')
+        try:
+            carry_6i = float(st.session_state.answers.get('Q15', 150))
+        except:
+            carry_6i = 150
+
+        primary_miss = st.session_state.answers.get('Q18', '')
         
-        # Flex/Weight targets
-        if carry_6i >= 200: min_w, f_tf, ideal_w = 120, 9.0, 130
-        elif carry_6i >= 180: min_w, f_tf, ideal_w = 115, 7.5, 125
-        elif carry_6i >= 160: min_w, f_tf, ideal_w = 105, 6.0, 115
-        else: min_w, f_tf, ideal_w = 0, 4.0, 95
+        # Flex/Weight targets based on Carry
+        if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
+        elif carry_6i >= 180: f_tf, ideal_w = 7.0, 120
+        elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
+        elif carry_6i >= 150: f_tf, ideal_w = 5.0, 95
+        else: f_tf, ideal_w = 4.0, 85
 
         df_all = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
@@ -154,7 +170,6 @@ if all_data:
         def score_shafts(df_in):
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 100
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
-            # Miss correction
             if any(x in primary_miss for x in ["Hook", "Pull"]):
                 df_in['Miss_Correction'] = (df_in['Torque'] * 50) + ((10 - df_in['StabilityIndex']) * 50)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
@@ -168,32 +183,37 @@ if all_data:
 
         # Archetype Selection
         final_recs = []
-        final_recs.append(candidates[candidates['Material'].str.contains('Graphite', case=False)].head(1).assign(Archetype='🚀 Modern Power'))
+        final_recs.append(candidates[candidates['Material'].str.contains('Graphite', case=False, na=False)].head(1).assign(Archetype='🚀 Modern Power'))
         final_recs.append(candidates[candidates['Material'] == 'Steel'].head(1).assign(Archetype='⚓ Tour Standard'))
-        final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False)].head(1).assign(Archetype='🎨 Feel Option'))
+        final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False, na=False)].head(1).assign(Archetype='🎨 Feel Option'))
         final_recs.append(candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype='🎯 Dispersion Killer'))
-        final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False)].head(1).assign(Archetype='🧪 Alt Tech'))
+        final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False, na=False)].head(1).assign(Archetype='🧪 Alt Tech'))
 
         final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(5)
 
         st.subheader("🚀 Top Recommended Prescription")
-        st.table(final_df[['Archetype', 'Brand', 'Model', 'Material', 'Flex', 'Weight (g)', 'Launch']])
+        st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
 
         st.subheader("🔬 Expert Engineering Analysis")
         
-        desc_lookup = dict(zip(all_data['Descriptions'].iloc[:,0], all_data['Descriptions'].iloc[:,1]))
+        # Build Lookup from Descriptions Tab
+        desc_df = all_data['Descriptions']
+        if not desc_df.empty and 'Model' in desc_df.columns:
+            desc_lookup = dict(zip(desc_df['Model'], desc_df['Blurb']))
+        else:
+            desc_lookup = {}
         
         for _, row in final_df.iterrows():
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = desc_lookup.get(row['Model'], "High-stability profile selected for speed and trajectory control.")
-            st.markdown(f"**{row['Archetype']}: {brand_model}**")
+            blurb = desc_lookup.get(row['Model'], "Selected for high-speed stability and torque resistance based on your swing profile.")
+            st.markdown(f"**{row['Archetype']}: {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
 
         # --- GRIP PRESCRIPTION ---
         st.divider()
         st.subheader("🧤 Final Touch: Grip Prescription")
         g_size = st.session_state.answers.get('Q05', 'Large')
-        rec_size = "Midsize" if g_size in ['Large', 'Extra Large'] else "Standard"
+        rec_size = "Midsize" if "Large" in g_size else "Standard"
         grip_model = "Golf Pride MCC Plus4" if carry_6i > 170 else "Golf Pride CP2 Wrap"
         
         c1, c2, c3 = st.columns(3)
@@ -202,6 +222,8 @@ if all_data:
         c3.metric("Tape Spec", "+1 Wrap" if rec_size == "Midsize" else "Standard")
 
         st.divider()
-        if st.button("🆕 New Fitting"):
+        b1, b2, _ = st.columns([1,1,4])
+        if b1.button("✏️ Edit Survey"): st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
+        if b2.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
