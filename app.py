@@ -13,6 +13,7 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
         gc = gspread.authorize(creds)
+        # Master Sheet URL
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         
@@ -118,32 +119,40 @@ if all_data:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
                 
-                # --- INITIALIZE DEFAULTS ---
+                # --- INITIALIZE LOGIC DEFAULTS ---
                 f_tf, f_tl = 6.0, 5.0
-                anti_left = False
-                min_weight = 0
+                anti_left, release_assist = False, False
+                min_w, max_w = 0, 200
 
-                # --- SCAN RESPONSES FOR LOGIC ---
+                # --- SCAN RESPONSES FOR NEW LOGIC STRINGS ---
                 for qid, ans in st.session_state.answers.items():
                     logic_rows = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & 
                                                        (all_data['Responses']['ResponseOption'] == str(ans))]
                     for _, l_row in logic_rows.iterrows():
                         act = str(l_row['LogicAction'])
-                        if "Target FlexScore:" in act: f_tf = float(act.split(":")[1])
-                        if "Target LaunchScore:" in act: f_tl = float(act.split(":")[1])
+                        
+                        if "Target FlexScore:" in act: 
+                            try: f_tf = float(act.split("FlexScore:")[1].split(";")[0])
+                            except: pass
+                        if "Target LaunchScore:" in act: 
+                            try: f_tl = float(act.split("LaunchScore:")[1].split(";")[0])
+                            except: pass
                         if "Anti-Left: True" in act: anti_left = True
+                        if "Release: True" in act: release_assist = True
+                        
                         if "Filter: Weight >=" in act: 
-                            try: min_weight = int(act.split(">=")[1].replace('g','').strip())
+                            try: min_w = int(act.split(">=")[1].replace('g','').strip())
+                            except: pass
+                        if "Filter: Weight <=" in act: 
+                            try: max_w = int(act.split("<=")[1].replace('g','').strip())
                             except: pass
                 
                 save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
                 
-                # Push to session state for the report page
                 st.session_state.update({
-                    'final_tf': f_tf, 
-                    'final_tl': f_tl, 
-                    'anti_left': anti_left,
-                    'min_weight': min_weight,
+                    'final_tf': f_tf, 'final_tl': f_tl, 
+                    'anti_left': anti_left, 'release_assist': release_assist,
+                    'min_w': min_w, 'max_w': max_w,
                     'interview_complete': True
                 })
                 st.rerun()
@@ -163,65 +172,61 @@ if all_data:
                         ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # --- SAFE ACCESS TO LOGIC VARIABLES ---
+        # --- SAFE ENGINE ACCESS ---
         tf = st.session_state.get('final_tf', 6.0)
         tl = st.session_state.get('final_tl', 5.0)
         anti_left = st.session_state.get('anti_left', False)
-        min_w = st.session_state.get('min_weight', 0)
+        release_assist = st.session_state.get('release_assist', False)
+        min_w = st.session_state.get('min_w', 0)
+        max_w = st.session_state.get('max_w', 200)
         
         miss = st.session_state.answers.get('Q18', "Straight")
-        try:
-            carry = float(st.session_state.answers.get('Q15', 0))
-        except:
-            carry = 0.0
+        carry = float(st.session_state.answers.get('Q15', 0) if str(st.session_state.answers.get('Q15')).replace('.','').isdigit() else 0)
         
         df_s = all_data['Shafts'].copy()
-        
-        # Ensure numbers are treated as numbers
-        num_cols = ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']
-        for col in num_cols:
+        for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # --- DNA MATCHING ALGORITHM ---
-        # 1. Stiffness Match
+        # --- ENGINE: DNA MATCHING ---
         df_s['Flex_Diff'] = abs(df_s['FlexScore'] - tf) * 200
-        
-        # 2. Launch Match
         df_s['Launch_Diff'] = abs(df_s['LaunchScore'] - tl) * 50
         
-        # 3. Dynamic Weight Filter
-        df_s['Weight_Penalty'] = df_s['Weight (g)'].apply(lambda x: 0 if x >= min_w else 500)
+        # Apply Hard Weight Filters
+        df_s['Weight_Penalty'] = df_s['Weight (g)'].apply(lambda x: 0 if min_w <= x <= max_w else 1000)
 
-        # 4. Anti-Left Logic (Stability Index)
+        # Apply Stability Adjustments
         if anti_left:
             df_s['Stability_Adj'] = (10 - df_s['StabilityIndex']) * 100
+        elif release_assist:
+            df_s['Stability_Adj'] = (df_s['EI_Tip']) * 10  # Lower EI_Tip is better for release
         else:
             df_s['Stability_Adj'] = 0
 
-        # Final Scoring
         df_s['Total_Score'] = df_s['Flex_Diff'] + df_s['Launch_Diff'] + df_s['Weight_Penalty'] + df_s['Stability_Adj']
 
         recs = df_s.sort_values('Total_Score').head(5).copy()
 
-        # Formatting
+        # Formatting for display
         recs['Weight (g)'] = recs['Weight (g)'].round(0).astype(int)
         recs['Torque'] = recs['Torque'].apply(lambda x: f"{float(x):.1f}")
-        recs['Flex'] = recs['Flex'].apply(lambda x: f"{x}.0" if str(x) == "6" else x)
+        recs['Flex'] = recs['Flex'].apply(lambda x: f"{x}.0" if str(x) in ["5", "6"] else x)
 
         def generate_verdict(row):
             if anti_left and row['StabilityIndex'] > 8.0: return "🛡️ Stability King"
-            if miss in ["Push", "Slice"] and row['EI_Tip'] < 11.5: return "✅ Release Assistant"
+            if release_assist and row['EI_Tip'] < 11.5: return "✅ Release Assistant"
             if row['Weight (g)'] < 100 and carry > 175: return "⚡ Speed Play"
             return "🎯 Balanced Fit"
 
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
+
+        
 
         st.subheader("🚀 Recommended Prescription")
         final_table = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']].reset_index(drop=True)
         final_table.index += 1
         st.table(final_table)
 
-        # --- ANALYSIS NARRATIVE ---
+        # --- ANALYSIS ---
         st.subheader("🔬 Detailed Expert Insights")
         
         
@@ -236,10 +241,9 @@ if all_data:
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
             blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile tailored to your specific swing data."))
-            
             with st.container():
                 st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
-                st.caption(f"{blurb} Selected for your **{int(carry)}yd carry** and a stability rating of **{row['StabilityIndex']}**.")
+                st.caption(f"{blurb} Selected for your **{int(carry)}yd carry** and stability profile.")
 
         st.divider()
         bt1, bt2, _ = st.columns([1, 1, 4])
