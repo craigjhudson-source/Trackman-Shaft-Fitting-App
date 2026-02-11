@@ -136,9 +136,23 @@ if all_data:
                 st.session_state.form_step += 1
                 st.rerun()
         elif c2.button("🔥 Generate Prescription"):
-            sync_answers(current_qids)
-            st.session_state.interview_complete = True
-            st.rerun()
+    sync_answers(current_qids)
+    
+    # 1. Pre-calculate the logic scores so we have them for the save
+    tf, tl = 6.0, 5.0  # Default fallbacks
+    for qid, ans in st.session_state['answers'].items():
+        logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
+        if not logic.empty:
+            act = str(logic.iloc[0]['LogicAction'])
+            if "FlexScore:" in act: tf = float(act.split(":")[1])
+            if "LaunchScore:" in act: tl = float(act.split(":")[1])
+    
+    # 2. Automatically trigger the save to Google Sheets
+    save_lead_to_gsheet(st.session_state['answers'], tf, tl)
+    
+    # 3. Move to the results screen
+    st.session_state.interview_complete = True
+    st.rerun()
 
     else:
         # --- 4. RESULTS VIEW ---
