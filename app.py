@@ -20,7 +20,6 @@ def get_data_from_gsheet():
         sh = gc.open_by_url(SHEET_URL)
         
         def get_clean_df(worksheet_name):
-            # Get raw values to handle duplicate/empty headers manually
             rows = sh.worksheet(worksheet_name).get_all_values()
             if not rows: return pd.DataFrame()
             
@@ -154,7 +153,6 @@ if all_data:
             df_all['Total_Score'] = score_shafts(df_all)
             candidates = df_all.sort_values('Total_Score')
 
-            # Dynamic Selection for 5 Archetypes
             final_recs = []
             final_recs.append(candidates[candidates['Material'].str.contains('Graphite|Carbon', case=False, na=False)].head(1))
             final_recs.append(candidates[candidates['Material'].str.contains('Steel', case=False, na=False)].head(1))
@@ -180,6 +178,14 @@ if all_data:
             st.error(f"Error generating recommendation: {e}")
 
         st.divider()
-        if st.button("🆕 New Fitting"):
+        col_btn1, col_btn2, _ = st.columns([1,1,4])
+        
+        # --- RETURNED BUTTONS ---
+        if col_btn1.button("✏️ Edit Survey"):
+            st.session_state.interview_complete = False
+            st.session_state.form_step = 0 # Takes them back to start
+            st.rerun()
+
+        if col_btn2.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
