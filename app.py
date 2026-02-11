@@ -106,7 +106,6 @@ if all_data:
         st.divider()
         c1, c2, _ = st.columns([1,1,4])
         
-        # FIXED LINE BELOW: Changed st.session_step to st.session_state.form_step
         if c1.button("⬅️ Back") and st.session_state.form_step > 0:
             sync_answers(q_df['QuestionID'].tolist())
             st.session_state.form_step -= 1
@@ -127,6 +126,17 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
+        # 🟢 ADDED: QUESTIONNAIRE SUMMARY
+        with st.expander("📋 View Full Questionnaire Summary", expanded=False):
+            ver_cols = st.columns(3)
+            for i, cat in enumerate(categories):
+                with ver_cols[i % 3]:
+                    st.markdown(f"**{cat}**")
+                    cat_qs = q_master[q_master['Category'] == cat]
+                    for _, q_row in cat_qs.iterrows():
+                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
+                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
+
         # LOGIC CALCS
         try:
             val = st.session_state.answers.get('Q15', 150)
@@ -165,14 +175,16 @@ if all_data:
         final_recs.append(candidates[candidates['Material'] == 'Steel'].head(1).assign(Archetype='⚓ Tour Standard'))
         final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False, na=False)].head(1).assign(Archetype='🎨 Feel Option'))
         final_recs.append(candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype='🎯 Dispersion Killer'))
+        # 🟢 ADDED: 5TH ARCHETYPE
+        final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False, na=False)].head(1).assign(Archetype='🧪 Alt Tech'))
         
-        final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(4)
+        # 🟢 UPDATED: .head(5) instead of .head(4)
+        final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(5)
 
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
 
         st.subheader("🔬 Expert Engineering Analysis")
-        
         
         desc_lookup = {}
         if not all_data['Descriptions'].empty:
@@ -185,6 +197,13 @@ if all_data:
             st.caption(f"{blurb}")
 
         st.divider()
-        if st.button("🆕 New Fitting"):
+        # 🟢 ADDED: EDIT SURVEY BUTTON
+        b1, b2, _ = st.columns([1,1,4])
+        if b1.button("✏️ Edit Survey"):
+            st.session_state.interview_complete = False
+            st.session_state.form_step = 0
+            st.rerun()
+            
+        if b2.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
