@@ -137,6 +137,9 @@ if all_data:
                 st.rerun()
         elif c2.button("🔥 Generate Prescription"):
     sync_answers(current_qids)
+    st.session_state.interview_complete = True
+    st.session_state.needs_save = True # Set the trigger flag
+    st.rerun()
     
     # 1. Pre-calculate the logic scores so we have them for the save
     tf, tl = 6.0, 5.0  # Default fallbacks
