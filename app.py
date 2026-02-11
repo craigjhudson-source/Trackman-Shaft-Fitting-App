@@ -107,7 +107,6 @@ if all_data:
         st.divider()
         c1, c2, _ = st.columns([1,1,4])
         
-        # RESTORED: Back Button Logic
         if c1.button("⬅️ Back") and st.session_state.form_step > 0:
             sync_answers(q_df['QuestionID'].tolist())
             st.session_state.form_step -= 1
@@ -124,13 +123,17 @@ if all_data:
                 
                 # --- CALCULATE LOGIC ---
                 f_tf, f_tl = 6.0, 5.0
-                anti_left, push_miss = False, False
+                push_miss = False
                 min_w = 0
 
                 try:
                     carry_6i = float(st.session_state.answers.get('Q15', 0))
-                    if carry_6i >= 180: min_w = 118
-                    elif carry_6i >= 165: min_w = 105
+                    # SPEED OVERRIDE: 185 yards carry is physically impossible for most S-flex shafts to handle stably
+                    if carry_6i >= 180: 
+                        min_w = 118
+                        f_tf = 7.0 # Hard Floor for X-Stiff
+                    elif carry_6i >= 165: 
+                        min_w = 105
                 except: pass
 
                 for qid, ans in st.session_state.answers.items():
@@ -139,16 +142,13 @@ if all_data:
                     for _, l_row in logic_rows.iterrows():
                         act = str(l_row['LogicAction'])
                         if "Target FlexScore:" in act: 
-                            try: f_tf = float(act.split("FlexScore:")[1].split(";")[0])
+                            try: f_tf = max(f_tf, float(act.split("FlexScore:")[1].split(";")[0]))
                             except: pass
                         if "Target LaunchScore:" in act: 
                             try: f_tl = float(act.split("LaunchScore:")[1].split(";")[0])
                             except: pass
                         if "Primary Miss: Push" in act or str(ans) == "Push": push_miss = True
 
-                if min_w >= 118: f_tf = 7.0 # Tour Speed Floor
-
-                # SAVE TO SHEET
                 save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
 
                 st.session_state.update({
@@ -161,30 +161,32 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        with st.expander("📋 View Full Input Verification Summary", expanded=True):
-            cols = st.columns(3)
-            categories = list(dict.fromkeys(q_master['Category'].tolist()))
-            for i, cat in enumerate(categories):
-                with cols[i % 3]:
-                    st.markdown(f"**{cat}**")
-                    cat_qs = q_master[q_master['Category'] == cat]
-                    for _, q_row in cat_qs.iterrows():
-                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
-                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
-
         tf, tl = st.session_state.get('final_tf', 6.0), st.session_state.get('final_tl', 5.0)
         push_miss, min_w = st.session_state.get('push_miss', False), st.session_state.get('min_w', 0)
         
         df_s = all_data['Shafts'].copy()
-        for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque']:
+        for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
+        # Gating
         df_s = df_s[df_s['Weight (g)'] >= min_w]
-        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 400.0
+        
+        # Scoring Logic
+        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 500.0
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
-        df_s['Torque_Penalty'] = (df_s['Torque'] * 250.0) if (push_miss and min_w >= 115) else 0
+        
+        # MISS CORRECTION: Push misses require low torque and tip stability
+        if push_miss:
+            df_s['Torque_Penalty'] = df_s['Torque'] * 300.0  # Penalize high torque heavily
+            df_s['Stability_Bonus'] = (10 - df_s['StabilityIndex']) * 100.0 # Reward high stability
+            
+            # MECHANICAL CONFLICT: LZ (Loading Zone) shafts are poor for high-speed push misses
+            df_s.loc[df_s['Model'].str.contains('LZ', case=False), 'Flex_Penalty'] += 200
+        else:
+            df_s['Torque_Penalty'] = 0
+            df_s['Stability_Bonus'] = 0
 
-        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Torque_Penalty']
+        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Torque_Penalty'] + df_s['Stability_Bonus']
         recs = df_s.sort_values('Total_Score').head(5).copy()
 
         st.subheader("🚀 Top Recommended Prescription")
@@ -192,17 +194,17 @@ if all_data:
 
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
-            "Project X Rifle": "Low-torque, tip-stiff design to prevent the face from hanging open at high speeds.",
-            "Dynamic Gold": "High-mass profile to provide maximum feedback and lower a 'High' flight tendency.",
-            "C-Taper": "Piercing trajectory with an ultra-stiff tip to minimize face deflection.",
-            "Modus3 Tour 120": "Unique 'X' profile with a stiff tip but smoother mid-section for high-speed feel.",
-            "L-Series": "Superior torque recovery for push-miss correction in a modern profile.",
-            "CT-125": "Heavyweight stability profile specifically tuned for high-speed impact dynamics."
+            "Project X Rifle": "Non-loading zone profile with maximum tip-stiffness to neutralize push misses.",
+            "Dynamic Gold": "Traditional high-mass taper designed to bring down high-flight tendencies.",
+            "C-Taper": "Stiffest tip profile in the KBS line; ideal for high-speed face squaring.",
+            "Modus3 Tour 120": "Unique flex profile that offers 'X' stability without a harsh feel.",
+            "L-Series": "Carbon-engineered for ultra-fast torque recovery to square the face at impact.",
+            "CT-125": "Heavyweight Japanese steel tuned for stability at tour-level carry distances."
         }
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = "Selected for dynamic stability and optimal weight-to-speed ratio."
+            blurb = "Selected for elite stability and optimal weight-to-speed ratio."
             for key in traits:
                 if key in brand_model: blurb = traits[key]
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
