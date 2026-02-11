@@ -101,86 +101,94 @@ if all_data:
                 st.session_state.interview_complete = True; st.rerun()
 
     else:
-        # --- 4. RESTORED MASTER FITTER REPORT ---
+        # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # RESTORED: Input Verification Summary
+        # Summary Verification
         with st.expander("📋 View Full Input Verification Summary", expanded=False):
-            cols = st.columns(3)
+            ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
-                with cols[i % 3]:
+                with ver_cols[i % 3]:
                     st.markdown(f"**{cat}**")
                     cat_qs = q_master[q_master['Category'] == cat]
                     for _, q_row in cat_qs.iterrows():
-                        qid_str = str(q_row['QuestionID']).strip()
-                        ans = st.session_state.answers.get(qid_str, "—")
+                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
-        # Logic Calculation
-        f_tf, f_tl = 5.0, 5.0
-        push_miss, slice_miss = False, False
-        min_w, hs_mandate = 0, False
-        curr_w = 115 
+        # ENGINE LOGIC
+        f_tf, f_tl, min_w, curr_w = 5.0, 5.0, 0, 115
+        primary_miss = st.session_state.answers.get('Q17', '')
 
         try:
             carry_6i = float(st.session_state.answers.get('Q15', 0))
-            if carry_6i >= 180: min_w, f_tf, hs_mandate = 118, 7.0, True
+            if carry_6i >= 180: min_w, f_tf = 118, 7.0
             elif carry_6i >= 160: min_w, f_tf = 105, 6.0
             elif carry_6i < 140: f_tf = 4.0 
         except: pass
 
-        # Get Miss Logic
-        primary_miss = st.session_state.answers.get('Q17', '')
-        if "Push" in primary_miss: push_miss = True
-        if "Slice" in primary_miss: slice_miss = True
-
-        # Weight Consistency Lookup
-        c_brand = st.session_state.answers.get('Q10', '')
-        c_model = st.session_state.answers.get('Q12', '')
+        c_brand, c_model = st.session_state.answers.get('Q10', ''), st.session_state.answers.get('Q12', '')
         curr_shaft_data = all_data['Shafts'][(all_data['Shafts']['Brand'] == c_brand) & (all_data['Shafts']['Model'] == c_model)]
         if not curr_shaft_data.empty:
             curr_w = pd.to_numeric(curr_shaft_data.iloc[0]['Weight (g)'], errors='coerce')
 
-        df_s = all_data['Shafts'].copy()
+        # DATA CLEANING
+        df_all = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
-            df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
-
-        # Filters
-        df_s = df_s[~df_s['Model'].str.contains('Wedge', case=False)]
-        df_s = df_s[df_s['Weight (g)'] >= min_w]
+            df_all[col] = pd.to_numeric(df_all[col], errors='coerce')
         
-        # SCORING
-        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - f_tf) * 800.0
-        df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - f_tl) * 75.0
-        df_s['Weight_Penalty'] = df_s['Weight (g)'].apply(lambda x: abs(x - curr_w) * 5 if abs(x - curr_w) > 35 else 0)
+        # WEDGIE EXCLUSION
+        wedge_terms = ['Wedge', 'Hi-Rev', 'Spinner', 'Onyx', 'Vokey', 'Full Face']
+        df_all = df_all[~df_all['Model'].str.contains('|'.join(wedge_terms), case=False)]
 
-        # MISS CORRECTION LOGIC
-        if push_miss:
-            df_s['Miss_Correction'] = (df_s['Torque'] * 500.0) + ((10 - df_s['StabilityIndex']) * 200.0)
-        elif slice_miss or primary_miss == "Scattered":
-            df_s['Miss_Correction'] = (abs(df_s['Torque'] - 3.5) * 200.0) 
+        # SCORE CALC FUNCTION
+        def score_shafts(df_in, use_weight_logic=True):
+            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 800.0
+            df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - f_tl) * 75.0
+            df_in['Weight_Penalty'] = df_in['Weight (g)'].apply(lambda x: abs(x - curr_w) * 5 if abs(x - curr_w) > 35 else 0) if use_weight_logic else 0
+            
+            # Miss correction
+            if "Push" in primary_miss:
+                df_in['Miss_Correction'] = (df_in['Torque'] * 500.0) + ((10 - df_in['StabilityIndex']) * 200.0)
+            elif "Slice" in primary_miss or primary_miss == "Scattered":
+                df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 200.0) 
+            else:
+                df_in['Miss_Correction'] = 0
+                
+            return df_in['Flex_Penalty'] + df_in['Launch_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction']
+
+        # PRIMARY RECOMMENDATIONS (Steel/Mainline)
+        df_main = df_all[df_all['Weight (g)'] >= min_w].copy()
+        df_main['Total_Score'] = score_shafts(df_main)
+        recs_main = df_main.sort_values('Total_Score').head(5)
+
+        # GRAPHITE ALTERNATIVES (Bypass weight logic)
+        df_graph = df_all[df_all['Material'].str.contains('Graphite|Carbon', case=False, na=False)].copy()
+        if not df_graph.empty:
+            df_graph['Total_Score'] = score_shafts(df_graph, use_weight_logic=False)
+            recs_graph = df_graph.sort_values('Total_Score').head(3)
         else:
-            df_s['Miss_Correction'] = 0
+            recs_graph = pd.DataFrame()
 
-        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Weight_Penalty'] + df_s['Miss_Correction']
-        recs = df_s.sort_values('Total_Score').head(5).copy()
-
+        # DISPLAY
         st.subheader("🚀 Top Recommended Prescription")
-        st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
+        st.table(recs_main[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
+
+        if not recs_graph.empty:
+            st.subheader("🌫️ Recommended Graphite Alternatives")
+            st.caption("Selected for maximum vibration dampening and speed induction regardless of current weight.")
+            st.table(recs_graph[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
 
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
             "Zelos": "Ultra-lightweight Japanese steel designed to maximize clubhead speed for smoother tempos.",
             "NEO": "Active tip section specifically engineered to increase launch and spin for modern distance irons.",
             "Modus3 Tour 105": "Lightweight tour-profile steel; provides speed without losing the 'traditional' feel.",
-            "Project X": "Non-loading zone profile with maximum tip-stiffness to neutralize push misses."
+            "Recoil": "Ion-plated graphite designed with high-torque recovery for squaring the face at impact.",
+            "Steelfiber": "Graphite core with a steel wire wrap; the ultimate bridge between weight and feel."
         }
-
-        for i, (idx, row) in enumerate(recs.iterrows(), 1):
+        for i, (idx, row) in enumerate(recs_main.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = "Selected for optimal weight-to-speed ratio and dynamic stability."
-            for key in traits:
-                if key in brand_model: blurb = traits[key]
+            blurb = next((v for k, v in traits.items() if k in brand_model), "Selected for optimal weight-to-speed ratio and dynamic stability.")
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
 
