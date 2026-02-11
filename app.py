@@ -26,18 +26,33 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Data Load Error: {e}"); return None
 
-def save_lead_to_gsheet(answers, t_flex, t_launch):
+def save_lead_to_gsheet(answers, target_flex, target_launch):
     try:
-        creds_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
-        ws = sh.worksheet('Fittings')
-        # Map Q01-Q21 into a single row
-        row = [str(datetime.datetime.now())] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)] + [t_flex, t_launch]
-        ws.append_row(row)
+        # 1. Connect to your Sheet (Ensure the name matches exactly)
+        gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
+        sh = gc.open("Your_Google_Sheet_Name") # Replace with your actual sheet name
+        worksheet = sh.worksheet("fittings") # The specific tab name
+        
+        # 2. Build the row data using the updated Miss and Carry info
+        # We use .get() to ensure if a field is missing, the code doesn't crash
+        row = [
+            pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"), # Timestamp
+            answers.get("Q01", "N/A"), # Name
+            answers.get("Q02", "N/A"), # Email
+            answers.get("Q15", 0),     # Carry
+            answers.get("Q18", "N/A"), # Miss (The adjusted value)
+            target_flex,               # Calculated Target Flex
+            target_launch,             # Calculated Target Launch
+            answers.get("Q10", ""),    # Current Shaft
+            # Add any other columns you need in your Sheet here
+        ]
+        
+        # 3. Append the row
+        worksheet.append_row(row)
         return True
-    except: return False
+    except Exception as e:
+        st.error(f"Filing Error: {e}")
+        return False
 
 # --- 2. INITIALIZATION ---
 st.set_page_config(page_title="Patriot Fitting Engine", layout="wide", page_icon="⛳")
