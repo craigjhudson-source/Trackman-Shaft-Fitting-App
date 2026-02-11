@@ -102,11 +102,12 @@ if all_data:
         # 1. Verification Section
         st.subheader("📋 Input Verification")
         v1, v2, v3, v4 = st.columns(4)
-        carry = float(st.session_state['answers'].get('Q15', 0))
+        try: carry = float(st.session_state['answers'].get('Q15', 0))
+        except: carry = 0
         miss = st.session_state['answers'].get('Q18', "")
         v1.metric("6i Carry", f"{carry} yds")
         v2.metric("Miss", miss)
-        v3.metric("Email", st.session_state['answers'].get('Q02', ""))
+        v3.metric("Current Shaft", st.session_state['answers'].get('Q12', ""))
         v4.metric("Current Flex", st.session_state['answers'].get('Q11', ""))
 
         with st.expander("Show Full Survey Answers"):
@@ -124,30 +125,29 @@ if all_data:
                 if "FlexScore:" in act: tf = float(act.split(":")[1])
                 if "LaunchScore:" in act: tl = float(act.split(":")[1])
 
+        # ELITE SPEED CORRECTION
+        if carry >= 190: tf = 7.5 # Target X-Stiff+
+        elif carry >= 175: tf = 6.5 # Target Stiff+
+
         df_s = all_data['Shafts'].copy()
         df_s['FlexScore'] = pd.to_numeric(df_s['FlexScore'], errors='coerce')
         df_s['LaunchScore'] = pd.to_numeric(df_s['LaunchScore'], errors='coerce')
         df_s['Weight'] = pd.to_numeric(df_s['Weight (g)'], errors='coerce')
 
         # Baseline Penalty
-        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 40) + (abs(df_s['LaunchScore'] - tl) * 20)
+        df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 50) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        # SPEED & HOOK SHIELD (The Craig Correction)
+        # SPEED & HOOK SHIELD
         if carry > 185:
-            # Penalize light shafts for high speed players
-            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 200 
-            # Force higher flex targets
-            df_s.loc[df_s['FlexScore'] < 6.5, 'Penalty'] += 100
+            df_s.loc[df_s['Weight'] < 115, 'Penalty'] += 300 # Kill light shafts for high speed
         
         if "Hook" in miss or "Pull" in miss:
-            # Penalize high launch/spin (usually softer tips)
-            df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 150
-            # Stability bonus for low torque / low launch
-            df_s.loc[df_s['LaunchScore'] <= 3, 'Penalty'] -= 20
+            df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 150 # Penalize active tips
+            df_s.loc[df_s['Weight'] < 110, 'Penalty'] += 100 # Weight stabilizes path
 
         st.divider()
         st.subheader("🚀 Recommended Shaft Blueprints")
-        st.info(f"Targeting: Stiff-Plus to X-Stiff profiles with Low-Mid Launch stability.")
+        st.success(f"Algorithm Target -> Flex: {tf} (X-Stiff Class) | Launch: {tl}")
         
         recs = df_s.sort_values(['Penalty', 'Weight'], ascending=[True, False]).head(5)
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Spin']])
