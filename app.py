@@ -4,7 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import datetime
 
-# --- 1. DATA CONNECTION ---
+# --- 1. DATA CONNECTION & CLEANING ---
 st.set_page_config(page_title="Patriot Golf Fitting Engine", layout="wide", page_icon="⛳")
 
 @st.cache_data(ttl=600)
@@ -20,34 +20,33 @@ def get_data_from_gsheet():
         sh = gc.open_by_url(SHEET_URL)
         
         def get_clean_df(worksheet_name):
-            # Fetch all values instead of records to manually handle headers
-            list_of_lists = sh.worksheet(worksheet_name).get_all_values()
-            if not list_of_lists:
-                return pd.DataFrame()
+            # Get raw values to handle duplicate/empty headers manually
+            rows = sh.worksheet(worksheet_name).get_all_values()
+            if not rows: return pd.DataFrame()
             
-            headers = list_of_lists[0]
-            # Rename empty or duplicate headers to prevent pandas/gspread crashes
-            clean_headers = []
+            headers = rows[0]
+            seen = {}
+            new_headers = []
             for i, h in enumerate(headers):
-                h = str(h).strip()
-                if h == "" or h in clean_headers:
-                    clean_headers.append(f"Unnamed_{i}")
+                h = h.strip()
+                if not h: h = f"EmptyCol_{i}"
+                if h in seen:
+                    seen[h] += 1
+                    new_headers.append(f"{h}_{seen[h]}")
                 else:
-                    clean_headers.append(h)
-            
-            return pd.DataFrame(list_of_lists[1:], columns=clean_headers)
+                    seen[h] = 0
+                    new_headers.append(h)
+            return pd.DataFrame(rows[1:], columns=new_headers)
 
-        data = {
+        return {
             'Heads': get_clean_df('Heads'),
             'Shafts': get_clean_df('Shafts'),
             'Questions': get_clean_df('Questions'),
             'Responses': get_clean_df('Responses'),
             'Config': get_clean_df('Config')
         }
-        return data
     except Exception as e:
-        st.error(f"📡 Connection Error: {e}")
-        return None
+        st.error(f"📡 Connection Error: {e}"); return None
 
 # --- 2. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
@@ -101,6 +100,7 @@ if all_data:
                         opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique().tolist()) if brand else []
                 else:
                     opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].astype(str).tolist()
+                
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
@@ -120,11 +120,12 @@ if all_data:
                 sync_answers(q_master['QuestionID'].tolist())
                 st.session_state.interview_complete = True; st.rerun()
 
+    # --- 4. MASTER FITTER REPORT ---
     else:
-        # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        with st.expander("📋 View Full Input Verification Summary", expanded=True):
+        # SUMMARY SECTION
+        with st.expander("📋 View Full Questionnaire Summary", expanded=True):
             ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
                 with ver_cols[i % 3]:
@@ -135,56 +136,50 @@ if all_data:
                         st.caption(f"{q_row['QuestionText']}: **{ans}**")
 
         # ENGINE LOGIC
-        primary_miss = st.session_state.answers.get('Q17', '')
         try:
-            carry_6i = float(st.session_state.answers.get('Q15', 0))
-        except:
-            carry_6i = 0.0
+            carry_6i = float(st.session_state.answers.get('Q15', 150))
+            if carry_6i >= 185: f_tf, ideal_w = 7.5, 120
+            elif carry_6i >= 165: f_tf, ideal_w = 6.0, 105
+            else: f_tf, ideal_w = 5.0, 95
 
-        # Determine Specs based on Speed/Carry
-        if carry_6i >= 200: f_tf, ideal_w = 9.0, 125
-        elif carry_6i >= 180: f_tf, ideal_w = 7.5, 115
-        elif carry_6i >= 160: f_tf, ideal_w = 6.0, 105
-        else: f_tf, ideal_w = 4.0, 85
+            df_all = all_data['Shafts'].copy()
+            for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
+                df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
 
-        df_all = all_data['Shafts'].copy()
-        for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
-            df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
-        
-        def score_shafts(df):
-            flex_pen = abs(df['FlexScore'] - f_tf) * 100
-            weight_pen = abs(df['Weight (g)'] - ideal_w) * 10
-            return flex_pen + weight_pen
+            def score_shafts(df_in):
+                flex_pen = abs(df_in['FlexScore'] - f_tf) * 100
+                weight_pen = abs(df_in['Weight (g)'] - ideal_w) * 10
+                return flex_pen + weight_pen
 
-        df_all['Total_Score'] = score_shafts(df_all)
-        candidates = df_all.sort_values('Total_Score')
+            df_all['Total_Score'] = score_shafts(df_all)
+            candidates = df_all.sort_values('Total_Score')
 
-        # Archetype Picks
-        final_recs = []
-        final_recs.append(candidates[candidates['Material'].str.contains('Graphite|Carbon', case=False, na=False)].head(1))
-        final_recs.append(candidates[candidates['Material'].str.contains('Steel', case=False, na=False)].head(1))
-        final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False, na=False)].head(1))
-        final_recs.append(candidates.sort_values('StabilityIndex', ascending=False).head(1))
-        final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False, na=False)].head(1))
+            # Dynamic Selection for 5 Archetypes
+            final_recs = []
+            final_recs.append(candidates[candidates['Material'].str.contains('Graphite|Carbon', case=False, na=False)].head(1))
+            final_recs.append(candidates[candidates['Material'].str.contains('Steel', case=False, na=False)].head(1))
+            final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False, na=False)].head(1))
+            final_recs.append(candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1))
+            final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False, na=False)].head(1))
 
-        final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(5)
-        archetypes = ['🚀 Modern Power', '⚓ Tour Standard', '🎨 Feel Option', '🎯 Dispersion Killer', '🧪 Alt Tech']
-        final_df['Archetype'] = archetypes[:len(final_df)]
+            final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(5)
+            archetypes = ['🚀 Modern Power', '⚓ Tour Standard', '🎨 Feel Option', '🎯 Dispersion Killer', '🧪 Alt Tech']
+            final_df['Archetype'] = archetypes[:len(final_df)]
 
-        st.subheader("🚀 Top Recommended Prescription")
-        st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
+            st.subheader("🚀 Top Recommended Prescription")
+            st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
 
-        # EXPERT ANALYSIS
-        st.subheader("🔬 Expert Engineering Analysis")
-                for _, row in final_df.iterrows():
-            blurb = row.get('Description', "Precision-matched profile selected to optimize energy transfer and impact stability.")
-            st.markdown(f"**{row['Archetype']}: {row['Brand']} {row['Model']}**")
-            st.caption(f"{blurb}")
+            st.subheader("🔬 Expert Engineering Analysis")
+            
+            for _, row in final_df.iterrows():
+                blurb = row.get('Description', "High-performance profile selected for stability and trajectory control.")
+                st.markdown(f"**{row['Archetype']}: {row['Brand']} {row['Model']}**")
+                st.caption(f"{blurb}")
+
+        except Exception as e:
+            st.error(f"Error generating recommendation: {e}")
 
         st.divider()
-        b1, b2, _ = st.columns([1,1,4])
-        if b1.button("✏️ Edit Survey"): st.session_state.interview_complete = False; st.rerun()
-        if b2.button("🆕 New Fitting"):
+        if st.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
-            
