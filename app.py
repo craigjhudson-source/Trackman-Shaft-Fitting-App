@@ -3,7 +3,6 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 import datetime
-import plotly.express as px # For the Visual DNA chart
 
 # --- 1. DATA ENGINE ---
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -14,7 +13,6 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         gc = gspread.authorize(creds)
-        # Using your specific URL
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         return {
             'Heads': pd.DataFrame(sh.worksheet('Heads').get_all_records()),
@@ -28,36 +26,23 @@ def get_data_from_gsheet():
 
 def save_lead_to_gsheet(answers, t_flex, t_launch):
     try:
-        # 1. Use the Service Account credentials from secrets
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         gc = gspread.authorize(creds)
-        
-        # 2. Open the specific spreadsheet by the URL you provided
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
-        
-        # 3. Target the 'Fittings' tab (Make sure it is spelled exactly like this)
         ws = sh.worksheet('Fittings')
         
-        # 4. Prepare the row - This builds the 24 columns your sheet expects
-        # Timestamp + 21 Questions + Flex + Launch
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp]
-        
-        # Fill Q01 through Q21
         for i in range(1, 22):
             qid = f"Q{i:02d}"
             row.append(str(answers.get(qid, "")))
-            
-        # Add the calculated scores
         row.append(t_flex)
         row.append(t_launch)
         
-        # 5. Send to sheet
         ws.append_row(row)
         return True
     except Exception as e:
-        # This will show you exactly WHAT went wrong (e.g., "Worksheet not found")
         st.error(f"📡 Connection Error: {str(e)}")
         return False
         
@@ -67,6 +52,7 @@ all_data = get_data_from_gsheet()
 
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
+if 'needs_save' not in st.session_state: st.session_state.needs_save = False
 if 'answers' not in st.session_state: st.session_state['answers'] = {f"Q{i:02d}": "" for i in range(1, 22)}
 
 def sync_answers(q_list):
@@ -79,7 +65,6 @@ if all_data:
     if not st.session_state.interview_complete:
         st.title("Americas Best Shaft Fitting Engine")
         
-        # Progress Bar
         categories = all_data['Questions']['Category'].unique().tolist()
         progress = (st.session_state.form_step) / (len(categories))
         st.progress(progress, text=f"Step {st.session_state.form_step + 1} of {len(categories)}")
@@ -90,13 +75,12 @@ if all_data:
 
         st.subheader(f"Section: {current_cat}")
         
-        # Display Questions
         for _, row in q_df.iterrows():
             qid, qtext, qtype, qopts = row['QuestionID'], row['QuestionText'], row['InputType'], str(row['Options'])
             prev_val = st.session_state['answers'].get(qid, "")
 
             if qtype == "Dropdown":
-                options = [""] # Default empty
+                options = [""]
                 if "Config:" in qopts: 
                     options += all_data['Config'][qopts.split(":")[1]].dropna().unique().tolist()
                 elif "Heads" in qopts:
@@ -122,7 +106,6 @@ if all_data:
             else:
                 st.text_input(qtext, value=str(prev_val), key=f"widget_{qid}", on_change=sync_answers, args=(current_qids,))
 
-        # Navigation
         st.markdown("---")
         c1, c2, _ = st.columns([1,1,4])
         if st.session_state.form_step > 0 and c1.button("⬅️ Back"):
@@ -136,35 +119,31 @@ if all_data:
                 st.session_state.form_step += 1
                 st.rerun()
         elif c2.button("🔥 Generate Prescription"):
-    sync_answers(current_qids)
-    st.session_state.interview_complete = True
-    st.session_state.needs_save = True # Set the trigger flag
-    st.rerun()
-    
-    # 1. Pre-calculate the logic scores so we have them for the save
-    tf, tl = 6.0, 5.0  # Default fallbacks
-    for qid, ans in st.session_state['answers'].items():
-        logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
-        if not logic.empty:
-            act = str(logic.iloc[0]['LogicAction'])
-            if "FlexScore:" in act: tf = float(act.split(":")[1])
-            if "LaunchScore:" in act: tl = float(act.split(":")[1])
-    
-    # 2. Automatically trigger the save to Google Sheets
-    save_lead_to_gsheet(st.session_state['answers'], tf, tl)
-    
-    # 3. Move to the results screen
-    st.session_state.interview_complete = True
-    st.rerun()
+            sync_answers(current_qids)
+            st.session_state.interview_complete = True
+            st.session_state.needs_save = True # Trigger the auto-save on the next page load
+            st.rerun()
 
     else:
         # --- 4. RESULTS VIEW ---
+        # Calculation of scores (Needed for both display and save)
+        tf, tl = 6.0, 5.0
+        for qid, ans in st.session_state['answers'].items():
+            logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
+            if not logic.empty:
+                act = str(logic.iloc[0]['LogicAction'])
+                if "FlexScore:" in act: tf = float(act.split(":")[1])
+                if "LaunchScore:" in act: tl = float(act.split(":")[1])
+
+        # AUTO-SAVE HANDLER
+        if st.session_state.get('needs_save', False):
+            if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
+                st.toast("✅ Lead automatically saved to Google Sheets")
+            st.session_state.needs_save = False # Ensure it only saves once
+
         st.title(f"🎯 Fitting Report: {st.session_state['answers'].get('Q01', 'Player')}")
         
-        # 1. DATA VERIFICATION SUMMARY (Replacing the Plotly Chart)
         st.subheader("📋 Input Verification Summary")
-        
-        # Grouping answers for readability
         sum_col1, sum_col2 = st.columns(2)
         
         with sum_col1:
@@ -185,45 +164,25 @@ if all_data:
 
         st.divider()
 
-        # 2. CALCULATION ENGINE
-        tf, tl = 6.0, 5.0 # Fallbacks
-        for qid, ans in st.session_state['answers'].items():
-            logic = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & (all_data['Responses']['ResponseOption'] == str(ans))]
-            if not logic.empty:
-                act = str(logic.iloc[0]['LogicAction'])
-                if "FlexScore:" in act: tf = float(act.split(":")[1])
-                if "LaunchScore:" in act: tl = float(act.split(":")[1])
-
+        # Calculation Engine for Shafts
         df_s = all_data['Shafts'].copy()
-        # Convert numeric columns safely
         for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-       # 1. Baseline Penalty (Multiplier increased to 150 for Flex to make it the priority)
         df_s['Penalty'] = (abs(df_s['FlexScore'] - tf) * 150) + (abs(df_s['LaunchScore'] - tl) * 20)
         
-        # 2. Strict Tour Speed Floor (For 190+ yards)
         if carry >= 190:
-            # Penalize anything under 120g heavily
             df_s.loc[df_s['Weight (g)'] < 120, 'Penalty'] += 500
-            # Penalize anything under an X-Flex (FlexScore 8.5) heavily
             df_s.loc[df_s['FlexScore'] < 8.5, 'Penalty'] += 1000
-            # Stability check
             df_s.loc[df_s['EI_Tip'] < 11.5, 'Penalty'] += 300
         
-        # 3. Anti-Left / Hook Logic
         if miss in ["Hook", "Pull"]:
             df_s['Penalty'] += (df_s['Torque'] * 200)
-            # High launch + Hook = Disaster. Heavy penalty.
             df_s.loc[df_s['LaunchScore'] > 4, 'Penalty'] += 300
 
-        # Final Sorting
         recs = df_s.sort_values(['Penalty', 'FlexScore'], ascending=[True, False]).head(5)
 
-        # 3. RECOMMENDATIONS TABLE
         st.subheader("🚀 Top 5 Shaft Recommendations")
-        
-        # Adding a custom "Fitters Note" column based on the profile
         def generate_note(row):
             notes = []
             if row['StabilityIndex'] > 8: notes.append("Max Stability")
@@ -232,25 +191,21 @@ if all_data:
             return " | ".join(notes) if notes else "Balanced"
 
         recs['Analysis'] = recs.apply(generate_note, axis=1)
-
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque', 'Analysis']])
 
-       # 4. ACTION BUTTONS
         st.divider()
-        # Create 3 columns instead of 2
         btn_col1, btn_col2, btn_col3, _ = st.columns([2, 2, 2, 2])
         
-        if btn_col1.button("💾 Save to Google Sheets"):
+        if btn_col1.button("💾 Manual Save (Duplicate)"):
             if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
                 st.success("Entry Saved!")
             else: st.error("Save Error.")
 
-        # THIS IS THE NEW BUTTON
         if btn_col2.button("✏️ Edit Survey"):
             st.session_state.interview_complete = False
             st.rerun()
 
         if btn_col3.button("🆕 New Fitting"):
-            # This clears everything to start fresh
-            for key in st.session_state.keys(): del st.session_state[key]
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
             st.rerun()
