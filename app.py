@@ -173,7 +173,7 @@ if all_data:
 
         # CLEAN UP VALUES: Round weight to whole, Torque to 1 decimal
         recs['Weight (g)'] = recs['Weight (g)'].round(0).astype(int)
-        recs['Torque'] = recs['Torque'].round(1)
+        recs['Torque'] = recs['Torque'].map(lambda x: f"{x:.1f}")
 
         def generate_verdict(row):
             if miss in ["Push", "Slice"] and row['EI_Tip'] < 11.5: return "✅ Release Assistant"
@@ -184,9 +184,12 @@ if all_data:
         recs['Verdict'] = recs.apply(generate_verdict, axis=1)
 
         st.subheader("🚀 Recommended Prescription")
-        st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']])
+        # CLEAN UP TABLE LOOK: Reset index and hide it
+        final_table = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Verdict', 'Launch', 'Torque']].reset_index(drop=True)
+        final_table.index += 1 # Starts visible index at 1 if needed
+        st.table(final_table)
 
-        # --- EXPANDED EXPERT ANALYSIS FOR ALL RECOMMENDED SHAFTS ---
+        # --- EXPANDED EXPERT ANALYSIS ---
         st.subheader("🔬 Detailed Expert Insights")
         
         traits = {
@@ -197,7 +200,6 @@ if all_data:
             "AMT Black": "Uses Ascending Mass Technology. It provides more speed in your long irons and more control in your scoring clubs."
         }
 
-        # Use enumerate(..., 1) to get clean 1, 2, 3 numbering
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
             blurb = traits.get(row['Model'], traits.get(brand_model, "A high-performance profile designed to balance your swing speed with stable launch characteristics."))
