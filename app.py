@@ -1,125 +1,73 @@
-import streamlit as st
-import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
-
-# --- 1. CONFIG & AUTH ---
-st.set_page_config(page_title="Patriot Fitting Engine", layout="wide")
-
-def get_data_from_gsheet():
-    try:
-        creds_info = st.secrets["gcp_service_account"]
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=scope)
-        gc = gspread.authorize(creds)
-        
-        # Open your specific sheet
-        SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
-        sh = gc.open_by_url(SHEET_URL)
-        
-        data = {}
-        for tab in ['Heads', 'Shafts', 'Questions', 'Responses', 'Config']:
-            ws = sh.worksheet(tab)
-            data[tab] = pd.DataFrame(ws.get_all_records())
-        return data
-    except Exception as e:
-        st.error(f"📡 Data Load Error: {e}")
-        return None
-
-# --- 2. TRACKMAN PARSER ---
-def process_trackman(file):
-    try:
-        if file.name.endswith('.csv'):
-            df_raw = pd.read_csv(file)
-        else:
-            df_raw = pd.read_excel(file)
-            
-        # Search for the row containing 'Club Speed [mph]'
-        header_row = None
-        for i in range(min(len(df_raw), 50)): # Check first 50 rows
-            if 'Club Speed [mph]' in df_raw.iloc[i].values:
-                header_row = i
-                break
-        
-        if header_row is not None:
-            # Re-read the file with correct headers
-            file.seek(0) # Reset file pointer to start
-            if file.name.endswith('.csv'):
-                df = pd.read_csv(file, skiprows=header_row + 1)
-            else:
-                df = pd.read_excel(file, skiprows=header_row + 1)
-                
-            df = df.dropna(subset=['Club Speed [mph]'])
-            
-            return {
-                "speed": pd.to_numeric(df['Club Speed [mph]'], errors='coerce').mean(),
-                "launch": pd.to_numeric(df['Launch Angle [deg]'], errors='coerce').mean(),
-                "spin": pd.to_numeric(df['Spin Rate [rpm]'], errors='coerce').mean(),
-                "carry": pd.to_numeric(df['Carry Flat - Length [yds]'], errors='coerce').mean()
-            }
-    except Exception as e:
-        st.error(f"⚠️ Parsing Error: {e}")
-        return None
-
-# --- 3. MAIN UI LOGIC ---
+# --- 3. UI LAYOUT ---
 all_data = get_data_from_gsheet()
 
 if all_data:
     st.title("🇺🇸 Patriot Fitting Engine")
     
+    # --- SIDEBAR: THE CONTROL CENTER ---
     with st.sidebar:
-        st.header("1. Feel Priority")
+        st.header("1. Player Profile")
+        player_name = st.text_input("Player Name", "John Doe")
+        
+        st.header("2. Fitting Priorities")
         feel_label = st.select_slider(
             "Impact of Feel:",
-            options=["1 - Low", "2 - Med-Low", "3 - Neutral", "4 - High", "5 - Pure Feel"],
+            options=["1 - Low", "2 - Med", "3 - Neutral", "4 - High", "5 - Pure Feel"],
             value="3 - Neutral"
         )
-        priority_map = {"1": 1.0, "2": 2.0, "3": 3.0, "4": 4.0, "5": 5.0}
-        feel_val = priority_map.get(feel_label[0], 3.0)
+        
+        # Manual Overrides for the "Engine"
+        st.header("3. Manual Targets")
+        # We set these as defaults; Trackman will suggest updates if uploaded
+        t_flex = st.number_input("Target FlexScore", value=6.0, step=0.1, help="6.0 = Stiff, 5.0 = Regular")
+        t_launch = st.number_input("Target LaunchScore", value=5.0, step=0.5, help="Low number = Low Launch shaft")
+        
+        st.header("4. Transition/Tempo")
+        tempo = st.selectbox("Player Tempo", ["Smooth", "Moderate", "Aggressive/Fast"])
 
+    # --- MAIN COLUMN: DATA & RESULTS ---
     col1, col2 = st.columns([1, 1.2])
 
     with col1:
-        st.subheader("2. Trackman Data")
+        st.subheader("📊 Trackman Input")
         tm_file = st.file_uploader("Upload Trackman Export", type=["xlsx", "csv"])
         
         if tm_file:
             stats = process_trackman(tm_file)
             if stats:
                 st.metric("Avg Club Speed", f"{stats['speed']:.1f} mph")
-                # Auto-calculate targets
-                s_flex = round((stats['speed'] / 10) - 4.0, 1)
-                t_flex = st.number_input("Target FlexScore", value=float(s_flex), step=0.1)
-                t_launch = st.number_input("Target LaunchScore", value=5.0, step=0.5)
+                st.metric("Spin Rate", f"{int(stats['spin'])} rpm")
+                
+                # Logic to suggest changes based on Trackman
+                suggested_flex = round((stats['speed'] / 10) - 4.0, 1)
+                st.write(f"💡 *Based on speed, we recommend a **{suggested_flex}** FlexScore.*")
+                
+                if stats['spin'] > 3200:
+                    st.warning("⚠️ High Spin detected. Consider dropping Target Launch to 3.0-4.0")
 
-  
-with col2:
-        st.subheader("3. Results")
-        # Safety Check: Ensure t_flex and t_launch exist before running math
-        if tm_file and st.button("Generate Report"):
-            try:
-                # We pull from the input widgets directly using the names we gave them
-                # If they aren't ready, we use a default of 6.0 and 5.0
-                current_flex = t_flex if 't_flex' in locals() else 6.0
-                current_launch = t_launch if 't_launch' in locals() else 5.0
-                
-                # Scoring Logic
-                df_s = all_data['Shafts'].copy()
-                
-                # We calculate the penalty score
-                # Lower Penalty = Better Fit
-                df_s['Penalty'] = df_s.apply(
-                    lambda r: (abs(pd.to_numeric(r['FlexScore'], errors='coerce') - current_flex) * 40) + 
-                              (abs(pd.to_numeric(r['LaunchScore'], errors='coerce') - current_launch) * 15), 
-                    axis=1
-                )
-                
-                # Sort by lowest penalty and show the winners
-                results = df_s.sort_values('Penalty').head(5)
-                
-                st.table(results[['ShaftTag', 'FlexScore', 'LaunchScore', 'Penalty']])
-                st.balloons()
-                st.success(f"Optimized for Flex: {current_flex} | Launch: {current_launch}")
-                
-            except Exception as e:
-                st.error(f"Calculation Error: {e}. Make sure FlexScore and LaunchScore columns in your Google Sheet contain numbers!")
+    with col2:
+        st.subheader("🏆 Top Shaft Recommendations")
+        if st.button("🔥 Run Patriot Analysis"):
+            # Scoring Logic
+            priority_map = {"1": 1.0, "2": 2.0, "3": 3.0, "4": 4.0, "5": 5.0}
+            feel_val = priority_map.get(feel_label[0], 3.0)
+            
+            # Flex is weighted heavier if Feel is high
+            flex_weight = 40 * (0.5 + (feel_val * 0.2)) 
+            
+            df_s = all_data['Shafts'].copy()
+            
+            # THE MATH
+            df_s['Penalty'] = df_s.apply(
+                lambda r: (abs(pd.to_numeric(r['FlexScore'], errors='coerce') - t_flex) * flex_weight) + 
+                          (abs(pd.to_numeric(r['LaunchScore'], errors='coerce') - t_launch) * 20), 
+                axis=1
+            )
+            
+            results = df_s.sort_values('Penalty').head(5)
+            
+            # Visual Table
+            st.table(results[['ShaftTag', 'FlexScore', 'LaunchScore', 'Penalty']])
+            
+            # Summary for the Fitter
+            st.info(f"Fitted {player_name} for a {tempo} transition.")
