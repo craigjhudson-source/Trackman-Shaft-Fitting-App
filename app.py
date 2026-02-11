@@ -92,15 +92,34 @@ if all_data:
                 t_flex = st.number_input("Target FlexScore", value=float(s_flex), step=0.1)
                 t_launch = st.number_input("Target LaunchScore", value=5.0, step=0.5)
 
-    with col2:
+  
+with col2:
         st.subheader("3. Results")
+        # Safety Check: Ensure t_flex and t_launch exist before running math
         if tm_file and st.button("Generate Report"):
-            # Scoring
-            df_s = all_data['Shafts'].copy()
-            df_s['Penalty'] = df_s.apply(
-                lambda r: (abs(pd.to_numeric(r['FlexScore'], errors='coerce') - t_flex) * 40) + 
-                          (abs(pd.to_numeric(r['LaunchScore'], errors='coerce') - t_launch) * 15), axis=1
-            )
-            results = df_s.sort_values('Penalty').head(5)
-            st.dataframe(results[['ShaftTag', 'FlexScore', 'LaunchScore']], hide_index=True)
-            st.balloons()
+            try:
+                # We pull from the input widgets directly using the names we gave them
+                # If they aren't ready, we use a default of 6.0 and 5.0
+                current_flex = t_flex if 't_flex' in locals() else 6.0
+                current_launch = t_launch if 't_launch' in locals() else 5.0
+                
+                # Scoring Logic
+                df_s = all_data['Shafts'].copy()
+                
+                # We calculate the penalty score
+                # Lower Penalty = Better Fit
+                df_s['Penalty'] = df_s.apply(
+                    lambda r: (abs(pd.to_numeric(r['FlexScore'], errors='coerce') - current_flex) * 40) + 
+                              (abs(pd.to_numeric(r['LaunchScore'], errors='coerce') - current_launch) * 15), 
+                    axis=1
+                )
+                
+                # Sort by lowest penalty and show the winners
+                results = df_s.sort_values('Penalty').head(5)
+                
+                st.table(results[['ShaftTag', 'FlexScore', 'LaunchScore', 'Penalty']])
+                st.balloons()
+                st.success(f"Optimized for Flex: {current_flex} | Launch: {current_launch}")
+                
+            except Exception as e:
+                st.error(f"Calculation Error: {e}. Make sure FlexScore and LaunchScore columns in your Google Sheet contain numbers!")
