@@ -196,14 +196,22 @@ if all_data:
 
         st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque', 'Analysis']])
 
-        # 4. ACTION BUTTONS
+       # 4. ACTION BUTTONS
         st.divider()
-        btn_col1, btn_col2, _ = st.columns([2,2,4])
+        # Create 3 columns instead of 2
+        btn_col1, btn_col2, btn_col3, _ = st.columns([2, 2, 2, 2])
+        
         if btn_col1.button("💾 Save to Google Sheets"):
             if save_lead_to_gsheet(st.session_state['answers'], tf, tl):
-                st.success("Entry Saved Successfully.")
+                st.success("Entry Saved!")
             else: st.error("Save Error.")
 
-        if btn_col2.button("🆕 New Fitting"):
+        # THIS IS THE NEW BUTTON
+        if btn_col2.button("✏️ Edit Survey"):
+            st.session_state.interview_complete = False
+            st.rerun()
+
+        if btn_col3.button("🆕 New Fitting"):
+            # This clears everything to start fresh
             for key in st.session_state.keys(): del st.session_state[key]
             st.rerun()
