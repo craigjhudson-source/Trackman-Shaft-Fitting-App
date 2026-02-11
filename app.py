@@ -29,23 +29,6 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
-def save_lead_to_gsheet(answers, t_flex, t_launch, q_ids):
-    try:
-        creds_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
-        ws = sh.worksheet('Fittings')
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        row = [timestamp]
-        for qid in q_ids:
-            row.append(answers.get(qid, ""))
-        row.extend([t_flex, t_launch])
-        ws.append_row(row)
-        return True
-    except Exception as e:
-        st.error(f"⚠️ Error saving to Google Sheets: {e}"); return False
-
 # --- 2. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
@@ -118,23 +101,24 @@ if all_data:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
                 
+                # --- CORE LOGIC CONSTANTS ---
                 f_tf, f_tl = 6.0, 5.0
-                anti_left, release_assist = False, False
+                anti_left, push_miss = False, False
                 min_w, max_w = 0, 200
 
-                # --- SPEED-WEIGHT SAFETY FLOOR ---
+                # 1. SPEED-BASED WEIGHT FLOOR
                 try:
                     carry_6i = float(st.session_state.answers.get('Q15', 0))
-                    if carry_6i >= 180: min_w = 115 
-                    elif carry_6i >= 165: min_w = 100
+                    if carry_6i >= 180: min_w = 118 # Floor for high speed
+                    elif carry_6i >= 165: min_w = 105
                 except: pass
 
+                # 2. RESPONSE LOGIC LOOP
                 for qid, ans in st.session_state.answers.items():
                     logic_rows = all_data['Responses'][(all_data['Responses']['QuestionID'] == qid) & 
                                                        (all_data['Responses']['ResponseOption'] == str(ans))]
                     for _, l_row in logic_rows.iterrows():
                         act = str(l_row['LogicAction'])
-                        
                         if "Target FlexScore:" in act: 
                             try: f_tf = float(act.split("FlexScore:")[1].split(";")[0])
                             except: pass
@@ -142,18 +126,17 @@ if all_data:
                             try: f_tl = float(act.split("LaunchScore:")[1].split(";")[0])
                             except: pass
                         if "Anti-Left: True" in act: anti_left = True
-                        if "Release: True" in act: release_assist = True
-                
-                # --- FLEX UP-SCALING FOR HIGH SPEED ---
+                        if "Primary Miss: Push" in act or str(ans) == "Push": push_miss = True
+
+                # 3. TOUR-SPEED FLEX UPGRADE
                 try:
                     if float(st.session_state.answers.get('Q15', 0)) > 180:
-                        f_tf += 1.0 # Bump Stiff to X-Stiff territory
+                        f_tf = 7.0 # Force X-Flex Floor
                 except: pass
 
-                save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
                 st.session_state.update({
                     'final_tf': f_tf, 'final_tl': f_tl, 
-                    'anti_left': anti_left, 'release_assist': release_assist,
+                    'anti_left': anti_left, 'push_miss': push_miss,
                     'min_w': min_w, 'max_w': max_w, 'interview_complete': True
                 })
                 st.rerun()
@@ -175,67 +158,52 @@ if all_data:
 
         tf = st.session_state.get('final_tf', 6.0)
         tl = st.session_state.get('final_tl', 5.0)
-        anti_left = st.session_state.get('anti_left', False)
-        release_assist = st.session_state.get('release_assist', False)
+        push_miss = st.session_state.get('push_miss', False)
         min_w = st.session_state.get('min_w', 0)
-        max_w = st.session_state.get('max_w', 200)
         
         df_s = all_data['Shafts'].copy()
-        for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'EI_Tip', 'Torque']:
+        for col in ['FlexScore', 'LaunchScore', 'StabilityIndex', 'Weight (g)', 'Torque']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # STEP A: HARD GATING
-        df_s = df_s[(df_s['Weight (g)'] >= min_w) & (df_s['Weight (g)'] <= max_w)]
+        # STEP A: HARD SPEED GATING (Weight & Flex)
+        df_s = df_s[df_s['Weight (g)'] >= min_w]
         
-        # STEP B: MATHEMATICAL WEIGHTING
-        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 300.0
+        # STEP B: MATHEMATICAL SCORING
+        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 400.0 # Heavy weight on flex
         df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
         
-        if anti_left:
-            df_s['Stability_Bias'] = (10 - df_s['StabilityIndex']) * 150.0
-        elif release_assist:
-            # High speed players with pushes need lower torque, not softer tips
-            try:
-                if float(st.session_state.answers.get('Q15', 0)) > 175:
-                    df_s['Stability_Bias'] = df_s['Torque'] * 100.0 # Penalize high torque
-                else:
-                    df_s['Stability_Bias'] = (df_s['EI_Tip'] - 14.0) * 40.0
-            except: pass
+        # PUSH MISS CORRECTION: High torque is the enemy of the push.
+        if push_miss and min_w >= 115:
+            df_s['Torque_Penalty'] = df_s['Torque'] * 200.0 
         else:
-            df_s['Stability_Bias'] = 0
+            df_s['Torque_Penalty'] = 0
 
-        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Stability_Bias']
+        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Torque_Penalty']
         recs = df_s.sort_values('Total_Score').head(5).copy()
 
-        # --- RESULTS DISPLAY ---
+        # --- RESULTS ---
         st.subheader("🚀 Top Recommended Prescription")
-        final_table = recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True)
-        final_table.index += 1
-        st.table(final_table)
+        st.table(recs[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch', 'Torque']].reset_index(drop=True))
 
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
-            "Project X Rifle": "Highest stability tip. Designed for maximum dispersion control.",
-            "Project X LZ": "Active mid-section allows for easier release while maintaining tour weight.",
-            "KBS Tour": "Linear stiffness profile that rewards smooth tempo.",
-            "Dynamic Gold": "The gold standard for low-launch, low-spin control.",
-            "L-Series": "Ultra-premium stability profile with low torque to square the face.",
-            "CT-115": "Japanese steel with high-fidelity feel and tip-stiff stability.",
-            "CT-125": "Heavyweight stability designed to neutralize high-speed misses."
+            "Project X Rifle": "Low-torque, tip-stiff design to prevent the face from hanging open at high speeds.",
+            "Dynamic Gold": "High-mass profile to provide maximum feedback and lower a 'High' flight tendency.",
+            "C-Taper": "Piercing trajectory with an ultra-stiff tip to minimize face deflection.",
+            "Modus3 Tour 120": "Unique 'X' profile with a stiff tip but smoother mid-section for high-speed feel.",
+            "L-Series": "Modern carbon-fiber steel replacement with superior torque recovery for push-miss correction.",
+            "CT-125": "Heavyweight stability profile specifically tuned for carry distances exceeding 180 yards."
         }
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = "A high-performance profile matched to your DNA."
+            blurb = "Selected for dynamic stability and optimal weight-to-speed ratio."
             for key in traits:
                 if key in brand_model: blurb = traits[key]
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
 
         st.divider()
-        bt1, bt2, _ = st.columns([1, 1, 4])
-        if bt1.button("✏️ Edit Survey", use_container_width=True):
-            st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
-        if bt2.button("🆕 New Fitting", use_container_width=True):
+        if st.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
