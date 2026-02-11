@@ -67,7 +67,7 @@ if all_data:
         st.title("Patriot Golf Performance Fitting")
         categories = list(dict.fromkeys(q_master['Category'].tolist()))
         st.progress(st.session_state.form_step / len(categories))
-        current_cat = categories[st.session_state.form_step]
+        current_cat = categories[current_cat_idx := st.session_state.form_step]
         q_df = q_master[q_master['Category'] == current_cat]
         st.subheader(f"Section: {current_cat}")
         
@@ -121,20 +121,19 @@ if all_data:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
                 
-                # --- CALCULATE LOGIC ---
-                f_tf, f_tl = 6.0, 5.0
-                push_miss = False
-                min_w = 0
-                high_speed_mandate = False
+                # --- MASTER FITTER ENGINE CALCULATIONS ---
+                f_tf, f_tl = 5.0, 5.0
+                push_miss, slice_miss = False, False
+                min_w, hs_mandate = 0, False
 
                 try:
                     carry_6i = float(st.session_state.answers.get('Q15', 0))
                     if carry_6i >= 180: 
-                        min_w = 118
-                        f_tf = 7.0 
-                        high_speed_mandate = True
-                    elif carry_6i >= 165: 
-                        min_w = 105
+                        min_w, f_tf, hs_mandate = 118, 7.0, True
+                    elif carry_6i >= 160: 
+                        min_w, f_tf = 105, 6.0
+                    elif carry_6i < 140:
+                        f_tf = 4.0 # Force Regular/Senior target
                 except: pass
 
                 for qid, ans in st.session_state.answers.items():
@@ -148,34 +147,23 @@ if all_data:
                         if "Target LaunchScore:" in act: 
                             try: f_tl = float(act.split("LaunchScore:")[1].split(";")[0])
                             except: pass
-                        if "Primary Miss: Push" in act or str(ans) == "Push": push_miss = True
-
-                save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
+                        if "Push" in str(ans): push_miss = True
+                        if "Slice" in str(ans): slice_miss = True
 
                 st.session_state.update({
-                    'final_tf': f_tf, 'final_tl': f_tl, 'push_miss': push_miss,
-                    'min_w': min_w, 'high_speed_mandate': high_speed_mandate, 'interview_complete': True
+                    'final_tf': f_tf, 'final_tl': f_tl, 'push_miss': push_miss, 'slice_miss': slice_miss,
+                    'min_w': min_w, 'hs_mandate': hs_mandate, 'interview_complete': True
                 })
+                save_lead_to_gsheet(st.session_state.answers, f_tf, f_tl, q_master['QuestionID'].tolist())
                 st.rerun()
 
     else:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        with st.expander("📋 View Full Input Verification Summary", expanded=True):
-            cols = st.columns(3)
-            categories = list(dict.fromkeys(q_master['Category'].tolist()))
-            for i, cat in enumerate(categories):
-                with cols[i % 3]:
-                    st.markdown(f"**{cat}**")
-                    cat_qs = q_master[q_master['Category'] == cat]
-                    for _, q_row in cat_qs.iterrows():
-                        ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
-                        st.caption(f"{q_row['QuestionText']}: **{ans}**")
-
-        tf, tl = st.session_state.get('final_tf', 6.0), st.session_state.get('final_tl', 5.0)
-        push_miss, min_w = st.session_state.get('push_miss', False), st.session_state.get('min_w', 0)
-        hs_mandate = st.session_state.get('high_speed_mandate', False)
+        tf, tl = st.session_state.get('final_tf', 5.0), st.session_state.get('final_tl', 5.0)
+        push_miss, slice_miss = st.session_state.get('push_miss', False), st.session_state.get('slice_miss', False)
+        min_w, hs_mandate = st.session_state.get('min_w', 0), st.session_state.get('hs_mandate', False)
         
         curr_brand = str(st.session_state.answers.get('Q10', '')).strip().lower()
         curr_model = str(st.session_state.answers.get('Q12', '')).strip().lower()
@@ -184,31 +172,29 @@ if all_data:
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce')
 
-        # EXCLUSION: Block Current Shaft
+        # MASTER FILTERS: Hard Exclusion & Wedge Block
         if curr_brand and curr_model:
             df_s = df_s[~((df_s['Brand'].str.lower() == curr_brand) & (df_s['Model'].str.lower() == curr_model))]
-
-        # FILTER: Minimum Weight
+        df_s = df_s[~df_s['Model'].str.contains('Wedge', case=False)]
         df_s = df_s[df_s['Weight (g)'] >= min_w]
         
-        # SCORING: Aggressive Speed Mandate
-        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 800.0 # Extreme Flex weighting
-        
-        # HARD PENALTY: Force X-Flex for High Speed
+        # SCORING ENGINE
+        df_s['Flex_Penalty'] = abs(df_s['FlexScore'] - tf) * 800.0
         if hs_mandate:
-            df_s.loc[df_s['FlexScore'] < 6.8, 'Flex_Penalty'] += 2000.0 # Total disqualification of Stiff
-
-        df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 50.0
+            df_s.loc[df_s['FlexScore'] < 6.8, 'Flex_Penalty'] += 2500.0 # Strict speed mandate
         
+        df_s['Launch_Penalty'] = abs(df_s['LaunchScore'] - tl) * 75.0
+        
+        # MISS CORRECTION LOGIC
         if push_miss:
-            df_s['Torque_Penalty'] = df_s['Torque'] * 500.0  
-            df_s['Stability_Bonus'] = (10 - df_s['StabilityIndex']) * 200.0 
-            df_s.loc[df_s['Model'].str.contains('LZ', case=False), 'Flex_Penalty'] += 500
+            df_s['Miss_Correction'] = (df_s['Torque'] * 500.0) + ((10 - df_s['StabilityIndex']) * 200.0)
+        elif slice_miss or st.session_state.answers.get('Q17') == "Scattered":
+            # Higher torque helps low-speed players square the face
+            df_s['Miss_Correction'] = (abs(df_s['Torque'] - 3.5) * 200.0) 
         else:
-            df_s['Torque_Penalty'] = 0
-            df_s['Stability_Bonus'] = 0
+            df_s['Miss_Correction'] = 0
 
-        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Torque_Penalty'] + df_s['Stability_Bonus']
+        df_s['Total_Score'] = df_s['Flex_Penalty'] + df_s['Launch_Penalty'] + df_s['Miss_Correction']
         recs = df_s.sort_values('Total_Score').head(5).copy()
 
         st.subheader("🚀 Top Recommended Prescription")
@@ -217,25 +203,23 @@ if all_data:
         st.subheader("🔬 Expert Engineering Analysis")
         traits = {
             "Project X Rifle": "Non-loading zone profile with maximum tip-stiffness to neutralize push misses.",
-            "Dynamic Gold": "Traditional high-mass taper designed to bring down high-flight tendencies.",
+            "Project X LS": "Ultra-low spin profile designed specifically for high-tempo players to hold the line.",
+            "Zelos": "Ultra-lightweight Japanese steel designed to maximize clubhead speed for smoother tempos.",
+            "NEO": "Active tip section specifically engineered to increase launch and spin for modern distance irons.",
             "C-Taper": "Stiffest tip profile in the KBS line; ideal for high-speed face squaring.",
-            "Modus3 Tour 120": "Unique flex profile that offers 'X' stability without a harsh feel.",
-            "L-Series": "Carbon-engineered for ultra-fast torque recovery to square the face at impact.",
-            "CT-125": "Heavyweight Japanese steel tuned for stability at tour-level carry distances."
+            "Modus3 Tour 125": "Traditional 'System3' profile offering X-flex stability with a smooth Japanese steel feel.",
+            "L-Series": "Carbon-engineered for ultra-fast torque recovery to square the face at impact."
         }
 
         for i, (idx, row) in enumerate(recs.iterrows(), 1):
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = "Selected for elite stability and optimal weight-to-speed ratio."
+            blurb = "Selected for optimal weight-to-speed ratio and dynamic stability."
             for key in traits:
                 if key in brand_model: blurb = traits[key]
             st.markdown(f"**{i}. {brand_model} ({row['Flex']})**")
             st.caption(f"{blurb}")
 
         st.divider()
-        b_edit, b_new, _ = st.columns([1,1,4])
-        if b_edit.button("✏️ Edit Survey"):
-            st.session_state.interview_complete = False; st.session_state.form_step = 0; st.rerun()
-        if b_new.button("🆕 New Fitting"):
+        if st.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
