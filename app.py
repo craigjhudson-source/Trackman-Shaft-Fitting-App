@@ -177,11 +177,11 @@ if all_data:
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 200
             
             # --- THE SPEED-LOCK VETO ---
-            # If carry > 180, we DISQUALIFY anything with a FlexScore < 6.5 (effectively killing S-flex)
+            # If carry > 180, we DISQUALIFY anything with a FlexScore < 6.5
             if carry_6i >= 180:
-                df_in.loc[df_in['FlexScore'] < 6.5, 'Flex_Penalty'] += 2000
+                df_in.loc[df_in['FlexScore'] < 6.5, 'Flex_Penalty'] += 3000
             if carry_6i >= 195:
-                df_in.loc[df_in['FlexScore'] < 7.5, 'Flex_Penalty'] += 2000
+                df_in.loc[df_in['FlexScore'] < 7.5, 'Flex_Penalty'] += 3000
 
             # 2. Weight Penalty
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15
@@ -199,16 +199,16 @@ if all_data:
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * 150
             
             if target_flight == "High":
-                df_in.loc[df_in['LaunchScore'] < 4.0, 'Launch_Penalty'] += 1000
+                df_in.loc[df_in['LaunchScore'] < 4.0, 'Launch_Penalty'] += 1500
             elif target_flight == "Low":
-                df_in.loc[df_in['LaunchScore'] > 6.0, 'Launch_Penalty'] += 1000
+                df_in.loc[df_in['LaunchScore'] > 6.0, 'Launch_Penalty'] += 1500
 
             # 5. Feel Logic
             df_in['Feel_Adjustment'] = 0
             if target_feel in ["Smooth", "Whippy", "Responsive"] and any(x in feel_priority for x in ["4", "5"]):
-                df_in['Feel_Adjustment'] = (df_in['EI_Mid'] - 16.0) * 60
+                df_in['Feel_Adjustment'] = (df_in['EI_Mid'] - 16.0) * 80
             elif target_feel in ["Firm", "Boardy", "Stable"] and any(x in feel_priority for x in ["4", "5"]):
-                df_in['Feel_Adjustment'] = (22.0 - df_in['EI_Mid']) * 60
+                df_in['Feel_Adjustment'] = (22.0 - df_in['EI_Mid']) * 80
             
             return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty'] + df_in['Feel_Adjustment']
 
