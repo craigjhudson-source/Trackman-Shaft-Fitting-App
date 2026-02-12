@@ -40,7 +40,6 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
-# FUNCTION TO SAVE DATA TO "FITTINGS" TAB
 def save_to_fittings(answers):
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -49,7 +48,6 @@ def save_to_fittings(answers):
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         worksheet = sh.worksheet('Fittings')
-        
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp]
         for i in range(1, 24):
@@ -80,7 +78,6 @@ if all_data:
     if not st.session_state.interview_complete:
         st.title("Patriot Golf Performance Fitting")
         st.progress(st.session_state.form_step / len(categories))
-        
         current_cat = categories[st.session_state.form_step]
         q_df = q_master[q_master['Category'] == current_cat]
         st.subheader(f"Section: {current_cat}")
@@ -123,7 +120,6 @@ if all_data:
             sync_answers(q_df['QuestionID'].tolist())
             st.session_state.form_step -= 1
             st.rerun()
-        
         if st.session_state.form_step < len(categories) - 1:
             if c2.button("Next ➡️"):
                 sync_answers(q_df['QuestionID'].tolist())
@@ -139,7 +135,6 @@ if all_data:
     else:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
-        
         st.subheader("📋 Player Profile Summary")
         ver_cols = st.columns(4)
         for i, cat in enumerate(categories):
@@ -152,8 +147,7 @@ if all_data:
         st.divider()
 
         # LOGIC CALCS
-        try:
-            carry_6i = float(st.session_state.answers.get('Q15', 150))
+        try: carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
 
         primary_miss = st.session_state.answers.get('Q18', '')
@@ -161,7 +155,6 @@ if all_data:
         target_feel = st.session_state.answers.get('Q20', 'Unsure')
         feel_priority = st.session_state.answers.get('Q21', '1 - Do. Not. Care!')
         
-        # Flex/Weight Tiers
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
         elif carry_6i >= 180: f_tf, ideal_w = 7.0, 125
         elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
@@ -173,43 +166,42 @@ if all_data:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
         def score_shafts(df_in):
-            # 1. Flex Penalty (Tightened for high speed)
-            flex_weight = 150 if carry_6i >= 180 else 100
-            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * flex_weight
+            # 1. Flex Penalty (Aggressive speed-lock)
+            flex_multiplier = 200 if carry_6i >= 180 else 100
+            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * flex_multiplier
             
             # 2. Weight Penalty
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
             
-            # 3. Miss Correction (Anti-Hook / Anti-Slice)
+            # 3. Miss Correction
             if any(x in primary_miss for x in ["Hook", "Pull"]):
                 df_in['Miss_Correction'] = (df_in['Torque'] * 80) + ((10 - df_in['StabilityIndex']) * 80)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 40)
             else: df_in['Miss_Correction'] = 0
             
-            # 4. Launch Penalty (High-Priority Override)
+            # 4. Launch Penalty (VETO Logic)
             launch_map = {"Low": 2.0, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
             target_l = launch_map.get(target_flight, 5.0)
-            l_multiplier = 150 if target_flight in ["High", "Low"] else 40
-            df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * l_multiplier
+            
+            l_diff = abs(df_in['LaunchScore'] - target_l)
+            # VETO: If you want High but the shaft is Low, add massive penalty
+            df_in['Launch_Penalty'] = l_diff * 150
+            if target_flight == "High":
+                df_in.loc[df_in['LaunchScore'] < 4.0, 'Launch_Penalty'] += 500
+            elif target_flight == "Low":
+                df_in.loc[df_in['LaunchScore'] > 6.0, 'Launch_Penalty'] += 500
 
-            # 5. FEEL LOGIC (The New Bonus/Penalty)
-            # If player wants "Smooth/Active" feel and prioritized it (Rank 4 or 5)
-            if target_feel in ["Smooth", "Whippy", "Responsive"] and any(x in feel_priority for x in ["4", "5"]):
-                # Give a huge bonus to shafts with an active mid-section (lower EI_Mid)
-                # Normal EI_Mid for steel is ~18-21. Anything below 17 is "active".
+            # 5. Feel Logic
+            if target_feel in ["Smooth", "Whippy"] and any(x in feel_priority for x in ["4", "5"]):
                 df_in['Feel_Adjustment'] = (df_in['EI_Mid'] - 16.0) * 50
-            elif target_feel in ["Firm", "Boardy", "Stable"] and any(x in feel_priority for x in ["4", "5"]):
-                # Give a bonus to shafts with a stiff mid-section (higher EI_Mid)
+            elif target_feel in ["Firm", "Boardy"] and any(x in feel_priority for x in ["4", "5"]):
                 df_in['Feel_Adjustment'] = (22.0 - df_in['EI_Mid']) * 50
-            else:
-                df_in['Feel_Adjustment'] = 0
+            else: df_in['Feel_Adjustment'] = 0
             
             return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty'] + df_in['Feel_Adjustment']
 
         df_all['Total_Score'] = score_shafts(df_all)
-        
-        # PICK AND POP
         final_list = []
         temp_candidates = df_all.sort_values('Total_Score').copy()
 
@@ -224,12 +216,10 @@ if all_data:
 
         final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
-        # Feel Option: Specifically searches for lower EI_Mid if player wants smooth, or high if they want boardy
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour|Elevate', case=False)", "🎨 Feel Option"))
         
-        weight_cap = ideal_w + 20
-        top_stability = temp_candidates[temp_candidates['Weight (g)'] <= weight_cap].sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
-        
+        # Dispersion Killer (Safety check for speed)
+        top_stability = temp_candidates.sort_values(['Total_Score', 'StabilityIndex'], ascending=[True, False]).head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stability.empty:
             final_list.append(top_stability)
             temp_candidates.drop(top_stability.index[0], inplace=True)
@@ -237,35 +227,21 @@ if all_data:
         final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
 
         final_df = pd.concat(final_list)
-
-        # RESULTS DISPLAY
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        # Dynamic Verdict
         if target_flight == "High":
             tip_logic = "an active tip-section to increase peak height while maintaining mid-section stability"
         else:
             tip_logic = "increased tip-stiffness to lower launch and stabilize the face"
-            
         st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard 6-iron carry, we are optimizing for a peak height of ~30 yards and a land angle >43°. Your current profile is likely unstable at this speed; these selections utilize {tip_logic} to eliminate the '{primary_miss}' miss.")
 
-        st.subheader("🔬 Expert Engineering Analysis")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
-        
         for _, row in final_df.iterrows():
-            with st.container():
-                brand_model = f"{row['Brand']} {row['Model']}"
-                blurb = desc_lookup.get(row['Model'], "Selected for optimized 6-iron stability and transition timing.")
-                st.markdown(f"**{row['Archetype']}: {brand_model}**")
-                st.caption(f"{blurb}")
+            st.markdown(f"**{row['Archetype']}: {row['Brand']} {row['Model']}**")
+            st.caption(desc_lookup.get(row['Model'], "Selected for optimized 6-iron stability and transition timing."))
 
         st.divider()
-        b1, b2, _ = st.columns([1,1,4])
-        if b1.button("✏️ Edit Survey"):
-            st.session_state.interview_complete = False
-            st.session_state.form_step = 0
-            st.rerun()
-        if b2.button("🆕 New Fitting"):
+        if st.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
