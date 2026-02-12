@@ -67,11 +67,12 @@ def save_to_fittings(answers):
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         worksheet = sh.worksheet('Fittings')
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        row = [timestamp] + [answers.get(f"Q{i:02d}", "") for i in range(1, 24)]
+        # Ensure all 21 questions from the new CSV are captured
+        row = [timestamp] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)]
         worksheet.append_row(row)
     except Exception as e: st.error(f"Error saving fitting: {e}")
 
-# --- 3. PRO PDF ENGINE (ONE-PAGE INTEGRATED) ---
+# --- 3. PRO PDF ENGINE (ENHANCED BASELINES) ---
 def clean_text(text):
     if not text: return ""
     return re.sub(r'[^\x00-\x7F]+', '', str(text))
@@ -89,10 +90,17 @@ class ProFittingPDF(FPDF):
         self.set_font('Arial', 'B', 9); self.set_text_color(20, 40, 80)
         self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, 'L')
         self.set_font('Arial', '', 8); self.set_text_color(0, 0, 0)
+        
+        # Line 1: Performance Baselines
         line1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
-        line2 = f"Club: {answers.get('Q08','')} {answers.get('Q09','')} | Ball: {answers.get('Q13','')} | Grip: {answers.get('Q06','')}"
+        # Line 2: Equipment Baselines (Added Length and Swing Weight)
+        line2 = f"Club: {answers.get('Q08','')} {answers.get('Q09','')} | Length: {answers.get('Q13','')} | SW: {answers.get('Q14','')}"
+        # Line 3: Shaft/Grip/Ball
+        line3 = f"Shaft: {answers.get('Q12','')} ({answers.get('Q11','')}) | Grip: {answers.get('Q06','')} | Ball: {answers.get('Q07','')}"
+        
         self.cell(0, 4, clean_text(line1), 0, 1, 'L')
         self.cell(0, 4, clean_text(line2), 0, 1, 'L')
+        self.cell(0, 4, clean_text(line3), 0, 1, 'L')
         self.ln(2); self.line(10, self.get_y(), 200, self.get_y()); self.ln(4)
 
     def draw_recommendation_block(self, title, df, verdict_text):
@@ -207,14 +215,13 @@ if all_data:
         if c_nav1.button("✏️ Edit"): st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
         if c_nav2.button("🆕 New"): st.session_state.clear(); st.rerun()
 
-        # PLAYER PROFILE SUMMARY BAR
+        # PLAYER PROFILE SUMMARY BAR (Enhanced with Length/SW)
         st.markdown(f"""
         <div class="profile-bar">
-            <b>CARRY:</b> {ans.get('Q15','')}yd ({ans.get('Q16','')}) &nbsp;&nbsp;|&nbsp;&nbsp; 
+            <b>CARRY:</b> {ans.get('Q15','')}yd &nbsp;&nbsp;|&nbsp;&nbsp; 
             <b>MISS:</b> {ans.get('Q18','')} &nbsp;&nbsp;|&nbsp;&nbsp; 
-            <b>CLUB:</b> {ans.get('Q08','')} {ans.get('Q09','')} &nbsp;&nbsp;|&nbsp;&nbsp;
-            <b>SHAFT:</b> {ans.get('Q12','')} &nbsp;&nbsp;|&nbsp;&nbsp;
-            <b>BALL:</b> {ans.get('Q13','')} &nbsp;&nbsp;|&nbsp;&nbsp;
+            <b>EQUIPMENT:</b> {ans.get('Q08','')} {ans.get('Q09','')} ({ans.get('Q12','')}) &nbsp;&nbsp;|&nbsp;&nbsp;
+            <b>SPECS:</b> {ans.get('Q13','')} Length / {ans.get('Q14','')} SW &nbsp;&nbsp;|&nbsp;&nbsp;
             <b>GRIP:</b> {ans.get('Q06','')}
         </div>
         """, unsafe_allow_html=True)
