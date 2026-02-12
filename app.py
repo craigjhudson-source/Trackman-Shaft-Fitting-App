@@ -15,10 +15,10 @@ st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_i
 
 st.markdown("""
     <style>
-    [data-testid="stTable"] { font-size: 13px !important; }
-    [data-testid="stTable"] td { padding: 4px !important; }
+    [data-testid="stTable"] { font-size: 12px !important; }
+    [data-testid="stTable"] td { padding: 2px !important; }
     .main { background-color: #f8f9fa; }
-    .condensed-text { font-size: 14px; line-height: 1.2; }
+    .verdict-box { background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 20px; border-left: 5px solid #142850; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -56,7 +56,7 @@ def save_to_fittings(answers):
         worksheet.append_row(row)
     except Exception as e: st.error(f"Error saving fitting: {e}")
 
-# --- 3. PRO PDF ENGINE (CONDENSED) ---
+# --- 3. ONE-PAGE PDF ENGINE ---
 def clean_text(text):
     if not text: return ""
     return re.sub(r'[^\x00-\x7F]+', '', str(text))
@@ -65,74 +65,65 @@ class ProFittingPDF(FPDF):
     def header(self):
         self.set_fill_color(20, 40, 80)
         self.rect(0, 0, 210, 25, 'F')
-        self.set_font('Arial', 'B', 15)
+        self.set_font('Arial', 'B', 14)
         self.set_text_color(255, 255, 255)
-        self.cell(0, 12, 'TOUR PROVEN PERFORMANCE REPORT', 0, 1, 'C')
-        self.set_font('Arial', '', 8); self.cell(0, -4, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, 'C')
+        self.cell(0, 10, 'TOUR PROVEN SHAFT PRESCRIPTION', 0, 1, 'C')
+        self.set_font('Arial', '', 8)
+        self.cell(0, -2, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, 'C')
         self.ln(12)
 
-    def section_title(self, label):
-        label = clean_text(label)
-        self.set_font('Arial', 'B', 10); self.set_fill_color(240, 240, 240); self.set_text_color(20, 40, 80)
-        self.cell(0, 7, f" {label.upper()}", 0, 1, 'L', True); self.ln(1)
+    def draw_player_header(self, answers):
+        self.set_font('Arial', 'B', 9); self.set_text_color(20, 40, 80)
+        self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, 'L')
+        self.set_font('Arial', '', 8); self.set_text_color(0, 0, 0)
+        profile = f"Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Miss: {answers.get('Q18','')} | Ball: {answers.get('Q13','')}"
+        self.cell(0, 5, clean_text(profile), 0, 1, 'L')
+        self.ln(2); self.line(10, self.get_y(), 200, self.get_y()); self.ln(4)
 
-    def draw_condensed_summary(self, categories, q_master, answers):
-        self.set_font('Arial', '', 9); self.set_text_color(0, 0, 0)
-        for cat in categories:
-            self.set_font('Arial', 'B', 9); self.cell(0, 6, clean_text(cat), 0, 1)
-            self.set_font('Arial', '', 9)
-            qs = q_master[q_master['Category'] == cat]
-            summary_line = " | ".join([f"{r['QuestionText'].replace('Current ','')}: {answers.get(r['QuestionID'], 'N/A')}" for _, r in qs.iterrows()])
-            self.multi_cell(0, 5, clean_text(summary_line))
-            self.ln(2)
-
-    def draw_recommendation_grid(self, title, df_top3):
-        title = clean_text(title)
-        self.set_font('Arial', 'B', 10); self.set_text_color(180, 0, 0); self.cell(0, 7, title, 0, 1, 'L')
-        self.set_font('Arial', 'B', 8); self.set_fill_color(245, 245, 245); self.set_text_color(0, 0, 0)
+    def draw_recommendation_block(self, title, df, verdict_text):
+        # Table Title
+        self.set_font('Arial', 'B', 10); self.set_text_color(180, 0, 0)
+        self.cell(0, 6, clean_text(title.upper()), 0, 1, 'L')
+        
+        # Table Headers
+        self.set_font('Arial', 'B', 8); self.set_fill_color(240, 240, 240); self.set_text_color(0, 0, 0)
         cols, w = ["Brand", "Model", "Flex", "Weight"], [40, 85, 30, 30]
         for i, col in enumerate(cols): self.cell(w[i], 6, col, 1, 0, 'C', True)
         self.ln()
+        
+        # Table Rows
         self.set_font('Arial', '', 8)
-        for _, row in df_top3.iterrows():
-            self.cell(w[0], 6, clean_text(row['Brand']), 1, 0, 'C')
-            self.cell(w[1], 6, clean_text(row['Model']), 1, 0, 'C')
-            self.cell(w[2], 6, clean_text(row['Flex']), 1, 0, 'C')
-            self.cell(w[3], 6, f"{clean_text(row['Weight (g)'])}g", 1, 0, 'C')
+        for _, row in df.iterrows():
+            self.cell(w[0], 5, clean_text(row['Brand']), 1, 0, 'C')
+            self.cell(w[1], 5, clean_text(row['Model']), 1, 0, 'C')
+            self.cell(w[2], 5, clean_text(row['Flex']), 1, 0, 'C')
+            self.cell(w[3], 5, f"{clean_text(row['Weight (g)'])}g", 1, 0, 'C')
             self.ln()
+        
+        # Verdict Text immediately under
+        self.ln(1)
+        self.set_font('Arial', 'B', 8); self.cell(0, 5, "Fitter's Technical Verdict:", 0, 1)
+        self.set_font('Arial', '', 8); self.multi_cell(0, 4, clean_text(verdict_text))
         self.ln(4)
 
-def create_pdf_bytes(player_name, all_winners, answers, categories, q_master, verdicts):
+def create_pdf_bytes(player_name, all_winners, answers, verdicts):
     pdf = ProFittingPDF()
     pdf.add_page()
-    pdf.section_title("Player Profile Summary")
-    pdf.draw_condensed_summary(categories, q_master, answers)
+    pdf.draw_player_header(answers)
     
-    pdf.section_title("Recommendation Matrix")
-    for mode, df in all_winners.items(): pdf.draw_recommendation_grid(mode, df)
+    # Map friendly labels to calculation keys
+    mapping = {
+        "Balanced Choice": "Balanced",
+        "Maximum Stability (Anti-Hook)": "Maximum Stability",
+        "Launch & Height Optimizer": "Launch & Height",
+        "Feel & Smoothness": "Feel & Smoothness"
+    }
     
-    pdf.section_title("Fitter's Technical Verdict")
-    for title, text in verdicts.items():
-        pdf.set_font('Arial', 'B', 9); pdf.cell(0, 6, clean_text(title), 0, 1)
-        pdf.set_font('Arial', '', 8.5); pdf.multi_cell(0, 4.5, clean_text(text)); pdf.ln(2)
+    verdict_keys = list(verdicts.keys())
+    for i, (label, calc_key) in enumerate(mapping.items()):
+        pdf.draw_recommendation_block(label, all_winners[calc_key], verdicts[verdict_keys[i]])
+        
     return pdf.output(dest='S').encode('latin-1')
-
-def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
-    try:
-        sender_email = st.secrets["email"]["user"]
-        sender_password = str(st.secrets["email"]["password"]).replace(" ", "").strip()
-        msg = MIMEMultipart()
-        msg['From'] = f"Tour Proven Shaft Fitting <{sender_email}>"
-        msg['To'] = recipient_email
-        msg['Subject'] = f"Fitting Report: {player_name}"
-        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your condensed fitting report.", 'plain'))
-        part = MIMEApplication(pdf_bytes, Name=f"Fitting_{player_name}.pdf")
-        part['Content-Disposition'] = f'attachment; filename="Fitting_{player_name}.pdf"'
-        msg.attach(part)
-        server = smtplib.SMTP('smtp.gmail.com', 587); server.starttls()
-        server.login(sender_email, sender_password); server.send_message(msg); server.quit()
-        return True
-    except Exception as e: return str(e)
 
 # --- 4. APP FLOW ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
@@ -187,24 +178,14 @@ if all_data:
             if c2.button("🔥 Calculate"): sync_all(); save_to_fittings(st.session_state.answers); st.session_state.interview_complete = True; st.rerun()
 
     else:
-        # --- CONDENSED DASHBOARD ---
+        # --- APP DASHBOARD ---
         player_name = st.session_state.answers.get('Q01', 'Player')
         player_email = st.session_state.answers.get('Q02', '')
-        st.title(f"⛳ Fitting Matrix: {player_name}")
+        st.title(f"⛳ Results: {player_name}")
         
         c_nav1, c_nav2, _ = st.columns([1,1,4])
         if c_nav1.button("✏️ Edit"): st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
         if c_nav2.button("🆕 New"): st.session_state.clear(); st.rerun()
-
-        st.markdown("### 📊 Player Profile Summary")
-        sum_cols = st.columns(len(categories))
-        for i, cat in enumerate(categories):
-            with sum_cols[i]:
-                st.markdown(f"**{cat}**")
-                cat_qs = q_master[q_master['Category'] == cat]
-                for _, r in cat_qs.iterrows():
-                    val = st.session_state.answers.get(r['QuestionID'], "N/A")
-                    st.markdown(f"- {r['QuestionText'].replace('Current ','')}: `{val}`")
 
         # --- CALCULATIONS ---
         try: carry_6i = float(st.session_state.answers.get('Q15', 150))
@@ -231,31 +212,37 @@ if all_data:
             "Feel & Smoothness": get_top_3("Feel & Smoothness")
         }
 
-        r1_c1, r1_c2 = st.columns(2); r2_c1, r2_c2 = st.columns(2); grids = [r1_c1, r1_c2, r2_c1, r2_c2]
-        grid_labels = ["⚖️ Balanced", "🛡️ Maximum Stability", "🚀 Launch & Height", "☁️ Feel & Smoothness"]
-        for i, (mode, df) in enumerate(all_winners.items()):
-            with grids[i]: st.subheader(grid_labels[i]); st.table(df)
-
         desc_map = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb']))
         verdicts = {
             f"Primary: {all_winners['Balanced'].iloc[0]['Model']}": desc_map.get(all_winners['Balanced'].iloc[0]['Model'], "Optimized profile."),
             f"Anti-{miss} Logic: {all_winners['Maximum Stability'].iloc[0]['Model']}": desc_map.get(all_winners['Maximum Stability'].iloc[0]['Model'], "High stability."),
-            f"Flight/Height: {all_winners['Launch & Height'].iloc[0]['Model']}": desc_map.get(all_winners['Launch & Height'].iloc[0]['Model'], "Launch optimization."),
-            f"Feel/Smoothness: {all_winners['Feel & Smoothness'].iloc[0]['Model']}": desc_map.get(all_winners['Feel & Smoothness'].iloc[0]['Model'], "Smooth transition profile.")
+            f"Flight Optimization: {all_winners['Launch & Height'].iloc[0]['Model']}": desc_map.get(all_winners['Launch & Height'].iloc[0]['Model'], "Launch optimization."),
+            f"Feel/Transition: {all_winners['Feel & Smoothness'].iloc[0]['Model']}": desc_map.get(all_winners['Feel & Smoothness'].iloc[0]['Model'], "Smooth transition profile.")
         }
-        
-        st.divider(); st.subheader("🔬 Fitter's Technical Verdict")
-        v_c1, v_c2 = st.columns(2)
-        v_items = list(verdicts.items())
-        with v_c1:
-            st.info(f"**{v_items[0][0]}**\n\n{v_items[0][1]}")
-            st.success(f"**{v_items[2][0]}**\n\n{v_items[2][1]}")
-        with v_c2:
-            st.error(f"**{v_items[1][0]}**\n\n{v_items[1][1]}")
-            st.warning(f"**{v_items[3][0]}**\n\n{v_items[3][1]}")
 
+        # Integrated Display
+        v_items = list(verdicts.items())
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("⚖️ Balanced Choice")
+            st.table(all_winners["Balanced"])
+            st.markdown(f"**Verdict:** {v_items[0][1]}")
+            st.subheader("🚀 Launch & Height")
+            st.table(all_winners["Launch & Height"])
+            st.markdown(f"**Verdict:** {v_items[2][1]}")
+
+        with col2:
+            st.subheader("🛡️ Maximum Stability")
+            st.table(all_winners["Maximum Stability"])
+            st.markdown(f"**Verdict:** {v_items[1][1]}")
+            st.subheader("☁️ Feel & Smoothness")
+            st.table(all_winners["Feel & Smoothness"])
+            st.markdown(f"**Verdict:** {v_items[3][1]}")
+
+        # Email Trigger
         if not st.session_state.email_sent and player_email:
-            with st.spinner("Dispatching Condensed Report..."):
-                pdf_bytes = create_pdf_bytes(player_name, all_winners, st.session_state.answers, categories, q_master, verdicts)
+            with st.spinner("Generating One-Page Pro Report..."):
+                pdf_bytes = create_pdf_bytes(player_name, all_winners, st.session_state.answers, verdicts)
                 if send_email_with_pdf(player_email, player_name, pdf_bytes) is True:
-                    st.success(f"📬 Sent to {player_email}"); st.session_state.email_sent = True
+                    st.success(f"📬 Report sent to {player_email}"); st.session_state.email_sent = True
