@@ -67,12 +67,12 @@ def create_pdf_bytes(player_name, winners, answers):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 20)
-    pdf.set_text_color(20, 40, 100)
+    pdf.set_text_color(20, 40, 100) # Deep Blue
     pdf.cell(200, 15, "PATRIOT GOLF PERFORMANCE REPORT", ln=True, align='C')
     pdf.ln(5)
     
     pdf.set_font("Arial", 'B', 12)
-    pdf.set_color(0, 0, 0)
+    pdf.set_text_color(0, 0, 0) # Black
     pdf.cell(0, 10, f"Player: {player_name}", ln=True)
     pdf.set_font("Arial", size=11)
     pdf.cell(0, 7, f"6i Carry: {answers.get('Q15', '—')}yd | Miss: {answers.get('Q18', '—')}", ln=True)
@@ -80,7 +80,7 @@ def create_pdf_bytes(player_name, winners, answers):
 
     for mode, row in winners.items():
         pdf.set_font("Arial", 'B', 12)
-        pdf.set_text_color(180, 0, 0)
+        pdf.set_text_color(180, 0, 0) # Red for mode titles
         pdf.cell(0, 10, f"MODE: {mode.upper()}", ln=True)
         pdf.set_font("Arial", size=11)
         pdf.set_text_color(0, 0, 0)
@@ -99,7 +99,7 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg['To'] = recipient_email
         msg['Subject'] = f"Your Custom Shaft Prescription - {player_name}"
         
-        body = f"Hello {player_name},\n\nAttached is your personalized Patriot Golf shaft report. Use the Shaft IDs provided to locate your test clubs for the Trackman session.\n\nBest,\nPatriot Golf Fitting Team"
+        body = f"Hello {player_name},\n\nAttached is your personalized Patriot Golf shaft report. Use the Shaft IDs provided to locate your test clubs for your Trackman session.\n\nBest,\nPatriot Golf Fitting Team"
         msg.attach(MIMEText(body, 'plain'))
         
         part = MIMEApplication(pdf_bytes, Name=f"Patriot_Fitting_{player_name}.pdf")
@@ -200,7 +200,7 @@ if all_data:
         player_name = st.session_state.answers.get('Q01', 'Player')
         player_email = st.session_state.answers.get('Q02', '')
         
-        st.title(f"🎯 Fitting Matrix: {player_name}")
+        st.title(f"⛳ Patriot Golf Prescription: {player_name}")
         
         # --- A. SUMMARY & EDIT BUTTON ---
         with st.expander("📊 View Questionnaire Summary", expanded=True):
@@ -233,6 +233,7 @@ if all_data:
         else: f_tf, ideal_w = 4.0, 80
 
         df_all = all_data['Shafts'].copy()
+        # Convert necessary columns to numeric
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'StabilityIndex', 'EI_Mid']:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
 
@@ -246,7 +247,6 @@ if all_data:
             elif mode == "Launch & Height": df_temp['Penalty'] -= (df_temp['LaunchScore'] * 500)
             elif mode == "Feel & Smoothness": df_temp['Penalty'] += (df_temp['EI_Mid'] * 400)
             
-            # Keep ID for Trackman tagging
             res = df_temp.sort_values('Penalty').head(3)[['ID', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']]
             res['Status'] = res['Model'].apply(lambda x: "✅ CURRENT" if x == current_shaft_model else "🆕 NEW")
             return res
@@ -265,12 +265,10 @@ if all_data:
                     top_df, 
                     use_container_width=True, 
                     hide_index=True,
-                    column_config={
-                        "ID": st.column_config.TextColumn("ID", width="small")
-                    }
+                    column_config={"ID": st.column_config.TextColumn("ID", width="small")}
                 )
 
-        # --- AUTO-EMAIL ---
+        # --- AUTO-EMAIL (Fixed pdf.set_color to set_text_color) ---
         if not st.session_state.email_sent and player_email:
             with st.spinner(f"Emailing report to {player_email}..."):
                 pdf_bytes = create_pdf_bytes(player_name, winners, st.session_state.answers)
@@ -289,14 +287,16 @@ if all_data:
             st.info(f"**Primary Fit: {b_win['Brand']} {b_win['Model']} (ID: {b_win['ID']})**\n\n{desc_lookup.get(b_win['Model'], 'Optimized for total control.')}")
             
             s_win = winners["Maximum Stability"]
-            st.error(f"**Stability Choice: {s_win['Model']} (ID: {s_win['ID']})**\n\nTargeting your {primary_miss} miss.")
+            # Look up specific StabilityIndex for description logic
+            stab_score = df_all[df_all['ID'] == s_win['ID']]['StabilityIndex'].values[0]
+            st.error(f"**Stability Choice: {s_win['Model']} (ID: {s_win['ID']})**\n\nTargeting your {primary_miss} miss with a stability rating of {stab_score:.1f}.")
 
         with v_col2:
             l_win = winners["Launch & Height"]
             st.success(f"**Launch Choice: {l_win['Model']} (ID: {l_win['ID']})**\n\nOptimized for {target_flight} flight.")
             
             f_win = winners["Feel & Smoothness"]
-            st.warning(f"**Feel Choice: {f_win['Model']} (ID: {f_win['ID']})**\n\nPrioritizing {target_feel} feel.")
+            st.warning(f"**Feel Choice: {f_win['Model']} (ID: {f_win['ID']})**\n\nPrioritizing {target_feel} feel profile.")
 
         if st.button("🆕 New Fitting"):
             st.session_state.clear()
