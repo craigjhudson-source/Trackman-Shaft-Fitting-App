@@ -138,6 +138,8 @@ if all_data:
 
     else:
         # --- 4. MASTER FITTER REPORT ---
+        # This section will re-run automatically whenever the GitHub code is updated
+        # as long as the user's browser session is active.
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
         st.subheader("📋 Player Profile Summary")
@@ -177,7 +179,6 @@ if all_data:
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 200
             
             # --- THE SPEED-LOCK VETO ---
-            # If carry > 180, we kill anything with a FlexScore < 6.5 (effectively killing S-flex)
             if carry_6i >= 180:
                 df_in.loc[df_in['FlexScore'] < 6.5, 'Flex_Penalty'] += 3000
             if carry_6i >= 195:
@@ -231,7 +232,6 @@ if all_data:
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour|Elevate', case=False)", "🎨 Feel Option"))
         
-        # Dispersion Killer
         top_stability = temp_candidates.sort_values(['Total_Score', 'StabilityIndex'], ascending=[True, False]).head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stability.empty:
             final_list.append(top_stability)
@@ -245,29 +245,30 @@ if all_data:
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        if target_flight == "High":
-            tip_logic = "an active tip-section to increase peak height while maintaining mid-section stability"
-        else:
-            tip_logic = "increased tip-stiffness to lower launch and stabilize the face"
-            
-        st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard 6-iron carry, we are optimizing for a peak height of ~30 yards and a land angle >43°. Your current profile is likely unstable at this speed; these selections utilize {tip_logic} to eliminate the '{primary_miss}' miss.")
+        tip_logic = "an active tip-section to increase peak height" if target_flight == "High" else "increased tip-stiffness to lower launch"
+        st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard carry, we are optimizing for land angle and spin. These selections utilize {tip_logic} to eliminate the '{primary_miss}' miss.")
 
         st.subheader("🔬 Expert Engineering Analysis")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         
         for _, row in final_df.iterrows():
             with st.container():
-                brand_model = f"{row['Brand']} {row['Model']}"
-                blurb = desc_lookup.get(row['Model'], "Selected for optimized 6-iron stability and transition timing.")
-                st.markdown(f"**{row['Archetype']}: {brand_model}**")
-                st.caption(f"{blurb}")
+                st.markdown(f"**{row['Archetype']}: {row['Brand']} {row['Model']}**")
+                st.caption(desc_lookup.get(row['Model'], "Selected for optimized stability and transition timing."))
 
         st.divider()
         b1, b2, _ = st.columns([1,1,4])
+        
         if b1.button("✏️ Edit Survey"):
             st.session_state.interview_complete = False
             st.session_state.form_step = 0
             st.rerun()
+
         if b2.button("🆕 New Fitting"):
-            for key in list(st.session_state.keys()): del st.session_state[key]
+            # Instead of deleting everything, we just reset the progress flags.
+            # This keeps 'answers' available for GitHub hot-reloads during your dev phase.
+            st.session_state.interview_complete = False
+            st.session_state.form_step = 0
+            # Optional: To truly start fresh for a new person, clear answers here
+            st.session_state.answers = {} 
             st.rerun()
