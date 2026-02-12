@@ -173,11 +173,11 @@ if all_data:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
         def score_shafts(df_in):
-            # 1. Flex Penalty + SPEED VETO
+            # 1. Flex Penalty + HARD SPEED VETO
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 200
             
             # --- THE SPEED-LOCK VETO ---
-            # If carry > 180, we DISQUALIFY anything with a FlexScore < 6.5
+            # If carry > 180, we kill anything with a FlexScore < 6.5 (effectively killing S-flex)
             if carry_6i >= 180:
                 df_in.loc[df_in['FlexScore'] < 6.5, 'Flex_Penalty'] += 3000
             if carry_6i >= 195:
@@ -193,7 +193,7 @@ if all_data:
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 50)
             else: df_in['Miss_Correction'] = 0
             
-            # 4. Launch Penalty + VETO
+            # 4. Launch Penalty + HARD VETO
             launch_map = {"Low": 2.0, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
             target_l = launch_map.get(target_flight, 5.0)
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * 150
@@ -214,7 +214,7 @@ if all_data:
 
         df_all['Total_Score'] = score_shafts(df_all)
         
-        # PICK AND POP
+        # PICK AND POP ARCHETYPES
         final_list = []
         temp_candidates = df_all.sort_values('Total_Score').copy()
 
