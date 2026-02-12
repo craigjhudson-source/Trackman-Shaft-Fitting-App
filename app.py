@@ -118,7 +118,7 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg['From'] = f"Tour Proven Shaft Fitting <{sender_email}>"
         msg['To'] = recipient_email
         msg['Subject'] = f"Tour Proven Fitting Report: {player_name}"
-        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your full fitting report.", 'plain'))
+        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your full Tour Proven fitting report.", 'plain'))
         part = MIMEApplication(pdf_bytes, Name=f"Tour_Proven_{player_name}.pdf")
         part['Content-Disposition'] = f'attachment; filename="Tour_Proven_{player_name}.pdf"'
         msg.attach(part)
@@ -186,15 +186,15 @@ if all_data:
         st.title(f"⛳ Fitting Matrix: {player_name}")
         
         c_nav1, c_nav2, _ = st.columns([1,1,4])
-        if c_nav1.button("✏️ Edit"): st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
-        if c_nav2.button("🆕 New"): st.session_state.clear(); st.rerun()
+        if c_nav1.button("✏️ Edit Profile"): st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
+        if c_nav2.button("🆕 New Fitting"): st.session_state.clear(); st.rerun()
 
         st.markdown("### 📊 Player Profile Summary")
         sum_cols = st.columns(len(categories))
         for i, cat in enumerate(categories):
             with sum_cols[i]:
                 cat_qs = q_master[q_master['Category'] == cat]
-                cat_data = [{"Detail": r['QuestionText'].replace("Current ",""), "Value": st.session_state.answers.get(r['QuestionID'], "")} for _, r in cat_qs.iterrows()]
+                cat_data = [{"Detail": r['QuestionText'].replace("Current ","").replace("Target ",""), "Value": st.session_state.answers.get(r['QuestionID'], "")} for _, r in cat_qs.iterrows()]
                 st.markdown(f"**{cat}**"); st.table(pd.DataFrame(cat_data))
 
         # --- CALCULATIONS ---
@@ -215,26 +215,44 @@ if all_data:
             elif mode == "Feel & Smoothness": df_t['Penalty'] += (df_t['EI_Mid'] * 400)
             return df_t.sort_values('Penalty').head(3)[['Brand', 'Model', 'Flex', 'Weight (g)']]
 
-        all_winners = {m: get_top_3(m) for m in ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]}
+        all_winners = {
+            "Balanced": get_top_3("Balanced"),
+            "Maximum Stability": get_top_3("Maximum Stability"),
+            "Launch & Height": get_top_3("Launch & Height"),
+            "Feel & Smoothness": get_top_3("Feel & Smoothness")
+        }
 
         # Display Grids
         r1_c1, r1_c2 = st.columns(2); r2_c1, r2_c2 = st.columns(2); grids = [r1_c1, r1_c2, r2_c1, r2_c2]
+        grid_icons = ["⚖️ Balanced", "🛡️ Maximum Stability", "🚀 Launch & Height", "☁️ Feel & Smoothness"]
         for i, (mode, df) in enumerate(all_winners.items()):
-            with grids[i]: st.subheader(mode); st.table(df)
+            with grids[i]: st.subheader(grid_icons[i]); st.table(df)
 
-        # Verdicts
+        # --- VERDICTS FOR ALL 4 GROUPS ---
         desc_map = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb']))
-        verdicts = {f"Primary: {all_winners['Balanced'].iloc[0]['Model']}": desc_map.get(all_winners['Balanced'].iloc[0]['Model'], "Optimized profile."),
-                    f"Anti-{miss}: {all_winners['Maximum Stability'].iloc[0]['Model']}": desc_map.get(all_winners['Maximum Stability'].iloc[0]['Model'], "High stability.")}
+        
+        verdicts = {
+            f"Primary: {all_winners['Balanced'].iloc[0]['Model']}": desc_map.get(all_winners['Balanced'].iloc[0]['Model'], "Optimized weight and profile."),
+            f"Anti-{miss} Logic: {all_winners['Maximum Stability'].iloc[0]['Model']}": desc_map.get(all_winners['Maximum Stability'].iloc[0]['Model'], "Reinforced stability."),
+            f"Flight/Height: {all_winners['Launch & Height'].iloc[0]['Model']}": desc_map.get(all_winners['Launch & Height'].iloc[0]['Model'], "Launch optimization."),
+            f"Feel/Smoothness: {all_winners['Feel & Smoothness'].iloc[0]['Model']}": desc_map.get(all_winners['Feel & Smoothness'].iloc[0]['Model'], "Smooth transition profile.")
+        }
         
         st.divider(); st.subheader("🔬 Fitter's Technical Verdict")
-        v_c1, v_c2 = st.columns(2); v_cols = [v_c1, v_c2]
-        for i, (t, txt) in enumerate(verdicts.items()):
-            with v_cols[i]: st.info(f"**{t}**\n\n{txt}")
+        v_c1, v_c2 = st.columns(2)
+        v_keys = list(verdicts.keys())
+        with v_c1:
+            st.info(f"**{v_keys[0]}**\n\n{verdicts[v_keys[0]]}")
+            st.success(f"**{v_keys[2]}**\n\n{verdicts[v_keys[2]]}")
+        with v_c2:
+            st.error(f"**{v_keys[1]}**\n\n{verdicts[v_keys[1]]}")
+            st.warning(f"**{v_keys[3]}**\n\n{verdicts[v_keys[3]]}")
 
-        # Email
+        # --- EMAIL TRIGGER ---
         if not st.session_state.email_sent and player_email:
-            with st.spinner("Dispatching Pro Report..."):
+            with st.spinner("Generating and Dispatching Pro Report..."):
                 pdf_bytes = create_pdf_bytes(player_name, all_winners, st.session_state.answers, categories, q_master, verdicts)
                 if send_email_with_pdf(player_email, player_name, pdf_bytes) is True:
-                    st.success(f"📬 Report sent to {player_email}"); st.session_state.email_sent = True
+                    st.success(f"📬 Full Pro Report sent to {player_email}"); st.session_state.email_sent = True
+                else:
+                    st.error("⚠️ Email connection failed. Please check secrets.")
