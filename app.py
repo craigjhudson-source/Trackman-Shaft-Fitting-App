@@ -12,6 +12,14 @@ from email.mime.application import MIMEApplication
 # --- 1. DATA CONNECTION ---
 st.set_page_config(page_title="Patriot Golf Fitting Engine", layout="wide", page_icon="⛳")
 
+# Custom CSS to make st.table more compact and highlightable
+st.markdown("""
+    <style>
+    .stTable { font-size: 12px !important; }
+    div[data-testid="stTable"] td { padding: 2px 5px !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
 @st.cache_data(ttl=600)
 def get_data_from_gsheet():
     try:
@@ -70,19 +78,13 @@ def create_pdf_bytes(player_name, winners, answers):
     pdf.set_text_color(20, 40, 100)
     pdf.cell(200, 15, "PATRIOT GOLF PERFORMANCE REPORT", ln=True, align='C')
     pdf.ln(5)
-    
     pdf.set_font("Arial", 'B', 12)
     pdf.set_text_color(0, 0, 0)
     pdf.cell(0, 10, f"Player: {player_name}", ln=True)
     pdf.set_font("Arial", size=10)
-    stats = [
-        f"6i Carry: {answers.get('Q15', '—')}yd", 
-        f"Miss: {answers.get('Q18', '—')}", 
-        f"Target Flight: {answers.get('Q17', '—')}"
-    ]
+    stats = [f"6i Carry: {answers.get('Q15', '—')}yd", f"Miss: {answers.get('Q18', '—')}", f"Target Flight: {answers.get('Q17', '—')}"]
     pdf.cell(0, 7, " | ".join(stats), ln=True)
     pdf.ln(10)
-
     for mode, row in winners.items():
         pdf.set_font("Arial", 'B', 12)
         pdf.set_text_color(180, 0, 0)
@@ -92,7 +94,6 @@ def create_pdf_bytes(player_name, winners, answers):
         pdf.cell(10, 8, "") 
         pdf.cell(0, 8, f"ID: {row['ID']} | {row['Brand']} {row['Model']} ({row['Flex']} | {row['Weight (g)']}g)", ln=True)
         pdf.ln(2)
-    
     return pdf.output(dest='S').encode('latin-1')
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
@@ -105,11 +106,9 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg['Subject'] = f"Your Custom Shaft Prescription - {player_name}"
         body = f"Hello {player_name},\n\nAttached is your personalized Patriot Golf shaft report.\n\nBest,\nPatriot Golf"
         msg.attach(MIMEText(body, 'plain'))
-        
         part = MIMEApplication(pdf_bytes, Name=f"Patriot_Fitting_{player_name}.pdf")
         part['Content-Disposition'] = f'attachment; filename="Patriot_Fitting_{player_name}.pdf"'
         msg.attach(part)
-        
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(sender_email, sender_password)
@@ -117,7 +116,7 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         server.quit()
         return True
     except Exception as e:
-        st.error(f"📧 Email Error: {e}\n(Check Gmail App Password in Secrets)"); return False
+        return False
 
 # --- 3. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
@@ -141,16 +140,13 @@ if all_data:
     if not st.session_state.interview_complete:
         st.title("Patriot Golf Performance Fitting")
         st.progress((st.session_state.form_step + 1) / len(categories))
-        
         current_cat = categories[st.session_state.form_step]
         q_df = q_master[q_master['Category'] == current_cat]
         st.subheader(f"Section: {current_cat}")
-        
         for _, row in q_df.iterrows():
             qid = str(row['QuestionID']).strip()
             qtext, qtype, qopts = row['QuestionText'], row['InputType'], str(row['Options']).strip()
             ans_val = st.session_state.answers.get(qid, "")
-            
             if qtype == "Dropdown":
                 opts = [""]
                 if "Heads" in qopts:
@@ -175,17 +171,12 @@ if all_data:
                 elif "Config:" in qopts:
                     col = qopts.split(":")[1].strip()
                     if col in all_data['Config'].columns: opts += all_data['Config'][col].dropna().tolist()
-                else:
-                    opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].tolist()
-
+                else: opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].tolist()
                 opts = list(dict.fromkeys([str(x) for x in opts if x]))
                 if "" not in opts: opts = [""] + opts
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}", on_change=sync_all)
-            elif qtype == "Numeric":
-                st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_all)
-            else:
-                st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_all)
-
+            elif qtype == "Numeric": st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_all)
+            else: st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_all)
         st.divider()
         c1, c2, _ = st.columns([1,1,4])
         if c1.button("⬅️ Back") and st.session_state.form_step > 0:
@@ -200,10 +191,9 @@ if all_data:
         # --- 5. RESULTS & REPORT ---
         player_name = st.session_state.answers.get('Q01', 'Player')
         player_email = st.session_state.answers.get('Q02', '')
-        
         st.title(f"⛳ Fitting Matrix: {player_name}")
         
-        # --- COMPACT SUMMARY GRID (ALWAYS VISIBLE) ---
+        # --- COMPACT HIGHLIGHTABLE TABLE SUMMARY ---
         st.markdown("### 📊 Player Profile Summary")
         summary_cols = st.columns(len(categories))
         for i, cat in enumerate(categories):
@@ -213,13 +203,13 @@ if all_data:
                 for _, row in cat_qs.iterrows():
                     qid = row['QuestionID']
                     if qid in st.session_state.answers and st.session_state.answers[qid]:
-                        # Shorten labels for grid layout
-                        short_label = row['QuestionText'].replace("Current ", "").replace("Target ", "").replace("Player ", "")
+                        short_label = row['QuestionText'].replace("Current ", "").replace("Target ", "")
                         cat_data.append({"Detail": short_label, "Value": st.session_state.answers[qid]})
                 
                 if cat_data:
                     st.markdown(f"**{cat}**")
-                    st.dataframe(pd.DataFrame(cat_data), use_container_width=True, hide_index=True)
+                    # Using st.table for copy-paste highlighting
+                    st.table(pd.DataFrame(cat_data))
 
         if st.button("✏️ Edit Profile"):
             st.session_state.interview_complete = False
@@ -228,7 +218,7 @@ if all_data:
 
         st.divider()
 
-        # LOGIC & RECOMMENDATIONS
+        # LOGIC PREP
         try: carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
         primary_miss = st.session_state.answers.get('Q18', 'None')
@@ -252,33 +242,32 @@ if all_data:
             if mode == "Maximum Stability": df_temp['Penalty'] -= (df_temp['StabilityIndex'] * 600)
             elif mode == "Launch & Height": df_temp['Penalty'] -= (df_temp['LaunchScore'] * 500)
             elif mode == "Feel & Smoothness": df_temp['Penalty'] += (df_temp['EI_Mid'] * 400)
-            return df_temp.sort_values('Penalty').head(3)[['ID', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']]
+            return df_temp.sort_values('Penalty').head(3)[['ID', 'Brand', 'Model', 'Flex', 'Weight (g)']]
 
+        # --- HIGHLIGHTABLE RECOMMENDATION TABLES ---
         modes = [("Balanced", "⚖️"), ("Maximum Stability", "🛡️"), ("Launch & Height", "🚀"), ("Feel & Smoothness", "☁️")]
         winners = {}
-        r1_cols = st.columns(2); r2_cols = st.columns(2); all_grid = r1_cols + r2_cols
-        
+        r1 = st.columns(2); r2 = st.columns(2); all_grid = r1 + r2
         for i, (mode, icon) in enumerate(modes):
             with all_grid[i]:
                 st.subheader(f"{icon} {mode}")
                 res = get_top_3(df_all, mode)
                 winners[mode] = res.iloc[0]
-                st.dataframe(res, use_container_width=True, hide_index=True)
+                # Swapped st.dataframe for st.table so you can highlight/copy
+                st.table(res)
 
-        # Email dispatch
         if not st.session_state.email_sent and player_email:
             with st.spinner("Emailing report..."):
                 pdf_bytes = create_pdf_bytes(player_name, winners, st.session_state.answers)
                 if send_email_with_pdf(player_email, player_name, pdf_bytes):
-                    st.success(f"📬 Report sent to {player_email}")
-                    st.session_state.email_sent = True
+                    st.success(f"📬 Sent to {player_email}"); st.session_state.email_sent = True
 
         st.divider()
         st.subheader("🔬 Fitter's Technical Verdict")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         v1, v2 = st.columns(2)
         with v1:
-            st.info(f"**Primary: {winners['Balanced']['Model']} (ID: {winners['Balanced']['ID']})**\n\n{desc_lookup.get(winners['Balanced']['Model'], 'Optimized for total control.')}")
+            st.info(f"**Primary: {winners['Balanced']['Model']} (ID: {winners['Balanced']['ID']})**\n\n{desc_lookup.get(winners['Balanced']['Model'], 'Optimized.')}")
             st.error(f"**Anti-{primary_miss}: {winners['Maximum Stability']['Model']} (ID: {winners['Maximum Stability']['ID']})**")
         with v2:
             st.success(f"**Flight: {winners['Launch & Height']['Model']} (ID: {winners['Launch & Height']['ID']})**")
