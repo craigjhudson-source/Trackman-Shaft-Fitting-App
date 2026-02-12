@@ -51,7 +51,6 @@ def save_to_fittings(answers):
         worksheet = sh.worksheet('Fittings')
         
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # Assuming sheet columns match Q01-Q23 plus timestamp
         row = [timestamp]
         for i in range(1, 24):
             qid = f"Q{i:02d}"
@@ -141,7 +140,6 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # Profile Visible Immediately (No Expander)
         st.subheader("📋 Player Profile Summary")
         ver_cols = st.columns(4)
         for i, cat in enumerate(categories):
@@ -153,18 +151,19 @@ if all_data:
                     st.caption(f"{q_row['QuestionText']}: **{ans}**")
         st.divider()
 
-        # LOGIC CALCS
+        # LOGIC CALCS (6-IRON SPECIFIC)
         try:
             carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
 
         primary_miss = st.session_state.answers.get('Q18', '')
         
-        # Set targets based on speed
+        # 6-Iron Speed Tiers
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
         elif carry_6i >= 180: f_tf, ideal_w = 7.0, 120
         elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
-        else: f_tf, ideal_w = 5.0, 95
+        elif carry_6i >= 150: f_tf, ideal_w = 5.0, 95
+        else: f_tf, ideal_w = 4.0, 80
 
         df_all = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
@@ -173,8 +172,8 @@ if all_data:
         def score_shafts(df_in):
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 100
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
-            # Pull/Hook correction: prioritize low torque and high stability
             if any(x in primary_miss for x in ["Hook", "Pull"]):
+                # Penalize low stability/high torque for pulls
                 df_in['Miss_Correction'] = (df_in['Torque'] * 60) + ((10 - df_in['StabilityIndex']) * 60)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 30)
@@ -183,7 +182,7 @@ if all_data:
 
         df_all['Total_Score'] = score_shafts(df_all)
         
-        # Recommendation Engine: Ensure 5 Unique Archetypes
+        # PICK AND POP UNIQUE ARCHETYPES
         final_list = []
         temp_candidates = df_all.sort_values('Total_Score').copy()
 
@@ -196,36 +195,34 @@ if all_data:
                 return res
             return pd.DataFrame()
 
-        # 1. Modern Power (High-end Graphite/Composite)
         final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
-        # 2. Tour Standard (Heavy Steel)
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
-        # 3. Feel Option (Specific high-feel profiles)
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour', case=False)", "🎨 Feel Option"))
-        # 4. Dispersion Killer (Highest Stability Index)
+        
         top_stability = temp_candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stability.empty:
             final_list.append(top_stability)
             temp_candidates.drop(top_stability.index[0], inplace=True)
-        # 5. Alt-Tech Hybrid (Composite blends)
+        
         final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
 
         final_df = pd.concat(final_list)
 
-        # Result Table
+        # RESULTS DISPLAY
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        # Expert Summary
-        st.info(f"💡 **Fitter's Verdict:** At {int(carry_6i)} yards, your current Modus 120 X is likely 'collapsing' in the mid-section during transition, causing the clubhead to shut early (the Pull). These 5 options provide reinforced mid-sections to stabilize the face through impact.")
+        # Expert Summary with 6i Logic
+        st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard 6-iron carry, we are optimizing for a peak height of ~30 yards and a land angle >43°. Your current profile is likely unstable at this speed; these selections prioritize tip-stiffness to eliminate the '{primary_miss}' miss.")
 
         st.subheader("🔬 Expert Engineering Analysis")
+        # Link to your Descriptions tab
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         
         for _, row in final_df.iterrows():
             with st.container():
                 brand_model = f"{row['Brand']} {row['Model']}"
-                blurb = desc_lookup.get(row['Model'], "Reinforced profile designed to eliminate the left-side miss and stabilize trajectory.")
+                blurb = desc_lookup.get(row['Model'], "Selected for optimized 6-iron stability and transition timing.")
                 st.markdown(f"**{row['Archetype']}: {brand_model}**")
                 st.caption(f"{blurb}")
 
