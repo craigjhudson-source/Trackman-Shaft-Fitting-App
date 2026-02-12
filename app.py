@@ -157,6 +157,7 @@ if all_data:
         except: carry_6i = 150.0
 
         primary_miss = st.session_state.answers.get('Q18', '')
+        target_flight = st.session_state.answers.get('Q17', 'Mid')
         
         # 6-Iron Speed Tiers
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
@@ -172,12 +173,21 @@ if all_data:
         def score_shafts(df_in):
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 100
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
+            
+            # Miss Correction
             if any(x in primary_miss for x in ["Hook", "Pull"]):
                 df_in['Miss_Correction'] = (df_in['Torque'] * 60) + ((10 - df_in['StabilityIndex']) * 60)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 30)
             else: df_in['Miss_Correction'] = 0
-            return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction']
+            
+            # Launch Penalty (New Logic)
+            launch_map = {"Low": 2.5, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
+            target_l = launch_map.get(target_flight, 5.0)
+            l_multiplier = 40 if target_flight in ["High", "Low"] else 20
+            df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * l_multiplier
+            
+            return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty']
 
         df_all['Total_Score'] = score_shafts(df_all)
         
@@ -198,7 +208,7 @@ if all_data:
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour', case=False)", "🎨 Feel Option"))
         
-        # REFINED DISPERSION KILLER: Highest stability index but within 20g of the ideal weight
+        # DISPERSION KILLER (Weight-capped)
         weight_cap = ideal_w + 20
         top_stability = temp_candidates[temp_candidates['Weight (g)'] <= weight_cap].sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
         
@@ -214,8 +224,13 @@ if all_data:
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        # Expert Summary
-        st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard 6-iron carry, we are optimizing for a peak height of ~30 yards and a land angle >43°. Your current profile is likely unstable at this speed; these selections prioritize tip-stiffness to eliminate the '{primary_miss}' miss.")
+        # Dynamic Expert Summary
+        if target_flight == "High":
+            tip_logic = "an active tip-section to increase peak height while maintaining mid-section stability"
+        else:
+            tip_logic = "increased tip-stiffness to lower launch and stabilize the face"
+            
+        st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard 6-iron carry, we are optimizing for a peak height of ~30 yards and a land angle >43°. Your current profile is likely unstable at this speed; these selections utilize {tip_logic} to eliminate the '{primary_miss}' miss.")
 
         st.subheader("🔬 Expert Engineering Analysis")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
@@ -236,3 +251,4 @@ if all_data:
         if b2.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
+            
