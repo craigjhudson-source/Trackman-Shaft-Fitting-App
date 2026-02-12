@@ -10,7 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & STYLES ---
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
 st.markdown("""
@@ -20,9 +20,15 @@ st.markdown("""
     .profile-bar { 
         background-color: #142850; 
         color: white; 
-        padding: 15px; 
-        border-radius: 8px; 
+        padding: 20px; 
+        border-radius: 10px; 
         margin-bottom: 25px;
+        font-family: sans-serif;
+    }
+    .profile-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 15px;
     }
     .verdict-text {
         font-style: italic;
@@ -31,13 +37,6 @@ st.markdown("""
         font-size: 13px;
         border-left: 3px solid #b40000;
         padding-left: 10px;
-    }
-    .lab-metric {
-        background-color: #ffffff;
-        border: 1px solid #dee2e6;
-        padding: 10px;
-        border-radius: 5px;
-        text-align: center;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -86,9 +85,9 @@ def save_to_fittings(answers):
         worksheet = sh.worksheet('Fittings')
         row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)]
         worksheet.append_row(row)
-    except Exception as e: st.error(f"Error saving: {e}")
+    except Exception as e: st.error(f"Error saving fitting: {e}")
 
-# --- 3. PRO PDF ENGINE ---
+# --- 3. PRO PDF ENGINE (FIXED HEADER) ---
 def clean_text(text):
     return re.sub(r'[^\x00-\x7F]+', '', str(text)) if text else ""
 
@@ -104,9 +103,17 @@ class ProFittingPDF(FPDF):
         self.set_font('helvetica', 'B', 9); self.set_text_color(20, 40, 80)
         self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, 'L')
         self.set_font('helvetica', '', 8); self.set_text_color(0, 0, 0)
-        l1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Miss: {answers.get('Q18','')}"
-        l2 = f"Club: {answers.get('Q08','')} {answers.get('Q09','')} | Shaft: {answers.get('Q12','')} | SW: {answers.get('Q14','')}"
-        self.cell(0, 4, clean_text(l1), 0, 1, 'L'); self.cell(0, 4, clean_text(l2), 0, 1, 'L')
+        
+        # Row 1: Distances and Patterns
+        line1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
+        # Row 2: Current Club Specs
+        line2 = f"Current Head: {answers.get('Q08','')} {answers.get('Q09','')} | Current Shaft: {answers.get('Q12','')} ({answers.get('Q11','')})"
+        # Row 3: Build Specs
+        line3 = f"Length: {answers.get('Q13','')} | Swing Weight: {answers.get('Q14','')} | Grip: {answers.get('Q06','')} | Ball: {answers.get('Q07','')}"
+        
+        self.cell(0, 4, clean_text(line1), 0, 1, 'L')
+        self.cell(0, 4, clean_text(line2), 0, 1, 'L')
+        self.cell(0, 4, clean_text(line3), 0, 1, 'L')
         self.ln(2); self.line(10, self.get_y(), 200, self.get_y()); self.ln(4)
 
     def draw_recommendation_block(self, title, df, verdict_text):
@@ -125,7 +132,8 @@ def create_pdf_bytes(player_name, all_winners, answers, verdicts):
     pdf = ProFittingPDF(); pdf.add_page(); pdf.draw_player_header(answers)
     mapping = {"Balanced Choice": "Balanced", "Maximum Stability (Anti-Hook)": "Maximum Stability", "Launch & Height Optimizer": "Launch & Height", "Feel & Smoothness": "Feel & Smoothness"}
     v_keys = list(verdicts.keys())
-    for i, (label, calc_key) in enumerate(mapping.items()): pdf.draw_recommendation_block(label, all_winners[calc_key], verdicts[v_keys[i]])
+    for i, (label, calc_key) in enumerate(mapping.items()):
+        pdf.draw_recommendation_block(label, all_winners[calc_key], verdicts[v_keys[i]])
     return bytes(pdf.output())
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
@@ -133,18 +141,17 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         user, pwd = st.secrets["email"]["user"], st.secrets["email"]["password"].replace(" ", "").strip()
         msg = MIMEMultipart()
         msg['From'], msg['To'], msg['Subject'] = f"Tour Proven <{user}>", recipient_email, f"Fitting Report: {player_name}"
-        msg.attach(MIMEText(f"Hello {player_name},\n\nYour Performance Report is attached.", 'plain'))
-        part = MIMEApplication(pdf_bytes, Name=f"Report_{player_name}.pdf")
-        part['Content-Disposition'] = f'attachment; filename="Report_{player_name}.pdf"'; msg.attach(part)
+        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your one-page Performance Report from Tour Proven.", 'plain'))
+        part = MIMEApplication(pdf_bytes, Name=f"Tour_Proven_{player_name}.pdf")
+        part['Content-Disposition'] = f'attachment; filename="Tour_Proven_{player_name}.pdf"'; msg.attach(part)
         server = smtplib.SMTP('smtp.gmail.com', 587); server.starttls(); server.login(user, pwd); server.send_message(msg); server.quit()
         return True
     except Exception as e: return str(e)
 
-# --- 4. NEW: TRACKMAN LAB PARSER ---
+# --- 4. TRACKMAN LAB ENGINE ---
 def process_trackman_file(uploaded_file, shaft_id):
     try:
         df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-        # Handle Trackman naming variations
         m_map = {'Club Speed': 'Club Speed', 'Spin Rate': 'Spin Rate', 'Carry': 'Carry', 'Smash Factor': 'Smash Factor'}
         results = {"Shaft ID": shaft_id}
         for label, tm_col in m_map.items():
@@ -153,7 +160,7 @@ def process_trackman_file(uploaded_file, shaft_id):
         return results
     except: return None
 
-# --- 5. APP FLOW ---
+# --- 5. APP FLOW & SESSION ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
 if 'answers' not in st.session_state: st.session_state.answers = {}
@@ -211,7 +218,6 @@ if all_data:
         player_name, player_email = ans.get('Q01', 'Player'), ans.get('Q02', '')
         st.title(f"⛳ Performance Matrix: {player_name}")
 
-        # TABS FOR PHASE 1 VS PHASE 4
         tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
         # --- PREDICTION LOGIC ---
@@ -236,7 +242,31 @@ if all_data:
         verdicts = {f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]['Model'], "Optimized.") for k in all_winners}
         
         with tab_report:
-            st.markdown(f'<div class="profile-bar"><b>PROFILE:</b> {ans.get("Q15","")}yd Carry | <b>MISS:</b> {ans.get("Q18","")} | <b>CURRENT:</b> {ans.get("Q12","")}</div>', unsafe_allow_html=True)
+            # FIXED DASHBOARD PROFILE BAR (GRID LAYOUT)
+            st.markdown(f"""
+            <div class="profile-bar">
+                <div class="profile-grid">
+                    <div>
+                        <b>CARRY:</b> {ans.get('Q15','')}yd &nbsp;|&nbsp; 
+                        <b>FLIGHT:</b> {ans.get('Q16','')} &nbsp;|&nbsp; 
+                        <b>TARGET:</b> {ans.get('Q17','')}
+                    </div>
+                    <div>
+                        <b>CURRENT HEAD:</b> {ans.get('Q08','')} {ans.get('Q09','')}
+                    </div>
+                    <div>
+                        <b>CURRENT SHAFT:</b> {ans.get('Q12','')} ({ans.get('Q11','')}) &nbsp;|&nbsp; 
+                        <b>MISS:</b> {ans.get('Q18','')}
+                    </div>
+                    <div>
+                        <b>SPECS:</b> {ans.get('Q13','')} L / {ans.get('Q14','')} SW &nbsp;|&nbsp; 
+                        <b>GRIP:</b> {ans.get('Q06','')} &nbsp;|&nbsp; 
+                        <b>BALL:</b> {ans.get('Q07','')}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
             v_items = list(verdicts.items())
             col1, col2 = st.columns(2)
             for i, (cat, c_name) in enumerate([("Balanced", "⚖️ Balanced"), ("Maximum Stability", "🛡️ Stability"), ("Launch & Height", "🚀 Launch"), ("Feel & Smoothness", "☁️ Feel")]):
@@ -246,12 +276,12 @@ if all_data:
                     st.markdown(f"<div class='verdict-text'><b>Fitter's Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
             
             if not st.session_state.email_sent and player_email:
-                with st.spinner("Emailing Report..."):
+                with st.spinner("Dispatching Report..."):
                     pdf_bytes = create_pdf_bytes(player_name, all_winners, ans, verdicts)
                     if send_email_with_pdf(player_email, player_name, pdf_bytes) is True: st.success("📬 Sent!"); st.session_state.email_sent = True
 
         with tab_lab:
-            st.header("Phase 4: Live Data Correlation")
+            st.header("🧪 Testing & Correlation Lab")
             c_up, c_res = st.columns([1,2])
             with c_up:
                 test_list = [all_winners[k].iloc[0]['Model'] for k in all_winners]
@@ -268,8 +298,6 @@ if all_data:
                     if len(lab_df) > 1:
                         top_shaft = lab_df.loc[lab_df['Smash Factor'].idxmax()]['Shaft ID']
                         st.success(f"🏆 **Phase 5 Selection:** {top_shaft} (Highest Smash Efficiency)")
-                        
-                        # Phase 6 Suggestion
                         avg_spin = lab_df['Spin Rate'].mean()
-                        if avg_spin > 3200: st.warning("💡 **Optimization:** Spin is high. Consider a lower loft head or 'X' ball.")
+                        if avg_spin > 3200: st.warning("💡 **Optimization:** Spin is high. Consider a lower loft head or different ball.")
                 else: st.info("Upload Trackman files to begin Phase 4 comparison.")
