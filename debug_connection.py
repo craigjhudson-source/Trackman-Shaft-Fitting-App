@@ -43,3 +43,5 @@ except gspread.exceptions.SpreadsheetNotFound:
     st.warning(f"ACTION REQUIRED: Go to your Google Sheet and Share it with: {creds_dict.get('client_email')} (Give it Editor access).")
 except Exception as e:
     st.error(f"❌ Access Error: {e}")
+
+
