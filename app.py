@@ -140,15 +140,7 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # --- REFINEMENT TOGGLE ---
-        st.subheader("🛠 Refine Recommendations")
-        refine_choice = st.radio(
-            "What is most important to the player right now?",
-            ["Balanced (Engine Choice)", "Maximum Stability (Kill the Miss)", "Launch & Height", "Feel & Smoothness"],
-            horizontal=True
-        )
-        
-        st.divider()
+        # 4a. PROFILE SUMMARY
         st.subheader("📋 Player Profile Summary")
         ver_cols = st.columns(4)
         for i, cat in enumerate(categories):
@@ -158,7 +150,16 @@ if all_data:
                 for _, q_row in cat_qs.iterrows():
                     ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                     st.caption(f"{q_row['QuestionText']}: **{ans}**")
+        
         st.divider()
+
+        # 4b. REFINEMENT TOGGLE (Placed above recommendations)
+        st.subheader("🛠 Refine Recommendations")
+        refine_choice = st.radio(
+            "Select the primary optimization goal to re-rank the prescription:",
+            ["Balanced (Engine Choice)", "Maximum Stability (Kill the Miss)", "Launch & Height", "Feel & Smoothness"],
+            horizontal=True
+        )
 
         # LOGIC CALCS
         try:
@@ -219,7 +220,7 @@ if all_data:
 
         df_all['Total_Score'] = score_shafts(df_all)
 
-        # APPLY REFINEMENT TOGGLE WEIGHTS
+        # 4c. APPLY REFINEMENT TOGGLE WEIGHTS
         if refine_choice == "Maximum Stability (Kill the Miss)":
             df_all['Total_Score'] -= (df_all['StabilityIndex'] * 100)
         elif refine_choice == "Launch & Height":
@@ -227,7 +228,7 @@ if all_data:
         elif refine_choice == "Feel & Smoothness":
             df_all['Total_Score'] += (df_all['EI_Mid'] * 60)
 
-        # ARCHETYPE PICKING
+        # 4d. ARCHETYPE PICKING
         final_list = []
         temp_candidates = df_all.sort_values('Total_Score').copy()
 
@@ -255,7 +256,7 @@ if all_data:
         final_df.index = final_df.index + 1
         final_df.index.name = "Rank"
 
-        # RESULTS DISPLAY
+        # 4e. RESULTS DISPLAY
         st.subheader(f"🚀 Top Recommended Prescription (Sorted by: {refine_choice})")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
