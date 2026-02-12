@@ -40,7 +40,7 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
-# FUNCTION TO SAVE DATA TO "FITTINGS" TAB
+# FUNCTION TO SAVE DATA
 def save_to_fittings(answers):
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -49,7 +49,6 @@ def save_to_fittings(answers):
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         worksheet = sh.worksheet('Fittings')
-        
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp]
         for i in range(1, 24):
@@ -66,10 +65,11 @@ if 'answers' not in st.session_state: st.session_state.answers = {}
 
 all_data = get_data_from_gsheet()
 
-def sync_answers(q_list):
-    for qid in q_list:
-        key = f"widget_{qid}"
-        if key in st.session_state: 
+# Global sync function to keep answers and widgets aligned
+def sync_all():
+    for key in st.session_state:
+        if key.startswith("widget_"):
+            qid = key.replace("widget_", "")
             st.session_state.answers[qid] = st.session_state[key]
 
 # --- 3. DYNAMIC QUESTIONNAIRE ---
@@ -92,74 +92,82 @@ if all_data:
             
             if qtype == "Dropdown":
                 opts = [""]
-                # 1. Standard Config Dropdowns
-                if "Config:" in qopts:
-                    col_name = qopts.split(":")[1].strip()
-                    if col_name in all_data['Config'].columns:
-                        opts += all_data['Config'][col_name].dropna().astype(str).tolist()
                 
-                # 2. Cascading Head Selection
-                elif "Heads" in qopts:
-                    selected_head_brand = st.session_state.get("widget_Q08", st.session_state.answers.get("Q08", ""))
+                # HEAD LOGIC
+                if "Heads" in qopts:
+                    # Look directly at the widget state for instant feedback
+                    brand_val = st.session_state.get("widget_Q08", "")
                     if "Brand" in qtext:
                         opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
-                    else: # Model selection
-                        if selected_head_brand:
-                            opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == selected_head_brand]['Model'].unique().tolist())
+                    else:
+                        if brand_val:
+                            opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand_val]['Model'].unique().tolist())
                         else:
                             opts = ["Select Brand First"]
-                
-                # 3. Cascading Shaft Selection (Brand -> Flex -> Model)
+
+                # SHAFT LOGIC
                 elif "Shafts" in qopts:
-                    selected_shaft_brand = st.session_state.get("widget_Q10", st.session_state.answers.get("Q10", ""))
-                    selected_shaft_flex = st.session_state.get("widget_Q11", st.session_state.answers.get("Q11", ""))
+                    s_brand = st.session_state.get("widget_Q10", "")
+                    s_flex = st.session_state.get("widget_Q11", "")
                     
                     if "Brand" in qtext:
                         opts += sorted(all_data['Shafts']['Brand'].unique().tolist())
                     elif "Flex" in qtext:
-                        if selected_shaft_brand:
-                            brand_filtered = all_data['Shafts'][all_data['Shafts']['Brand'] == selected_shaft_brand]
-                            opts += sorted(brand_filtered['Flex'].unique().tolist())
+                        if s_brand:
+                            opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == s_brand]['Flex'].unique().tolist())
                         else:
                             opts = ["Select Brand First"]
-                    else: # Model selection
-                        if selected_shaft_brand and selected_shaft_flex:
-                            model_filtered = all_data['Shafts'][(all_data['Shafts']['Brand'] == selected_shaft_brand) & (all_data['Shafts']['Flex'] == selected_shaft_flex)]
-                            opts += sorted(model_filtered['Model'].unique().tolist())
-                        elif selected_shaft_brand:
+                    elif "Model" in qtext:
+                        if s_brand and s_flex:
+                            filtered = all_data['Shafts'][(all_data['Shafts']['Brand'] == s_brand) & (all_data['Shafts']['Flex'] == s_flex)]
+                            opts += sorted(filtered['Model'].unique().tolist())
+                        elif s_brand:
                             opts = ["Select Flex First"]
                         else:
                             opts = ["Select Brand First"]
                 
-                # 4. Standard Response List
+                # CONFIG LOGIC
+                elif "Config:" in qopts:
+                    col = qopts.split(":")[1].strip()
+                    if col in all_data['Config'].columns:
+                        opts += all_data['Config'][col].dropna().tolist()
+                
+                # STANDARD RESPONSES
                 else:
-                    opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].astype(str).tolist()
+                    opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].tolist()
+
+                # Cleanup options
+                opts = list(dict.fromkeys([str(x) for x in opts if x]))
+                if "" not in opts: opts = [""] + opts
                 
-                opts = list(dict.fromkeys([x for x in opts if x]))
-                if len(opts) > 1 and "" not in opts: opts = [""] + opts
-                
-                st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}", on_change=sync_answers, args=(q_df['QuestionID'].tolist(),))
-            
+                st.selectbox(
+                    qtext, 
+                    opts, 
+                    index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, 
+                    key=f"widget_{qid}",
+                    on_change=sync_all # Forces an immediate update of the answers dict
+                )
+
             elif qtype == "Numeric":
-                st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_answers, args=(q_df['QuestionID'].tolist(),))
+                st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_all)
             else:
-                st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_answers, args=(q_df['QuestionID'].tolist(),))
+                st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_all)
 
         st.divider()
         c1, c2, _ = st.columns([1,1,4])
         if c1.button("⬅️ Back") and st.session_state.form_step > 0:
-            sync_answers(q_df['QuestionID'].tolist())
+            sync_all()
             st.session_state.form_step -= 1
             st.rerun()
         
         if st.session_state.form_step < len(categories) - 1:
             if c2.button("Next ➡️"):
-                sync_answers(q_df['QuestionID'].tolist())
+                sync_all()
                 st.session_state.form_step += 1
                 st.rerun()
         else:
             if c2.button("🔥 Generate Prescription"):
-                sync_answers(q_master['QuestionID'].tolist())
+                sync_all()
                 save_to_fittings(st.session_state.answers)
                 st.session_state.interview_complete = True
                 st.rerun()
@@ -243,7 +251,6 @@ if all_data:
 
         df_all['Total_Score'] = score_shafts(df_all)
 
-        # 4c. APPLY AGGRESSIVE REFINEMENT WEIGHTS
         if refine_choice == "Maximum Stability (Kill the Miss)":
             df_all['Total_Score'] -= (df_all['StabilityIndex'] * 600)
         elif refine_choice == "Launch & Height":
@@ -251,7 +258,6 @@ if all_data:
         elif refine_choice == "Feel & Smoothness":
             df_all['Total_Score'] += (df_all['EI_Mid'] * 400)
 
-        # 4d. ARCHETYPE PICKING
         final_list = []
         temp_candidates = df_all.sort_values('Total_Score', ascending=True).copy()
 
@@ -267,40 +273,24 @@ if all_data:
         final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour|Elevate', case=False)", "🎨 Feel Option"))
-        
         top_stab = temp_candidates.head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stab.empty:
             final_list.append(top_stab)
             temp_candidates.drop(top_stab.index[0], inplace=True)
-        
         final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
 
         final_df = pd.concat(final_list).sort_values('Total_Score').reset_index(drop=True)
         final_df.index = final_df.index + 1
-        final_df.index.name = "Rank"
-
-        # 4e. RESULTS DISPLAY
         st.subheader(f"🚀 Top Recommended Prescription (Sorted by: {refine_choice})")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        tip_logic = "an active tip-section to increase peak height" if target_flight == "High" else "increased tip-stiffness to lower launch"
-        st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard carry, we are optimizing for land angle and spin. These selections utilize {tip_logic} to eliminate the '{primary_miss}' miss.")
-
-        st.subheader("🔬 Expert Engineering Analysis")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
-        
         for idx, row in final_df.iterrows():
-            with st.container():
-                st.markdown(f"**Rank {idx} - {row['Archetype']}: {row['Brand']} {row['Model']}**")
-                st.caption(desc_lookup.get(row['Model'], "Selected for optimized stability and transition timing."))
+            st.markdown(f"**Rank {idx} - {row['Archetype']}: {row['Brand']} {row['Model']}**")
+            st.caption(desc_lookup.get(row['Model'], "Selected for optimized stability and transition timing."))
 
         st.divider()
-        b1, b2, _ = st.columns([1,1,4])
-        if b1.button("✏️ Edit Survey"):
-            st.session_state.interview_complete = False
-            st.session_state.form_step = 0
-            st.rerun()
-        if b2.button("🆕 New Fitting"):
+        if st.button("🆕 New Fitting"):
             st.session_state.interview_complete = False
             st.session_state.form_step = 0
             st.session_state.answers = {}
