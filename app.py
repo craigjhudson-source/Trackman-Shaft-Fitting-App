@@ -66,26 +66,36 @@ def save_to_fittings(answers):
 def create_pdf_bytes(player_name, winners, answers):
     pdf = FPDF()
     pdf.add_page()
+    
+    # Header
     pdf.set_font("Arial", 'B', 20)
-    pdf.set_text_color(20, 40, 100) # Deep Blue
+    pdf.set_text_color(20, 40, 100)
     pdf.cell(200, 15, "PATRIOT GOLF PERFORMANCE REPORT", ln=True, align='C')
     pdf.ln(5)
     
+    # Summary
     pdf.set_font("Arial", 'B', 12)
-    pdf.set_text_color(0, 0, 0) # Black
+    pdf.set_text_color(0, 0, 0) # Fixed from set_color
     pdf.cell(0, 10, f"Player: {player_name}", ln=True)
-    pdf.set_font("Arial", size=11)
-    pdf.cell(0, 7, f"6i Carry: {answers.get('Q15', '—')}yd | Miss: {answers.get('Q18', '—')}", ln=True)
+    
+    pdf.set_font("Arial", size=10)
+    stats = [
+        f"6i Carry: {answers.get('Q15', '—')}yd",
+        f"Miss: {answers.get('Q18', '—')}",
+        f"Target Flight: {answers.get('Q17', '—')}"
+    ]
+    pdf.cell(0, 7, " | ".join(stats), ln=True)
     pdf.ln(10)
 
+    # Recommendations
     for mode, row in winners.items():
         pdf.set_font("Arial", 'B', 12)
-        pdf.set_text_color(180, 0, 0) # Red for mode titles
+        pdf.set_text_color(180, 0, 0)
         pdf.cell(0, 10, f"MODE: {mode.upper()}", ln=True)
         pdf.set_font("Arial", size=11)
         pdf.set_text_color(0, 0, 0)
         pdf.cell(10, 8, "") 
-        pdf.cell(0, 8, f"ID: {row['ID']} | {row['Brand']} {row['Model']} (Flex: {row['Flex']} | {row['Weight (g)']}g)", ln=True)
+        pdf.cell(0, 8, f"ID: {row['ID']} | {row['Brand']} {row['Model']} ({row['Flex']} | {row['Weight (g)']}g)", ln=True)
         pdf.ln(2)
     
     return pdf.output(dest='S').encode('latin-1')
@@ -99,7 +109,7 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg['To'] = recipient_email
         msg['Subject'] = f"Your Custom Shaft Prescription - {player_name}"
         
-        body = f"Hello {player_name},\n\nAttached is your personalized Patriot Golf shaft report. Use the Shaft IDs provided to locate your test clubs for your Trackman session.\n\nBest,\nPatriot Golf Fitting Team"
+        body = f"Hello {player_name},\n\nAttached is your personalized Patriot Golf shaft report. Use the Shaft IDs to correlate with your Trackman session.\n\nBest,\nPatriot Golf"
         msg.attach(MIMEText(body, 'plain'))
         
         part = MIMEApplication(pdf_bytes, Name=f"Patriot_Fitting_{player_name}.pdf")
@@ -200,16 +210,21 @@ if all_data:
         player_name = st.session_state.answers.get('Q01', 'Player')
         player_email = st.session_state.answers.get('Q02', '')
         
-        st.title(f"⛳ Patriot Golf Prescription: {player_name}")
+        st.title(f"🎯 Fitting Matrix: {player_name}")
         
-        # --- A. SUMMARY & EDIT BUTTON ---
-        with st.expander("📊 View Questionnaire Summary", expanded=True):
-            summary_data = []
-            for _, row in q_master.iterrows():
-                qid = row['QuestionID']
-                if qid in st.session_state.answers and st.session_state.answers[qid]:
-                    summary_data.append({"Question": row['QuestionText'], "Your Answer": st.session_state.answers[qid]})
-            st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+        # --- COMPACT GROUPED SUMMARY ---
+        with st.expander("📊 View Questionnaire Summary", expanded=False):
+            # We group by the original category from the Questions tab
+            for cat in categories:
+                cat_qs = q_master[q_master['Category'] == cat]
+                st.markdown(f"**{cat}**")
+                cols = st.columns(2)
+                for i, (_, row) in enumerate(cat_qs.iterrows()):
+                    qid = row['QuestionID']
+                    if qid in st.session_state.answers and st.session_state.answers[qid]:
+                        target_col = cols[i % 2]
+                        target_col.caption(f"{row['QuestionText']}: **{st.session_state.answers[qid]}**")
+                st.divider()
 
         if st.button("✏️ Edit Survey"):
             st.session_state.interview_complete = False
@@ -221,9 +236,8 @@ if all_data:
         # LOGIC PREP
         try: carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
-        primary_miss = st.session_state.answers.get('Q18', '')
+        primary_miss = st.session_state.answers.get('Q18', 'None')
         target_flight = st.session_state.answers.get('Q17', 'Mid')
-        target_feel = st.session_state.answers.get('Q20', 'Unsure')
         current_shaft_model = st.session_state.answers.get('Q12', 'Unknown')
         
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
@@ -233,7 +247,6 @@ if all_data:
         else: f_tf, ideal_w = 4.0, 80
 
         df_all = all_data['Shafts'].copy()
-        # Convert necessary columns to numeric
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'StabilityIndex', 'EI_Mid']:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
 
@@ -251,53 +264,38 @@ if all_data:
             res['Status'] = res['Model'].apply(lambda x: "✅ CURRENT" if x == current_shaft_model else "🆕 NEW")
             return res
 
-        # --- RECOMMENDATION TABLES ---
+        # --- TABLES ---
         modes = [("Balanced", "⚖️"), ("Maximum Stability", "🛡️"), ("Launch & Height", "🚀"), ("Feel & Smoothness", "☁️")]
         winners = {}
-        row1_cols = st.columns(2); row2_cols = st.columns(2); all_cols = row1_cols + row2_cols
+        r1 = st.columns(2); r2 = st.columns(2); all_cols = r1 + r2
         
         for i, (mode, icon) in enumerate(modes):
             with all_cols[i]:
                 st.subheader(f"{icon} {mode}")
                 top_df = get_top_3(df_all, mode)
                 winners[mode] = top_df.iloc[0]
-                st.dataframe(
-                    top_df, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={"ID": st.column_config.TextColumn("ID", width="small")}
-                )
+                st.dataframe(top_df, use_container_width=True, hide_index=True)
 
-        # --- AUTO-EMAIL (Fixed pdf.set_color to set_text_color) ---
+        # --- EMAIL DISPATCH ---
         if not st.session_state.email_sent and player_email:
             with st.spinner(f"Emailing report to {player_email}..."):
                 pdf_bytes = create_pdf_bytes(player_name, winners, st.session_state.answers)
                 if send_email_with_pdf(player_email, player_name, pdf_bytes):
-                    st.success(f"📬 Report dispatched to {player_email}")
+                
+                    st.success(f"📬 Report sent to {player_email}")
                     st.session_state.email_sent = True
 
-        # --- TECHNICAL VERDICT ---
+        # --- VERDICT ---
         st.divider()
         st.subheader("🔬 Fitter's Technical Verdict")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
-        v_col1, v_col2 = st.columns(2)
-        
-        with v_col1:
-            b_win = winners["Balanced"]
-            st.info(f"**Primary Fit: {b_win['Brand']} {b_win['Model']} (ID: {b_win['ID']})**\n\n{desc_lookup.get(b_win['Model'], 'Optimized for total control.')}")
-            
-            s_win = winners["Maximum Stability"]
-            # Look up specific StabilityIndex for description logic
-            stab_score = df_all[df_all['ID'] == s_win['ID']]['StabilityIndex'].values[0]
-            st.error(f"**Stability Choice: {s_win['Model']} (ID: {s_win['ID']})**\n\nTargeting your {primary_miss} miss with a stability rating of {stab_score:.1f}.")
-
-        with v_col2:
-            l_win = winners["Launch & Height"]
-            st.success(f"**Launch Choice: {l_win['Model']} (ID: {l_win['ID']})**\n\nOptimized for {target_flight} flight.")
-            
-            f_win = winners["Feel & Smoothness"]
-            st.warning(f"**Feel Choice: {f_win['Model']} (ID: {f_win['ID']})**\n\nPrioritizing {target_feel} feel profile.")
+        v1, v2 = st.columns(2)
+        with v1:
+            st.info(f"**Primary: {winners['Balanced']['Brand']} {winners['Balanced']['Model']} (ID: {winners['Balanced']['ID']})**\n\n{desc_lookup.get(winners['Balanced']['Model'], 'Optimized performance.')}")
+            st.error(f"**Anti-{primary_miss}: {winners['Maximum Stability']['Model']} (ID: {winners['Maximum Stability']['ID']})**")
+        with v2:
+            st.success(f"**Flight Target: {winners['Launch & Height']['Model']} (ID: {winners['Launch & Height']['ID']})**")
+            st.warning(f"**Smoothness: {winners['Feel & Smoothness']['Model']} (ID: {winners['Feel & Smoothness']['ID']})**")
 
         if st.button("🆕 New Fitting"):
-            st.session_state.clear()
-            st.rerun()
+            st.session_state.clear(); st.rerun()
