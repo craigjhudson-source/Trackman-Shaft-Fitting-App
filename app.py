@@ -138,7 +138,13 @@ if all_data:
 
     else:
         # --- 4. MASTER FITTER REPORT ---
-        st.title(f"🎯 Master Fitting Matrix: {st.session_state.answers.get('Q01', 'Player')}")
+        hdr1, hdr2 = st.columns([5, 1])
+        with hdr1:
+            st.title(f"🎯 Master Fitting Matrix: {st.session_state.answers.get('Q01', 'Player')}")
+        with hdr2:
+            if st.button("✏️ Edit Answers"):
+                st.session_state.interview_complete = False
+                st.rerun()
         
         with st.expander("👤 View Player Profile Summary"):
             ver_cols = st.columns(4)
@@ -207,35 +213,34 @@ if all_data:
         st.subheader("🔬 Fitter's Technical Verdict")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         
-        # Layout in 2x2 grid to match recommendation order
         v_row1_c1, v_row1_c2 = st.columns(2)
         v_row2_c1, v_row2_c2 = st.columns(2)
         
-        # 1. Balanced
         with v_row1_c1:
             b_win = winners["Balanced"]
             st.markdown(f"**🚀 Balanced: {b_win['Brand']} {b_win['Model']}**")
             st.write(f"Chosen as the mathematical center for your profile. {desc_lookup.get(b_win['Model'], 'Optimized for total control and consistency.')}")
         
-        # 2. Maximum Stability
         with v_row1_c2:
             s_win = winners["Maximum Stability"]
             st.markdown(f"**🚀 Maximum Stability: {s_win['Brand']} {s_win['Model']}**")
             st.write(f"Prioritized for the **{primary_miss}** miss. This selection features a higher Stability Index to keep the face square through the impact zone.")
 
-        # 3. Launch & Height
         with v_row2_c1:
             l_win = winners["Launch & Height"]
             st.markdown(f"**🚀 Launch & Height: {l_win['Brand']} {l_win['Model']}**")
             st.write(f"Optimized to hit your **{target_flight}** flight window. This profile uses tip-stiffness manipulation to adjust dynamic loft and spin.")
 
-        # 4. Feel & Smoothness
         with v_row2_c2:
             f_win = winners["Feel & Smoothness"]
             st.markdown(f"**🚀 Feel & Smoothness: {f_win['Brand']} {f_win['Model']}**")
             st.write(f"Selected for your **{target_feel}** feel preference. This shaft maximizes the mid-section energy transfer for a smoother, less boardy transition.")
 
+        st.divider()
         
+        # --- FINAL SUMMARY RECOMMENDATION ---
+        st.subheader("🏁 Summary Recommendation")
+        st.info(f"Based on the data, start testing with the **{winners['Balanced']['Model']}** or **{winners['Maximum Stability']['Model']}**. These will give you the most stability and face control for a high-speed player with a {primary_miss} miss.")
 
         if st.button("🆕 New Fitting"):
             st.session_state.interview_complete = False
