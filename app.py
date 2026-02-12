@@ -9,6 +9,27 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
+# --- TEMPORARY TEST BLOCK ---
+with st.sidebar:
+    st.write("### 🛠️ Email System Test")
+    test_mail = st.text_input("Recipient Email", st.secrets["email"]["user"])
+    if st.button("Run Connection Test"):
+        try:
+            # Connect to SMTP
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            # login using Account B secrets
+            server.login(st.secrets["email"]["user"], st.secrets["email"]["password"].replace(" ", ""))
+            
+            # Send simple message
+            msg = f"Subject: System Test\n\nConnection from {st.secrets['email']['user']} is successful!"
+            server.sendmail(st.secrets["email"]["user"], test_mail, msg)
+            server.quit()
+            st.success("✅ Account B Connected!")
+        except Exception as e:
+            st.error(f"❌ Failed: {e}")
+# --- END TEST BLOCK ---
+
 # --- 1. DATA CONNECTION ---
 st.set_page_config(page_title="Patriot Golf Fitting Engine", layout="wide", page_icon="⛳")
 
