@@ -67,25 +67,70 @@ def save_to_fittings(answers):
     except Exception as e:
         st.error(f"Error saving fitting record: {e}")
 
-# --- 3. PDF & EMAIL ENGINE ---
+# --- 3. ADVANCED PDF ENGINE ---
+class FittingPDF(FPDF):
+    def header(self):
+        self.set_fill_color(20, 40, 80)
+        self.rect(0, 0, 210, 35, 'F')
+        self.set_font('Arial', 'B', 18)
+        self.set_text_color(255, 255, 255)
+        self.cell(0, 20, 'TOUR PROVEN SHAFT PRESCRIPTION', 0, 1, 'C')
+        self.set_font('Arial', '', 10)
+        self.cell(0, -5, f"Generated: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, 'C')
+        self.ln(15)
+
+    def section_header(self, label, icon_color=(200, 0, 0)):
+        self.set_font('Arial', 'B', 12)
+        self.set_text_color(*icon_color)
+        self.cell(0, 10, f"  {label.upper()}", 0, 1, 'L')
+        self.set_draw_color(*icon_color)
+        self.line(self.get_x(), self.get_y()-2, self.get_x()+190, self.get_y()-2)
+        self.ln(2)
+
+    def recommendation_table(self, df_row):
+        self.set_font('Arial', 'B', 10)
+        self.set_fill_color(240, 240, 240)
+        self.set_text_color(0, 0, 0)
+        # Table Headers
+        cols = ["Brand", "Model", "Flex", "Weight"]
+        widths = [45, 80, 35, 30]
+        for i, col in enumerate(cols):
+            self.cell(widths[i], 8, col, 1, 0, 'C', True)
+        self.ln()
+        # Table Data
+        self.set_font('Arial', '', 10)
+        self.cell(widths[0], 8, str(df_row['Brand']), 1, 0, 'C')
+        self.cell(widths[1], 8, str(df_row['Model']), 1, 0, 'C')
+        self.cell(widths[2], 8, str(df_row['Flex']), 1, 0, 'C')
+        self.cell(widths[3], 8, f"{df_row['Weight (g)']}g", 1, 0, 'C')
+        self.ln(12)
+
 def create_pdf_bytes(player_name, winners, answers):
-    pdf = FPDF()
+    pdf = FittingPDF()
     pdf.add_page()
-    pdf.set_font("Arial", 'B', 20)
-    pdf.set_text_color(20, 40, 100)
-    pdf.cell(200, 15, "TOUR PROVEN SHAFT PRESCRIPTION", ln=True, align='C')
-    pdf.ln(5)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.set_text_color(0, 0, 0)
-    pdf.cell(0, 10, f"Player: {player_name}", ln=True)
-    stats = [f"6i Carry: {answers.get('Q15', '—')}yd", f"Miss: {answers.get('Q18', '—')}", f"Flight: {answers.get('Q17', '—')}"]
-    pdf.set_font("Arial", size=10); pdf.cell(0, 7, " | ".join(stats), ln=True); pdf.ln(10)
-    for mode, row in winners.items():
-        pdf.set_font("Arial", 'B', 12); pdf.set_text_color(180, 0, 0)
-        pdf.cell(0, 10, f"{mode.upper()}", ln=True)
-        pdf.set_font("Arial", size=11); pdf.set_text_color(0, 0, 0)
-        pdf.cell(0, 8, f"Shaft: {row['Brand']} {row['Model']} ({row['Flex']} | {row['Weight (g)']}g)", ln=True)
-        pdf.ln(2)
+    
+    # Player Summary Box
+    pdf.set_font('Arial', 'B', 11)
+    pdf.set_fill_color(245, 245, 245)
+    pdf.cell(0, 10, f" PLAYER: {player_name.upper()}", 1, 1, 'L', True)
+    pdf.set_font('Arial', '', 10)
+    stats = f"6i Carry: {answers.get('Q15','—')}yd  |  Flight: {answers.get('Q17','—')}  |  Miss: {answers.get('Q18','—')}"
+    pdf.cell(0, 8, f" {stats}", 1, 1, 'L')
+    pdf.ln(10)
+
+    # Recommendations
+    pdf.section_header("Balanced Choice", (40, 40, 40))
+    pdf.recommendation_table(winners['Balanced'])
+
+    pdf.section_header("Maximum Stability (Anti-Hook)", (0, 100, 200))
+    pdf.recommendation_table(winners['Maximum Stability'])
+
+    pdf.section_header("Launch & Height Optimizer", (200, 80, 0))
+    pdf.recommendation_table(winners['Launch & Height'])
+
+    pdf.section_header("Feel & Smoothness", (0, 150, 0))
+    pdf.recommendation_table(winners['Feel & Smoothness'])
+
     return pdf.output(dest='S').encode('latin-1')
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
@@ -172,15 +217,11 @@ if all_data:
         player_email = st.session_state.answers.get('Q02', '')
         st.title(f"⛳ Fitting Matrix: {player_name}")
         
-        # Navigation Buttons
         nb1, nb2, _ = st.columns([1.2, 1.5, 4])
         if nb1.button("✏️ Edit Profile"):
-            st.session_state.interview_complete = False
-            st.session_state.email_sent = False
-            st.rerun()
+            st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
         if nb2.button("🆕 Start New Fitting"):
-            st.session_state.clear()
-            st.rerun()
+            st.session_state.clear(); st.rerun()
 
         st.divider()
 
@@ -195,7 +236,7 @@ if all_data:
                     st.markdown(f"**{cat}**")
                     st.table(pd.DataFrame(cat_data))
 
-        # Logic
+        # Calculation Logic
         try: carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
         primary_miss = st.session_state.answers.get('Q18', 'None')
@@ -219,7 +260,7 @@ if all_data:
             elif mode == "Feel & Smoothness": df_temp['Penalty'] += (df_temp['EI_Mid'] * 400)
             return df_temp.sort_values('Penalty').head(3)[['ID', 'Brand', 'Model', 'Flex', 'Weight (g)']]
 
-        # Grid Display
+        # Display Grid
         modes = [("Balanced", "⚖️"), ("Maximum Stability", "🛡️"), ("Launch & Height", "🚀"), ("Feel & Smoothness", "☁️")]
         winners = {}
         r1 = st.columns(2); r2 = st.columns(2); all_grid = r1 + r2
@@ -230,10 +271,10 @@ if all_data:
 
         # Email Trigger
         if not st.session_state.email_sent and player_email:
-            with st.spinner("Dispatching PDF Report..."):
+            with st.spinner("Dispatching Redesigned PDF..."):
                 pdf_bytes = create_pdf_bytes(player_name, winners, st.session_state.answers)
                 result = send_email_with_pdf(player_email, player_name, pdf_bytes)
-                if result is True: st.success(f"📬 Report sent to {player_email}"); st.session_state.email_sent = True
+                if result is True: st.success(f"📬 Professional Report sent to {player_email}"); st.session_state.email_sent = True
                 else: st.error(f"⚠️ Email Delivery Failed: {result}")
 
         # Final Verdicts
