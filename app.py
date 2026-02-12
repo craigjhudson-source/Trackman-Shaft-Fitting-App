@@ -153,7 +153,7 @@ if all_data:
         
         st.divider()
 
-        # 4b. REFINEMENT TOGGLE (Placed above recommendations)
+        # 4b. REFINEMENT TOGGLE
         st.subheader("🛠 Refine Recommendations")
         refine_choice = st.radio(
             "Select the primary optimization goal to re-rank the prescription:",
@@ -182,24 +182,21 @@ if all_data:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
         def score_shafts(df_in):
-            # 1. Flex Penalty + HARD SPEED VETO
+            # BASE SCORING LOGIC
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 200
             if carry_6i >= 180:
                 df_in.loc[df_in['FlexScore'] < 6.5, 'Flex_Penalty'] += 4000
             if carry_6i >= 195:
                 df_in.loc[df_in['FlexScore'] < 7.5, 'Flex_Penalty'] += 4000
 
-            # 2. Weight Penalty
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 15
             
-            # 3. Miss Correction
             if any(x in primary_miss for x in ["Hook", "Pull"]):
                 df_in['Miss_Correction'] = (df_in['Torque'] * 100) + ((10 - df_in['StabilityIndex']) * 150)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 75)
             else: df_in['Miss_Correction'] = 0
             
-            # 4. Launch Penalty + HARD VETO
             launch_map = {"Low": 2.0, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
             target_l = launch_map.get(target_flight, 5.0)
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * 150
@@ -209,7 +206,6 @@ if all_data:
             elif target_flight == "Low":
                 df_in.loc[df_in['LaunchScore'] > 6.0, 'Launch_Penalty'] += 2000
 
-            # 5. Feel Logic
             df_in['Feel_Adjustment'] = 0
             if target_feel in ["Smooth", "Whippy", "Responsive"] and any(x in feel_priority for x in ["4", "5"]):
                 df_in['Feel_Adjustment'] = (df_in['EI_Mid'] - 16.0) * 100
@@ -218,19 +214,22 @@ if all_data:
             
             return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty'] + df_in['Feel_Adjustment']
 
+        # Calculate initial score
         df_all['Total_Score'] = score_shafts(df_all)
 
-        # 4c. APPLY REFINEMENT TOGGLE WEIGHTS
+        # 4c. APPLY AGGRESSIVE REFINEMENT WEIGHTS (Boosted to ensure Rank changes)
         if refine_choice == "Maximum Stability (Kill the Miss)":
-            df_all['Total_Score'] -= (df_all['StabilityIndex'] * 100)
+            df_all['Total_Score'] -= (df_all['StabilityIndex'] * 600)
         elif refine_choice == "Launch & Height":
-            df_all['Total_Score'] -= (df_all['LaunchScore'] * 80)
+            df_all['Total_Score'] -= (df_all['LaunchScore'] * 500)
         elif refine_choice == "Feel & Smoothness":
-            df_all['Total_Score'] += (df_all['EI_Mid'] * 60)
+            # For 'Smoothness', we favor a lower EI_Mid (more bend) for the weight class
+            df_all['Total_Score'] += (df_all['EI_Mid'] * 400)
 
-        # 4d. ARCHETYPE PICKING
+        # 4d. ARCHETYPE PICKING (Ensuring fresh sort)
         final_list = []
-        temp_candidates = df_all.sort_values('Total_Score').copy()
+        # MUST re-sort here based on the new weighted score
+        temp_candidates = df_all.sort_values('Total_Score', ascending=True).copy()
 
         def pick_and_pop(query, label):
             match = temp_candidates.query(query).head(1)
@@ -245,14 +244,16 @@ if all_data:
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour|Elevate', case=False)", "🎨 Feel Option"))
         
-        top_stab = temp_candidates.sort_values(['Total_Score', 'StabilityIndex'], ascending=[True, False]).head(1).assign(Archetype="🎯 Dispersion Killer")
+        # Dispersion killer takes the absolute #1 remaining based on the new weighted score
+        top_stab = temp_candidates.head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stab.empty:
             final_list.append(top_stab)
             temp_candidates.drop(top_stab.index[0], inplace=True)
         
         final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
 
-        final_df = pd.concat(final_list).reset_index(drop=True)
+        # Re-sort the final 5 by the Total_Score to show the "Winning" Rank
+        final_df = pd.concat(final_list).sort_values('Total_Score').reset_index(drop=True)
         final_df.index = final_df.index + 1
         final_df.index.name = "Rank"
 
