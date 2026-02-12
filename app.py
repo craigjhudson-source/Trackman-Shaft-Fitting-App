@@ -39,14 +39,14 @@ st.markdown("""
 
 # --- 2. SECURITY & DATA CONNECTION ---
 def get_google_creds(scopes):
-    """Fixes the InvalidHeader error by aggressively cleaning the private key string"""
+    """Fixes the InvalidHeader error by cleaning the private key from secrets"""
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
             pk = creds_dict["private_key"]
-            # 1. Handle literal backslash-n sequences
+            # Replace literal \n characters with actual newlines
             pk = pk.replace("\\n", "\n")
-            # 2. Fix for InvalidHeader: Discard any hidden characters before the PEM start
+            # Ensure the key starts exactly at the header
             if "-----BEGIN PRIVATE KEY-----" in pk:
                 pk = pk[pk.find("-----BEGIN PRIVATE KEY-----"):]
             creds_dict["private_key"] = pk.strip()
@@ -62,6 +62,7 @@ def get_data_from_gsheet():
         scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = get_google_creds(scopes)
         gc = gspread.authorize(creds)
+        # Use your specific Sheet ID/URL
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         
         def get_clean_df(worksheet_name):
@@ -86,6 +87,7 @@ def save_to_fittings(answers):
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         worksheet = sh.worksheet('Fittings')
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Save Q01 through Q21
         row = [timestamp] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)]
         worksheet.append_row(row)
     except Exception as e: 
@@ -100,15 +102,15 @@ class ProFittingPDF(FPDF):
     def header(self):
         self.set_fill_color(20, 40, 80)
         self.rect(0, 0, 210, 25, 'F')
-        self.set_font('Arial', 'B', 14); self.set_text_color(255, 255, 255)
+        self.set_font('helvetica', 'B', 14); self.set_text_color(255, 255, 255)
         self.cell(0, 10, 'TOUR PROVEN PERFORMANCE REPORT', 0, 1, 'C')
-        self.set_font('Arial', '', 8); self.cell(0, -2, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, 'C')
+        self.set_font('helvetica', '', 8); self.cell(0, -2, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, 'C')
         self.ln(12)
 
     def draw_player_header(self, answers):
-        self.set_font('Arial', 'B', 9); self.set_text_color(20, 40, 80)
+        self.set_font('helvetica', 'B', 9); self.set_text_color(20, 40, 80)
         self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, 'L')
-        self.set_font('Arial', '', 8); self.set_text_color(0, 0, 0)
+        self.set_font('helvetica', '', 8); self.set_text_color(0, 0, 0)
         
         line1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
         line2 = f"Club: {answers.get('Q08','')} {answers.get('Q09','')} | Length: {answers.get('Q13','')} | SW: {answers.get('Q14','')}"
@@ -120,21 +122,21 @@ class ProFittingPDF(FPDF):
         self.ln(2); self.line(10, self.get_y(), 200, self.get_y()); self.ln(4)
 
     def draw_recommendation_block(self, title, df, verdict_text):
-        self.set_font('Arial', 'B', 10); self.set_text_color(180, 0, 0)
+        self.set_font('helvetica', 'B', 10); self.set_text_color(180, 0, 0)
         self.cell(0, 6, clean_text(title.upper()), 0, 1, 'L')
-        self.set_font('Arial', 'B', 8); self.set_fill_color(240, 240, 240); self.set_text_color(0, 0, 0)
+        self.set_font('helvetica', 'B', 8); self.set_fill_color(240, 240, 240); self.set_text_color(0, 0, 0)
         cols, w = ["Brand", "Model", "Flex", "Weight"], [40, 85, 30, 30]
         for i, col in enumerate(cols): self.cell(w[i], 6, col, 1, 0, 'C', True)
         self.ln()
-        self.set_font('Arial', '', 8)
+        self.set_font('helvetica', '', 8)
         for _, row in df.iterrows():
             self.cell(w[0], 5, clean_text(row['Brand']), 1, 0, 'C')
             self.cell(w[1], 5, clean_text(row['Model']), 1, 0, 'C')
             self.cell(w[2], 5, clean_text(row['Flex']), 1, 0, 'C')
             self.cell(w[3], 5, f"{clean_text(row['Weight (g)'])}g", 1, 0, 'C')
             self.ln()
-        self.ln(1); self.set_font('Arial', 'B', 8); self.cell(0, 4, "Fitter's Technical Verdict:", 0, 1)
-        self.set_font('Arial', 'I', 8); self.multi_cell(0, 4, clean_text(verdict_text)); self.ln(4)
+        self.ln(1); self.set_font('helvetica', 'B', 8); self.cell(0, 4, "Fitter's Technical Verdict:", 0, 1)
+        self.set_font('helvetica', 'I', 8); self.multi_cell(0, 4, clean_text(verdict_text)); self.ln(4)
 
 def create_pdf_bytes(player_name, all_winners, answers, verdicts):
     pdf = ProFittingPDF()
@@ -150,7 +152,6 @@ def create_pdf_bytes(player_name, all_winners, answers, verdicts):
     for i, (label, calc_key) in enumerate(mapping.items()):
         pdf.draw_recommendation_block(label, all_winners[calc_key], verdicts[v_keys[i]])
     
-    # Modern fpdf2/fpdf compatibility
     return bytes(pdf.output())
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
