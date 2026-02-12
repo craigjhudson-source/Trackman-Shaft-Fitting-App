@@ -1,12 +1,11 @@
-# utils.py
 import re
 import smtplib
 import datetime
+import streamlit as st
 from fpdf import FPDF
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
-import streamlit as st
 
 def clean_text(text):
     return re.sub(r'[^\x00-\x7F]+', '', str(text)) if text else ""
@@ -23,12 +22,12 @@ class ProFittingPDF(FPDF):
         self.set_font('helvetica', 'B', 9); self.set_text_color(20, 40, 80)
         self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, 'L')
         self.set_font('helvetica', '', 8); self.set_text_color(0, 0, 0)
-        line1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
-        line2 = f"Current Head: {answers.get('Q08','')} {answers.get('Q09','')} | Current Shaft: {answers.get('Q12','')} ({answers.get('Q11','')})"
-        line3 = f"Length: {answers.get('Q13','')} | Swing Weight: {answers.get('Q14','')} | Grip: {answers.get('Q06','')} | Ball: {answers.get('Q07','')}"
-        self.cell(0, 4, clean_text(line1), 0, 1, 'L')
-        self.cell(0, 4, clean_text(line2), 0, 1, 'L')
-        self.cell(0, 4, clean_text(line3), 0, 1, 'L')
+        l1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
+        l2 = f"Current Head: {answers.get('Q08','')} {answers.get('Q09','')} | Current Shaft: {answers.get('Q12','')} ({answers.get('Q11','')})"
+        l3 = f"Length: {answers.get('Q13','')} | Swing Weight: {answers.get('Q14','')} | Grip: {answers.get('Q06','')} | Ball: {answers.get('Q07','')}"
+        self.cell(0, 4, clean_text(l1), 0, 1, 'L')
+        self.cell(0, 4, clean_text(l2), 0, 1, 'L')
+        self.cell(0, 4, clean_text(l3), 0, 1, 'L')
         self.ln(2); self.line(10, self.get_y(), 200, self.get_y()); self.ln(4)
 
     def draw_recommendation_block(self, title, df, verdict_text):
@@ -56,7 +55,7 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         user, pwd = st.secrets["email"]["user"], st.secrets["email"]["password"].replace(" ", "").strip()
         msg = MIMEMultipart()
         msg['From'], msg['To'], msg['Subject'] = f"Tour Proven <{user}>", recipient_email, f"Fitting Report: {player_name}"
-        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your one-page Performance Report.", 'plain'))
+        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your Performance Report.", 'plain'))
         part = MIMEApplication(pdf_bytes, Name=f"Report_{player_name}.pdf")
         part['Content-Disposition'] = f'attachment; filename="Report_{player_name}.pdf"'; msg.attach(part)
         server = smtplib.SMTP('smtp.gmail.com', 587); server.starttls(); server.login(user, pwd); server.send_message(msg); server.quit()
