@@ -40,7 +40,6 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
-# FUNCTION TO SAVE DATA TO "FITTINGS" TAB
 def save_to_fittings(answers):
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -49,7 +48,6 @@ def save_to_fittings(answers):
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         worksheet = sh.worksheet('Fittings')
-        
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp]
         for i in range(1, 24):
@@ -111,7 +109,6 @@ if all_data:
                 opts = list(dict.fromkeys([x for x in opts if x]))
                 opts = [""] + opts
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
-            
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
             else:
@@ -140,24 +137,21 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # SUMMARY IS NOW ALWAYS VISIBLE (NO EXPANDER)
-        st.subheader("📋 Player Profile")
+        # Profile Visible (No Expander)
+        st.subheader("📋 Player Profile Summary")
         ver_cols = st.columns(4)
-        sum_idx = 0
-        for cat in categories:
-            with ver_cols[sum_idx % 4]:
+        for i, cat in enumerate(categories):
+            with ver_cols[i % 4]:
                 st.markdown(f"**{cat}**")
                 cat_qs = q_master[q_master['Category'] == cat]
                 for _, q_row in cat_qs.iterrows():
                     ans = st.session_state.answers.get(str(q_row['QuestionID']).strip(), "—")
                     st.caption(f"{q_row['QuestionText']}: **{ans}**")
-            sum_idx += 1
         st.divider()
 
-        # LOGIC CALCS
+        # Scoring Logic
         try:
-            val = st.session_state.answers.get('Q15', 150)
-            carry_6i = float(val) if val else 150.0
+            carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
 
         primary_miss = st.session_state.answers.get('Q18', '')
@@ -183,17 +177,32 @@ if all_data:
             return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction']
 
         df_all['Total_Score'] = score_shafts(df_all)
-        candidates = df_all.sort_values('Total_Score')
-
-        # Archetype Selection - 5 Distinct Archetypes
-        final_recs = []
-        final_recs.append(candidates[candidates['Material'].str.contains('Graphite', case=False, na=False)].head(1).assign(Archetype='🚀 Modern Power'))
-        final_recs.append(candidates[candidates['Material'] == 'Steel'].head(1).assign(Archetype='⚓ Tour Standard'))
-        final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False, na=False)].head(1).assign(Archetype='🎨 Feel Option'))
-        final_recs.append(candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype='🎯 Dispersion Killer'))
-        final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False, na=False)].head(1).assign(Archetype='🧪 Alt-Tech Hybrid'))
         
-        final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(5)
+        # Force 5 Unique Archetypes logic
+        final_list = []
+        temp_candidates = df_all.sort_values('Total_Score').copy()
+
+        def pick_and_pop(query, label):
+            match = temp_candidates.query(query).head(1)
+            if not match.empty:
+                idx = match.index[0]
+                res = match.assign(Archetype=label)
+                temp_candidates.drop(idx, inplace=True)
+                return res
+            return pd.DataFrame()
+
+        final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
+        final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
+        final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour', case=False)", "🎨 Feel Option"))
+        # Pick the most stable remaining
+        top_stability = temp_candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
+        if not top_stability.empty:
+            final_list.append(top_stability)
+            temp_candidates.drop(top_stability.index[0], inplace=True)
+        
+        final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
+
+        final_df = pd.concat(final_list)
 
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
@@ -205,7 +214,7 @@ if all_data:
         
         for _, row in final_df.iterrows():
             brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = desc_lookup.get(row['Model'], "Selected for optimized stability and transition timing based on carry distance.")
+            blurb = desc_lookup.get(row['Model'], "Optimized stability and transition timing based on player profile.")
             st.markdown(f"**{row['Archetype']}: {brand_model}**")
             st.caption(f"{blurb}")
 
