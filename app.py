@@ -92,30 +92,58 @@ if all_data:
             
             if qtype == "Dropdown":
                 opts = [""]
+                # 1. Standard Config Dropdowns
                 if "Config:" in qopts:
                     col_name = qopts.split(":")[1].strip()
                     if col_name in all_data['Config'].columns:
                         opts += all_data['Config'][col_name].dropna().astype(str).tolist()
+                
+                # 2. Cascading Head Selection
                 elif "Heads" in qopts:
-                    brand = st.session_state.get("widget_Q08", st.session_state.answers.get("Q08", ""))
-                    if "Brand" in qtext: opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
-                    else: opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand]['Model'].unique().tolist()) if brand else []
+                    selected_head_brand = st.session_state.get("widget_Q08", st.session_state.answers.get("Q08", ""))
+                    if "Brand" in qtext:
+                        opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
+                    else: # Model selection
+                        if selected_head_brand:
+                            opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == selected_head_brand]['Model'].unique().tolist())
+                        else:
+                            opts = ["Select Brand First"]
+                
+                # 3. Cascading Shaft Selection (Brand -> Flex -> Model)
                 elif "Shafts" in qopts:
-                    brand = st.session_state.get("widget_Q10", st.session_state.answers.get("Q10", ""))
-                    if "Brand" in qtext: opts += sorted(all_data['Shafts']['Brand'].unique().tolist())
-                    elif "Flex" in qtext: opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Flex'].unique().tolist()) if brand else []
-                    else: opts += sorted(all_data['Shafts'][all_data['Shafts']['Brand'] == brand]['Model'].unique().tolist()) if brand else []
+                    selected_shaft_brand = st.session_state.get("widget_Q10", st.session_state.answers.get("Q10", ""))
+                    selected_shaft_flex = st.session_state.get("widget_Q11", st.session_state.answers.get("Q11", ""))
+                    
+                    if "Brand" in qtext:
+                        opts += sorted(all_data['Shafts']['Brand'].unique().tolist())
+                    elif "Flex" in qtext:
+                        if selected_shaft_brand:
+                            brand_filtered = all_data['Shafts'][all_data['Shafts']['Brand'] == selected_shaft_brand]
+                            opts += sorted(brand_filtered['Flex'].unique().tolist())
+                        else:
+                            opts = ["Select Brand First"]
+                    else: # Model selection
+                        if selected_shaft_brand and selected_shaft_flex:
+                            model_filtered = all_data['Shafts'][(all_data['Shafts']['Brand'] == selected_shaft_brand) & (all_data['Shafts']['Flex'] == selected_shaft_flex)]
+                            opts += sorted(model_filtered['Model'].unique().tolist())
+                        elif selected_shaft_brand:
+                            opts = ["Select Flex First"]
+                        else:
+                            opts = ["Select Brand First"]
+                
+                # 4. Standard Response List
                 else:
                     opts += all_data['Responses'][all_data['Responses']['QuestionID'] == qid]['ResponseOption'].astype(str).tolist()
                 
                 opts = list(dict.fromkeys([x for x in opts if x]))
-                opts = [""] + opts
-                st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
+                if len(opts) > 1 and "" not in opts: opts = [""] + opts
+                
+                st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}", on_change=sync_answers, args=(q_df['QuestionID'].tolist(),))
             
             elif qtype == "Numeric":
-                st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
+                st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_answers, args=(q_df['QuestionID'].tolist(),))
             else:
-                st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}")
+                st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_answers, args=(q_df['QuestionID'].tolist(),))
 
         st.divider()
         c1, c2, _ = st.columns([1,1,4])
@@ -182,7 +210,6 @@ if all_data:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
         def score_shafts(df_in):
-            # BASE SCORING LOGIC
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 200
             if carry_6i >= 180:
                 df_in.loc[df_in['FlexScore'] < 6.5, 'Flex_Penalty'] += 4000
@@ -214,21 +241,18 @@ if all_data:
             
             return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty'] + df_in['Feel_Adjustment']
 
-        # Calculate initial score
         df_all['Total_Score'] = score_shafts(df_all)
 
-        # 4c. APPLY AGGRESSIVE REFINEMENT WEIGHTS (Boosted to ensure Rank changes)
+        # 4c. APPLY AGGRESSIVE REFINEMENT WEIGHTS
         if refine_choice == "Maximum Stability (Kill the Miss)":
             df_all['Total_Score'] -= (df_all['StabilityIndex'] * 600)
         elif refine_choice == "Launch & Height":
             df_all['Total_Score'] -= (df_all['LaunchScore'] * 500)
         elif refine_choice == "Feel & Smoothness":
-            # For 'Smoothness', we favor a lower EI_Mid (more bend) for the weight class
             df_all['Total_Score'] += (df_all['EI_Mid'] * 400)
 
-        # 4d. ARCHETYPE PICKING (Ensuring fresh sort)
+        # 4d. ARCHETYPE PICKING
         final_list = []
-        # MUST re-sort here based on the new weighted score
         temp_candidates = df_all.sort_values('Total_Score', ascending=True).copy()
 
         def pick_and_pop(query, label):
@@ -244,7 +268,6 @@ if all_data:
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour|Elevate', case=False)", "🎨 Feel Option"))
         
-        # Dispersion killer takes the absolute #1 remaining based on the new weighted score
         top_stab = temp_candidates.head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stab.empty:
             final_list.append(top_stab)
@@ -252,7 +275,6 @@ if all_data:
         
         final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
 
-        # Re-sort the final 5 by the Total_Score to show the "Winning" Rank
         final_df = pd.concat(final_list).sort_values('Total_Score').reset_index(drop=True)
         final_df.index = final_df.index + 1
         final_df.index.name = "Rank"
