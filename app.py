@@ -13,7 +13,7 @@ def get_data_from_gsheet():
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(
             creds_info, 
-            scopes=["https://www.googleapis.com/spreadsheets", "https://www.googleapis.com/auth/drive"]
+            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         )
         gc = gspread.authorize(creds)
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
@@ -40,6 +40,7 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
+# FUNCTION TO SAVE DATA TO "FITTINGS" TAB
 def save_to_fittings(answers):
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -157,7 +158,7 @@ if all_data:
 
         primary_miss = st.session_state.answers.get('Q18', '')
         
-        # Determine Flex and Weight Targets based on 6i Speed
+        # 6-Iron Speed Tiers
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
         elif carry_6i >= 180: f_tf, ideal_w = 7.0, 120
         elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
@@ -172,6 +173,7 @@ if all_data:
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 100
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
             if any(x in primary_miss for x in ["Hook", "Pull"]):
+                # Penalize low stability/high torque for pulls
                 df_in['Miss_Correction'] = (df_in['Torque'] * 60) + ((10 - df_in['StabilityIndex']) * 60)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 30)
@@ -193,23 +195,15 @@ if all_data:
                 return res
             return pd.DataFrame()
 
-        # 1. Modern Power (Graphite/Composite)
         final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
-        # 2. Tour Standard (Steel)
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
-        # 3. Feel Option (Specific high-feel profiles)
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour', case=False)", "🎨 Feel Option"))
         
-        # 4. Dispersion Killer (Highest Stability Index with Weight Ceiling)
-        # Prevents recommending a 130g X-Stiff to someone who swings 135 yards
-        weight_cap = ideal_w + 15 
-        top_stability = temp_candidates[temp_candidates['Weight (g)'] <= weight_cap].sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
-        
+        top_stability = temp_candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stability.empty:
             final_list.append(top_stability)
             temp_candidates.drop(top_stability.index[0], inplace=True)
         
-        # 5. Alt-Tech Hybrid (High-performance composites)
         final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
 
         final_df = pd.concat(final_list)
@@ -222,12 +216,12 @@ if all_data:
         st.info(f"💡 **Fitter's Verdict:** Based on a {int(carry_6i)}-yard 6-iron carry, we are optimizing for a peak height of ~30 yards and a land angle >43°. Your current profile is likely unstable at this speed; these selections prioritize tip-stiffness to eliminate the '{primary_miss}' miss.")
 
         st.subheader("🔬 Expert Engineering Analysis")
+        # Link to your Descriptions tab
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         
         for _, row in final_df.iterrows():
             with st.container():
                 brand_model = f"{row['Brand']} {row['Model']}"
-                # Use fallback if lookup fails
                 blurb = desc_lookup.get(row['Model'], "Selected for optimized 6-iron stability and transition timing.")
                 st.markdown(f"**{row['Archetype']}: {brand_model}**")
                 st.caption(f"{blurb}")
