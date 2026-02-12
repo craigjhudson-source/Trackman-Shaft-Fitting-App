@@ -1,4 +1,5 @@
 import streamlit as st
+import pd as pd
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -12,7 +13,6 @@ from email.mime.application import MIMEApplication
 # --- 1. CONFIGURATION & STYLING ---
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
-# CSS to make tables highlightable and the UI clean
 st.markdown("""
     <style>
     [data-testid="stTable"] { font-size: 13px !important; }
@@ -32,7 +32,6 @@ def get_data_from_gsheet():
             scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         )
         gc = gspread.authorize(creds)
-        # Using your shared URL
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         
@@ -73,57 +72,43 @@ def save_to_fittings(answers):
 def create_pdf_bytes(player_name, winners, answers):
     pdf = FPDF()
     pdf.add_page()
-    # Header
     pdf.set_font("Arial", 'B', 20)
     pdf.set_text_color(20, 40, 100)
     pdf.cell(200, 15, "TOUR PROVEN SHAFT PRESCRIPTION", ln=True, align='C')
     pdf.ln(5)
-    
-    # Player Stats
     pdf.set_font("Arial", 'B', 12)
     pdf.set_text_color(0, 0, 0)
     pdf.cell(0, 10, f"Player: {player_name}", ln=True)
     stats = [f"6i Carry: {answers.get('Q15', '—')}yd", f"Miss: {answers.get('Q18', '—')}", f"Flight: {answers.get('Q17', '—')}"]
     pdf.set_font("Arial", size=10); pdf.cell(0, 7, " | ".join(stats), ln=True); pdf.ln(10)
-    
-    # Recommendations
     for mode, row in winners.items():
         pdf.set_font("Arial", 'B', 12); pdf.set_text_color(180, 0, 0)
         pdf.cell(0, 10, f"{mode.upper()}", ln=True)
         pdf.set_font("Arial", size=11); pdf.set_text_color(0, 0, 0)
         pdf.cell(0, 8, f"Shaft: {row['Brand']} {row['Model']} ({row['Flex']} | {row['Weight (g)']}g)", ln=True)
         pdf.ln(2)
-    
     return pdf.output(dest='S').encode('latin-1')
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
     try:
         sender_email = st.secrets["email"]["user"]
-        # Aggressive cleaning of password
         sender_password = str(st.secrets["email"]["password"]).replace(" ", "").strip()
-        
         msg = MIMEMultipart()
         msg['From'] = f"Tour Proven Shaft Fitting <{sender_email}>"
         msg['To'] = recipient_email
         msg['Subject'] = f"Tour Proven Fitting Report: {player_name}"
-        
-        body = f"Hello {player_name},\n\nAttached is your custom shaft fitting report based on your performance data.\n\nBest,\nTour Proven Team"
+        body = f"Hello {player_name},\n\nAttached is your custom shaft fitting report from Tour Proven Shaft Fitting.\n\nBest,\nTour Proven Team"
         msg.attach(MIMEText(body, 'plain'))
-        
         part = MIMEApplication(pdf_bytes, Name=f"Tour_Proven_Fitting_{player_name}.pdf")
         part['Content-Disposition'] = f'attachment; filename="Tour_Proven_Fitting_{player_name}.pdf"'
         msg.attach(part)
-        
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
+        server = smtplib.SMTP('smtp.gmail.com', 587); server.starttls()
         server.login(sender_email, sender_password)
-        server.send_message(msg)
-        server.quit()
+        server.send_message(msg); server.quit()
         return True
-    except Exception as e:
-        return str(e)
+    except Exception as e: return str(e)
 
-# --- 4. APP LOGIC ---
+# --- 4. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
 if 'answers' not in st.session_state: st.session_state.answers = {}
@@ -135,7 +120,7 @@ def sync_all():
 
 all_data = get_data_from_gsheet()
 
-# --- 5. UI: QUESTIONNAIRE ---
+# --- 5. UI FLOW ---
 if all_data:
     q_master = all_data['Questions']
     categories = list(dict.fromkeys(q_master['Category'].tolist()))
@@ -143,7 +128,6 @@ if all_data:
     if not st.session_state.interview_complete:
         st.title("⛳ Tour Proven Fitting Interview")
         st.progress((st.session_state.form_step + 1) / len(categories))
-        
         current_cat = categories[st.session_state.form_step]
         q_df = q_master[q_master['Category'] == current_cat]
         st.subheader(f"Section: {current_cat}")
@@ -184,27 +168,38 @@ if all_data:
             if c2.button("🔥 Calculate Fitting"): sync_all(); save_to_fittings(st.session_state.answers); st.session_state.interview_complete = True; st.rerun()
 
     else:
-        # --- 6. UI: RESULTS ---
+        # --- RESULTS PAGE ---
         player_name = st.session_state.answers.get('Q01', 'Player')
         player_email = st.session_state.answers.get('Q02', '')
         st.title(f"⛳ Fitting Matrix: {player_name}")
         
-        # Player Profile Table
+        # Navigation Buttons
+        nb1, nb2, _ = st.columns([1.2, 1.5, 4])
+        if nb1.button("✏️ Edit Profile"):
+            st.session_state.interview_complete = False
+            st.session_state.email_sent = False
+            st.rerun()
+        if nb2.button("🆕 Start New Fitting"):
+            st.session_state.clear()
+            st.rerun()
+
+        st.divider()
+
+        # Summary Grid
         st.markdown("### 📊 Player Profile Summary")
         summary_cols = st.columns(len(categories))
         for i, cat in enumerate(categories):
             with summary_cols[i]:
                 cat_qs = q_master[q_master['Category'] == cat]
-                cat_data = [{"Detail": r['QuestionText'].replace("Current ", ""), "Value": st.session_state.answers.get(r['QuestionID'], "")} for _, r in cat_qs.iterrows()]
+                cat_data = [{"Detail": r['QuestionText'].replace("Current ", "").replace("Target ", ""), "Value": st.session_state.answers.get(r['QuestionID'], "")} for _, r in cat_qs.iterrows()]
                 if cat_data:
                     st.markdown(f"**{cat}**")
                     st.table(pd.DataFrame(cat_data))
 
-        # Calculation Logic
+        # Logic
         try: carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
         primary_miss = st.session_state.answers.get('Q18', 'None')
-        
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
         elif carry_6i >= 180: f_tf, ideal_w = 7.0, 125
         elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
@@ -225,7 +220,7 @@ if all_data:
             elif mode == "Feel & Smoothness": df_temp['Penalty'] += (df_temp['EI_Mid'] * 400)
             return df_temp.sort_values('Penalty').head(3)[['ID', 'Brand', 'Model', 'Flex', 'Weight (g)']]
 
-        # Recommendations Display
+        # Grid Display
         modes = [("Balanced", "⚖️"), ("Maximum Stability", "🛡️"), ("Launch & Height", "🚀"), ("Feel & Smoothness", "☁️")]
         winners = {}
         r1 = st.columns(2); r2 = st.columns(2); all_grid = r1 + r2
@@ -234,7 +229,7 @@ if all_data:
                 st.subheader(f"{icon} {mode}")
                 res = get_top_3(df_all, mode); winners[mode] = res.iloc[0]; st.table(res)
 
-        # Automated Email
+        # Email Trigger
         if not st.session_state.email_sent and player_email:
             with st.spinner("Dispatching PDF Report..."):
                 pdf_bytes = create_pdf_bytes(player_name, winners, st.session_state.answers)
@@ -242,17 +237,14 @@ if all_data:
                 if result is True: st.success(f"📬 Report sent to {player_email}"); st.session_state.email_sent = True
                 else: st.error(f"⚠️ Email Delivery Failed: {result}")
 
-        # Technical Verdicts
+        # Final Verdicts
         st.divider()
         st.subheader("🔬 Fitter's Technical Verdict")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
-        
         v1, v2 = st.columns(2)
         with v1:
-            st.info(f"**Primary: {winners['Balanced']['Model']}**\n\n{desc_lookup.get(winners['Balanced']['Model'], 'Optimized for rhythmic tempos.')}")
-            st.error(f"**Anti-{primary_miss} Logic: {winners['Maximum Stability']['Model']}**\n\n{desc_lookup.get(winners['Maximum Stability']['Model'], 'Reinforced profile to resist face-closing.')}")
+            st.info(f"**Primary: {winners['Balanced']['Model']}**\n\n{desc_lookup.get(winners['Balanced']['Model'], 'Optimized trajectory and weight.')}")
+            st.error(f"**Anti-{primary_miss} Logic: {winners['Maximum Stability']['Model']}**\n\n{desc_lookup.get(winners['Maximum Stability']['Model'], 'Reinforced for maximum face control.')}")
         with v2:
-            st.success(f"**Flight/Height: {winners['Launch & Height']['Model']}**\n\n{desc_lookup.get(winners['Launch & Height']['Model'], 'Designed to maximize apex.')}")
-            st.warning(f"**Feel/Smoothness: {winners['Feel & Smoothness']['Model']}**\n\n{desc_lookup.get(winners['Feel & Smoothness']['Model'], 'Active mid-section for better feedback.')}")
-
-        if st.button("🆕 Start New Fitting"): st.session_state.clear(); st.rerun()
+            st.success(f"**Flight/Height: {winners['Launch & Height']['Model']}**\n\n{desc_lookup.get(winners['Launch & Height']['Model'], 'Designed to optimize peak apex.')}")
+            st.warning(f"**Feel/Smoothness: {winners['Feel & Smoothness']['Model']}**\n\n{desc_lookup.get(winners['Feel & Smoothness']['Model'], 'Enhanced vibration dampening and feedback.')}")
