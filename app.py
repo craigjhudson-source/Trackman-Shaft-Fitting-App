@@ -31,7 +31,8 @@ def get_data_from_gsheet():
                 headers = [h.strip() if h.strip() else f"Col_{i}" for i, h in enumerate(rows[0])]
                 df = pd.DataFrame(rows[1:], columns=headers)
                 return df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-            except: return pd.DataFrame()
+            except:
+                return pd.DataFrame()
 
         return {
             'Heads': get_clean_df('Heads'),
@@ -71,7 +72,7 @@ def create_pdf_bytes(player_name, winners, answers):
     pdf.ln(5)
     
     pdf.set_font("Arial", 'B', 12)
-    pdf.set_text_color(0, 0, 0)
+    pdf.set_color(0, 0, 0)
     pdf.cell(0, 10, f"Player: {player_name}", ln=True)
     pdf.set_font("Arial", size=11)
     pdf.cell(0, 7, f"6i Carry: {answers.get('Q15', '—')}yd | Miss: {answers.get('Q18', '—')}", ln=True)
@@ -84,7 +85,7 @@ def create_pdf_bytes(player_name, winners, answers):
         pdf.set_font("Arial", size=11)
         pdf.set_text_color(0, 0, 0)
         pdf.cell(10, 8, "") 
-        pdf.cell(0, 8, f"{row['Brand']} {row['Model']} (Flex: {row['Flex']} | {row['Weight (g)']}g)", ln=True)
+        pdf.cell(0, 8, f"ID: {row['ID']} | {row['Brand']} {row['Model']} (Flex: {row['Flex']} | {row['Weight (g)']}g)", ln=True)
         pdf.ln(2)
     
     return pdf.output(dest='S').encode('latin-1')
@@ -98,7 +99,7 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg['To'] = recipient_email
         msg['Subject'] = f"Your Custom Shaft Prescription - {player_name}"
         
-        body = f"Hello {player_name},\n\nAttached is your personalized Patriot Golf shaft report. Based on your speed, transition, and miss patterns, these profiles offer the highest probability for performance improvement.\n\nBest,\nPatriot Golf Fitting Team"
+        body = f"Hello {player_name},\n\nAttached is your personalized Patriot Golf shaft report. Use the Shaft IDs provided to locate your test clubs for the Trackman session.\n\nBest,\nPatriot Golf Fitting Team"
         msg.attach(MIMEText(body, 'plain'))
         
         part = MIMEApplication(pdf_bytes, Name=f"Patriot_Fitting_{player_name}.pdf")
@@ -200,24 +201,23 @@ if all_data:
         player_email = st.session_state.answers.get('Q02', '')
         
         st.title(f"🎯 Fitting Matrix: {player_name}")
-
-        # --- A. QUESTIONNAIRE SUMMARY (Top of page) ---
+        
+        # --- A. SUMMARY & EDIT BUTTON ---
         with st.expander("📊 View Questionnaire Summary", expanded=True):
-            summary_list = []
+            summary_data = []
             for _, row in q_master.iterrows():
                 qid = row['QuestionID']
-                if qid in st.session_state.answers:
-                    summary_list.append({"Question": row['QuestionText'], "Your Answer": st.session_state.answers[qid]})
-            st.table(pd.DataFrame(summary_list))
+                if qid in st.session_state.answers and st.session_state.answers[qid]:
+                    summary_data.append({"Question": row['QuestionText'], "Your Answer": st.session_state.answers[qid]})
+            st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
 
-        # --- B. EDIT SURVEY BUTTON (In between) ---
         if st.button("✏️ Edit Survey"):
             st.session_state.interview_complete = False
-            st.session_state.email_sent = False # Reset so they get a fresh email if edited
+            st.session_state.email_sent = False
             st.rerun()
-            
+
         st.divider()
-        
+
         # LOGIC PREP
         try: carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
@@ -246,29 +246,39 @@ if all_data:
             elif mode == "Launch & Height": df_temp['Penalty'] -= (df_temp['LaunchScore'] * 500)
             elif mode == "Feel & Smoothness": df_temp['Penalty'] += (df_temp['EI_Mid'] * 400)
             
-            res = df_temp.sort_values('Penalty').head(3)[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']]
+            # Keep ID for Trackman tagging
+            res = df_temp.sort_values('Penalty').head(3)[['ID', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']]
             res['Status'] = res['Model'].apply(lambda x: "✅ CURRENT" if x == current_shaft_model else "🆕 NEW")
             return res
 
-        modes = ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]
+        # --- RECOMMENDATION TABLES ---
+        modes = [("Balanced", "⚖️"), ("Maximum Stability", "🛡️"), ("Launch & Height", "🚀"), ("Feel & Smoothness", "☁️")]
         winners = {}
         row1_cols = st.columns(2); row2_cols = st.columns(2); all_cols = row1_cols + row2_cols
         
-        for i, mode in enumerate(modes):
+        for i, (mode, icon) in enumerate(modes):
             with all_cols[i]:
+                st.subheader(f"{icon} {mode}")
                 top_df = get_top_3(df_all, mode)
                 winners[mode] = top_df.iloc[0]
-                st.subheader(f"🚀 {mode}")
-                st.table(top_df)
+                st.dataframe(
+                    top_df, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "ID": st.column_config.TextColumn("ID", width="small")
+                    }
+                )
 
-        # --- AUTO-EMAIL DISPATCH ---
+        # --- AUTO-EMAIL ---
         if not st.session_state.email_sent and player_email:
-            with st.spinner(f"Sending prescription to {player_email}..."):
+            with st.spinner(f"Emailing report to {player_email}..."):
                 pdf_bytes = create_pdf_bytes(player_name, winners, st.session_state.answers)
                 if send_email_with_pdf(player_email, player_name, pdf_bytes):
-                    st.success(f"📬 Report emailed to {player_email}")
+                    st.success(f"📬 Report dispatched to {player_email}")
                     st.session_state.email_sent = True
 
+        # --- TECHNICAL VERDICT ---
         st.divider()
         st.subheader("🔬 Fitter's Technical Verdict")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
@@ -276,19 +286,17 @@ if all_data:
         
         with v_col1:
             b_win = winners["Balanced"]
-            st.markdown(f"**Primary Fit: {b_win['Brand']} {b_win['Model']}**")
-            st.write(desc_lookup.get(b_win['Model'], 'Optimized for total control.'))
+            st.info(f"**Primary Fit: {b_win['Brand']} {b_win['Model']} (ID: {b_win['ID']})**\n\n{desc_lookup.get(b_win['Model'], 'Optimized for total control.')}")
+            
             s_win = winners["Maximum Stability"]
-            st.markdown(f"**Stability Optimization: {s_win['Brand']} {s_win['Model']}**")
-            st.write(f"Chosen to stabilize your **{primary_miss}** miss.")
+            st.error(f"**Stability Choice: {s_win['Model']} (ID: {s_win['ID']})**\n\nTargeting your {primary_miss} miss.")
 
         with v_col2:
             l_win = winners["Launch & Height"]
-            st.markdown(f"**Flight Optimization: {l_win['Brand']} {l_win['Model']}**")
-            st.write(f"Targets your **{target_flight}** flight goal.")
+            st.success(f"**Launch Choice: {l_win['Model']} (ID: {l_win['ID']})**\n\nOptimized for {target_flight} flight.")
+            
             f_win = winners["Feel & Smoothness"]
-            st.markdown(f"**Feel Optimization: {f_win['Brand']} {f_win['Model']}**")
-            st.write(f"Prioritizes a **{target_feel}** transition feel.")
+            st.warning(f"**Feel Choice: {f_win['Model']} (ID: {f_win['ID']})**\n\nPrioritizing {target_feel} feel.")
 
         if st.button("🆕 New Fitting"):
             st.session_state.clear()
