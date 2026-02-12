@@ -39,13 +39,18 @@ st.markdown("""
 
 # --- 2. SECURITY & DATA CONNECTION ---
 def get_google_creds(scopes):
-    """Critical fix for the InvalidHeader / InvalidByte errors in Streamlit Cloud"""
+    """Fixes the InvalidHeader error by aggressively cleaning the private key string"""
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
-            # Clean literal backslashes and strip whitespace added by triple quotes
-            pk = creds_dict["private_key"].replace("\\n", "\n").strip()
-            creds_dict["private_key"] = pk
+            pk = creds_dict["private_key"]
+            # 1. Handle literal backslash-n sequences
+            pk = pk.replace("\\n", "\n")
+            # 2. Fix for InvalidHeader: Discard any hidden characters before the PEM start
+            if "-----BEGIN PRIVATE KEY-----" in pk:
+                pk = pk[pk.find("-----BEGIN PRIVATE KEY-----"):]
+            creds_dict["private_key"] = pk.strip()
+            
         return Credentials.from_service_account_info(creds_dict, scopes=scopes)
     except Exception as e:
         st.error(f"🔐 Security Error: {e}")
@@ -144,8 +149,9 @@ def create_pdf_bytes(player_name, all_winners, answers, verdicts):
     v_keys = list(verdicts.keys())
     for i, (label, calc_key) in enumerate(mapping.items()):
         pdf.draw_recommendation_block(label, all_winners[calc_key], verdicts[v_keys[i]])
-    # Use 'latin-1' for compatibility with fpdf output
-    return pdf.output(dest='S').encode('latin-1')
+    
+    # Modern fpdf2/fpdf compatibility
+    return bytes(pdf.output())
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
     try:
