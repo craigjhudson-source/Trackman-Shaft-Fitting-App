@@ -40,7 +40,6 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
-# FUNCTION TO SAVE DATA
 def save_to_fittings(answers):
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -96,8 +95,7 @@ if all_data:
                     if "Brand" in qtext:
                         opts += sorted(all_data['Heads']['Manufacturer'].unique().tolist())
                     else:
-                        if brand_val:
-                            opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand_val]['Model'].unique().tolist())
+                        if brand_val: opts += sorted(all_data['Heads'][all_data['Heads']['Manufacturer'] == brand_val]['Model'].unique().tolist())
                         else: opts = ["Select Brand First"]
                 elif "Shafts" in qopts:
                     s_brand = st.session_state.get("widget_Q10", "")
@@ -161,6 +159,7 @@ if all_data:
         target_flight = st.session_state.answers.get('Q17', 'Mid')
         target_feel = st.session_state.answers.get('Q20', 'Unsure')
         feel_priority = st.session_state.answers.get('Q21', '1 - Do. Not. Care!')
+        current_shaft_model = st.session_state.answers.get('Q12', 'Unknown')
         
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
         elif carry_6i >= 180: f_tf, ideal_w = 7.0, 125
@@ -174,12 +173,10 @@ if all_data:
 
         def get_top_3(df_in, mode):
             df_temp = df_in.copy()
-            # Base Scoring logic
             df_temp['Penalty'] = abs(df_temp['FlexScore'] - f_tf) * 200
             if carry_6i >= 180: df_temp.loc[df_temp['FlexScore'] < 6.5, 'Penalty'] += 4000
             df_temp['Penalty'] += abs(df_temp['Weight (g)'] - ideal_w) * 15
             
-            # Mode Adjustments
             if mode == "Maximum Stability":
                 df_temp['Penalty'] -= (df_temp['StabilityIndex'] * 600)
             elif mode == "Launch & Height":
@@ -187,7 +184,10 @@ if all_data:
             elif mode == "Feel & Smoothness":
                 df_temp['Penalty'] += (df_temp['EI_Mid'] * 400)
             
-            return df_temp.sort_values('Penalty').head(3)[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']]
+            res = df_temp.sort_values('Penalty').head(3)[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']]
+            # Current vs New Logic
+            res['Status'] = res['Model'].apply(lambda x: "✅ CURRENT" if x == current_shaft_model else "🆕 NEW")
+            return res
 
         # MATRIX DISPLAY
         modes = ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]
@@ -195,20 +195,44 @@ if all_data:
         row2_cols = st.columns(2)
         all_cols = row1_cols + row2_cols
         
+        winners = {} # Store winners for the verdict
         for i, mode in enumerate(modes):
             with all_cols[i]:
                 st.subheader(f"🚀 {mode}")
-                st.table(get_top_3(df_all, mode))
+                top_df = get_top_3(df_all, mode)
+                winners[mode] = top_df.iloc[0]
+                st.table(top_df)
 
         st.divider()
         
-        # FINAL TECH ANALYSIS
+        # --- EXPANDED TECHNICAL VERDICT ---
         st.subheader("🔬 Fitter's Technical Verdict")
-        winning_model = get_top_3(df_all, "Balanced").iloc[0]['Model']
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         
-        st.info(f"**Primary Recommendation (Balanced):** {winning_model}")
-        st.write(desc_lookup.get(winning_model, "This shaft provides the optimal blend of stability and launch for your profile."))
+        # Columned Verdicts for clarity
+        v_col1, v_col2 = st.columns(2)
+        
+        with v_col1:
+            # BALANCED VERDICT
+            b_win = winners["Balanced"]
+            st.markdown(f"**Primary Fit (Balanced): {b_win['Brand']} {b_win['Model']}**")
+            st.write(f"Chosen because it aligns most closely with your {carry_6i}yd carry requirements. {desc_lookup.get(b_win['Model'], 'Optimized for total control.')}")
+            
+            # STABILITY VERDICT
+            s_win = winners["Maximum Stability"]
+            st.markdown(f"**Stability Optimization: {s_win['Brand']} {s_win['Model']}**")
+            st.write(f"We prioritized the **Stability Index** here. Given your miss is a **{primary_miss}**, this shaft's reinforced section helps stabilize the face through impact to tighten dispersion.")
+
+        with v_col2:
+            # LAUNCH VERDICT
+            l_win = winners["Launch & Height"]
+            st.markdown(f"**Flight Optimization: {l_win['Brand']} {l_win['Model']}**")
+            st.write(f"Specifically selected to achieve your **{target_flight}** flight target. This profile utilizes a specific tip-stiffness to manipulate the dynamic loft.")
+            
+            # FEEL VERDICT
+            f_win = winners["Feel & Smoothness"]
+            st.markdown(f"**Feel Optimization: {f_win['Brand']} {f_win['Model']}**")
+            st.write(f"A recommendation for when **{target_feel}** feel is the priority. This shaft features a higher mid-section energy transfer (EI Mid) for a smoother transition.")
 
         
 
