@@ -5,6 +5,7 @@ from google.oauth2.service_account import Credentials
 import datetime
 from fpdf import FPDF
 import smtplib
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
@@ -54,7 +55,12 @@ def save_to_fittings(answers):
         worksheet.append_row(row)
     except Exception as e: st.error(f"Error saving fitting: {e}")
 
-# --- 3. PRO PDF ENGINE ---
+# --- 3. PRO PDF ENGINE (WITH ENCODING FIX) ---
+def clean_text(text):
+    """Removes emojis and non-latin-1 characters to prevent PDF crashes."""
+    if not text: return ""
+    return re.sub(r'[^\x00-\x7F]+', '', str(text))
+
 class ProFittingPDF(FPDF):
     def header(self):
         self.set_fill_color(20, 40, 80)
@@ -66,18 +72,21 @@ class ProFittingPDF(FPDF):
         self.ln(15)
 
     def section_title(self, label):
+        label = clean_text(label)
         self.set_font('Arial', 'B', 11); self.set_fill_color(230, 230, 230); self.set_text_color(20, 40, 80)
         self.cell(0, 8, f"  {label.upper()}", 0, 1, 'L', True); self.ln(2)
 
     def draw_summary_table(self, title, data_list):
+        title = clean_text(title)
         self.set_font('Arial', 'B', 10); self.set_text_color(0, 0, 0); self.cell(0, 8, title, 0, 1, 'L')
         self.set_font('Arial', '', 9)
         for item in data_list:
-            self.cell(45, 6, f"{item['Detail']}:", 0, 0)
-            self.cell(0, 6, str(item['Value']), 0, 1)
+            self.cell(45, 6, f"{clean_text(item['Detail'])}:", 0, 0)
+            self.cell(0, 6, clean_text(item['Value']), 0, 1)
         self.ln(4)
 
     def draw_recommendation_grid(self, title, df_top3):
+        title = clean_text(title)
         self.set_font('Arial', 'B', 10); self.set_text_color(180, 0, 0); self.cell(0, 8, title, 0, 1, 'L')
         self.set_font('Arial', 'B', 8); self.set_fill_color(245, 245, 245); self.set_text_color(0, 0, 0)
         cols, w = ["Brand", "Model", "Flex", "Weight"], [40, 80, 35, 30]
@@ -85,10 +94,10 @@ class ProFittingPDF(FPDF):
         self.ln()
         self.set_font('Arial', '', 8)
         for _, row in df_top3.iterrows():
-            self.cell(w[0], 7, str(row['Brand']), 1, 0, 'C')
-            self.cell(w[1], 7, str(row['Model']), 1, 0, 'C')
-            self.cell(w[2], 7, str(row['Flex']), 1, 0, 'C')
-            self.cell(w[3], 7, f"{row['Weight (g)']}g", 1, 0, 'C')
+            self.cell(w[0], 7, clean_text(row['Brand']), 1, 0, 'C')
+            self.cell(w[1], 7, clean_text(row['Model']), 1, 0, 'C')
+            self.cell(w[2], 7, clean_text(row['Flex']), 1, 0, 'C')
+            self.cell(w[3], 7, f"{clean_text(row['Weight (g)'])}g", 1, 0, 'C')
             self.ln()
         self.ln(6)
 
@@ -104,10 +113,9 @@ def create_pdf_bytes(player_name, all_winners, answers, categories, q_master, ve
     pdf.section_title("Recommendation Matrix (Top 3)")
     for mode, df in all_winners.items(): pdf.draw_recommendation_grid(mode, df)
     pdf.section_title("Fitter's Technical Verdict")
-    pdf.set_font('Arial', '', 9)
     for title, text in verdicts.items():
-        pdf.set_font('Arial', 'B', 9); pdf.cell(0, 6, title, 0, 1)
-        pdf.set_font('Arial', '', 9); pdf.multi_cell(0, 5, text); pdf.ln(3)
+        pdf.set_font('Arial', 'B', 9); pdf.cell(0, 6, clean_text(title), 0, 1)
+        pdf.set_font('Arial', '', 9); pdf.multi_cell(0, 5, clean_text(text)); pdf.ln(3)
     return pdf.output(dest='S').encode('latin-1')
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
@@ -118,7 +126,7 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg['From'] = f"Tour Proven Shaft Fitting <{sender_email}>"
         msg['To'] = recipient_email
         msg['Subject'] = f"Tour Proven Fitting Report: {player_name}"
-        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your full Tour Proven fitting report.", 'plain'))
+        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your full fitting report.", 'plain'))
         part = MIMEApplication(pdf_bytes, Name=f"Tour_Proven_{player_name}.pdf")
         part['Content-Disposition'] = f'attachment; filename="Tour_Proven_{player_name}.pdf"'
         msg.attach(part)
@@ -186,15 +194,15 @@ if all_data:
         st.title(f"⛳ Fitting Matrix: {player_name}")
         
         c_nav1, c_nav2, _ = st.columns([1,1,4])
-        if c_nav1.button("✏️ Edit Profile"): st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
-        if c_nav2.button("🆕 New Fitting"): st.session_state.clear(); st.rerun()
+        if c_nav1.button("✏️ Edit"): st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
+        if c_nav2.button("🆕 New"): st.session_state.clear(); st.rerun()
 
         st.markdown("### 📊 Player Profile Summary")
         sum_cols = st.columns(len(categories))
         for i, cat in enumerate(categories):
             with sum_cols[i]:
                 cat_qs = q_master[q_master['Category'] == cat]
-                cat_data = [{"Detail": r['QuestionText'].replace("Current ","").replace("Target ",""), "Value": st.session_state.answers.get(r['QuestionID'], "")} for _, r in cat_qs.iterrows()]
+                cat_data = [{"Detail": r['QuestionText'].replace("Current ",""), "Value": st.session_state.answers.get(r['QuestionID'], "")} for _, r in cat_qs.iterrows()]
                 st.markdown(f"**{cat}**"); st.table(pd.DataFrame(cat_data))
 
         # --- CALCULATIONS ---
@@ -222,37 +230,34 @@ if all_data:
             "Feel & Smoothness": get_top_3("Feel & Smoothness")
         }
 
-        # Display Grids
+        # Display 4 Grids in 2x2
         r1_c1, r1_c2 = st.columns(2); r2_c1, r2_c2 = st.columns(2); grids = [r1_c1, r1_c2, r2_c1, r2_c2]
-        grid_icons = ["⚖️ Balanced", "🛡️ Maximum Stability", "🚀 Launch & Height", "☁️ Feel & Smoothness"]
+        grid_labels = ["⚖️ Balanced", "🛡️ Maximum Stability", "🚀 Launch & Height", "☁️ Feel & Smoothness"]
         for i, (mode, df) in enumerate(all_winners.items()):
-            with grids[i]: st.subheader(grid_icons[i]); st.table(df)
+            with grids[i]: st.subheader(grid_labels[i]); st.table(df)
 
-        # --- VERDICTS FOR ALL 4 GROUPS ---
+        # Verdicts for ALL 4 Groups
         desc_map = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb']))
-        
         verdicts = {
-            f"Primary: {all_winners['Balanced'].iloc[0]['Model']}": desc_map.get(all_winners['Balanced'].iloc[0]['Model'], "Optimized weight and profile."),
-            f"Anti-{miss} Logic: {all_winners['Maximum Stability'].iloc[0]['Model']}": desc_map.get(all_winners['Maximum Stability'].iloc[0]['Model'], "Reinforced stability."),
+            f"Primary: {all_winners['Balanced'].iloc[0]['Model']}": desc_map.get(all_winners['Balanced'].iloc[0]['Model'], "Optimized profile."),
+            f"Anti-{miss} Logic: {all_winners['Maximum Stability'].iloc[0]['Model']}": desc_map.get(all_winners['Maximum Stability'].iloc[0]['Model'], "High stability."),
             f"Flight/Height: {all_winners['Launch & Height'].iloc[0]['Model']}": desc_map.get(all_winners['Launch & Height'].iloc[0]['Model'], "Launch optimization."),
             f"Feel/Smoothness: {all_winners['Feel & Smoothness'].iloc[0]['Model']}": desc_map.get(all_winners['Feel & Smoothness'].iloc[0]['Model'], "Smooth transition profile.")
         }
         
         st.divider(); st.subheader("🔬 Fitter's Technical Verdict")
         v_c1, v_c2 = st.columns(2)
-        v_keys = list(verdicts.keys())
+        v_items = list(verdicts.items())
         with v_c1:
-            st.info(f"**{v_keys[0]}**\n\n{verdicts[v_keys[0]]}")
-            st.success(f"**{v_keys[2]}**\n\n{verdicts[v_keys[2]]}")
+            st.info(f"**{v_items[0][0]}**\n\n{v_items[0][1]}")
+            st.success(f"**{v_items[2][0]}**\n\n{v_items[2][1]}")
         with v_c2:
-            st.error(f"**{v_keys[1]}**\n\n{verdicts[v_keys[1]]}")
-            st.warning(f"**{v_keys[3]}**\n\n{verdicts[v_keys[3]]}")
+            st.error(f"**{v_items[1][0]}**\n\n{v_items[1][1]}")
+            st.warning(f"**{v_items[3][0]}**\n\n{v_items[3][1]}")
 
-        # --- EMAIL TRIGGER ---
+        # Email Trigger
         if not st.session_state.email_sent and player_email:
-            with st.spinner("Generating and Dispatching Pro Report..."):
+            with st.spinner("Dispatching Full Pro Report..."):
                 pdf_bytes = create_pdf_bytes(player_name, all_winners, st.session_state.answers, categories, q_master, verdicts)
                 if send_email_with_pdf(player_email, player_name, pdf_bytes) is True:
-                    st.success(f"📬 Full Pro Report sent to {player_email}"); st.session_state.email_sent = True
-                else:
-                    st.error("⚠️ Email connection failed. Please check secrets.")
+                    st.success(f"📬 Report sent to {player_email}"); st.session_state.email_sent = True
