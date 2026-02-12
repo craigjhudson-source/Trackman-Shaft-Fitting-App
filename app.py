@@ -87,7 +87,7 @@ def save_to_fittings(answers):
         worksheet.append_row(row)
     except Exception as e: st.error(f"Error saving fitting: {e}")
 
-# --- 3. PRO PDF ENGINE (FIXED HEADER) ---
+# --- 3. PRO PDF ENGINE ---
 def clean_text(text):
     return re.sub(r'[^\x00-\x7F]+', '', str(text)) if text else ""
 
@@ -103,14 +103,9 @@ class ProFittingPDF(FPDF):
         self.set_font('helvetica', 'B', 9); self.set_text_color(20, 40, 80)
         self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, 'L')
         self.set_font('helvetica', '', 8); self.set_text_color(0, 0, 0)
-        
-        # Row 1: Distances and Patterns
         line1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
-        # Row 2: Current Club Specs
         line2 = f"Current Head: {answers.get('Q08','')} {answers.get('Q09','')} | Current Shaft: {answers.get('Q12','')} ({answers.get('Q11','')})"
-        # Row 3: Build Specs
         line3 = f"Length: {answers.get('Q13','')} | Swing Weight: {answers.get('Q14','')} | Grip: {answers.get('Q06','')} | Ball: {answers.get('Q07','')}"
-        
         self.cell(0, 4, clean_text(line1), 0, 1, 'L')
         self.cell(0, 4, clean_text(line2), 0, 1, 'L')
         self.cell(0, 4, clean_text(line3), 0, 1, 'L')
@@ -141,9 +136,9 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         user, pwd = st.secrets["email"]["user"], st.secrets["email"]["password"].replace(" ", "").strip()
         msg = MIMEMultipart()
         msg['From'], msg['To'], msg['Subject'] = f"Tour Proven <{user}>", recipient_email, f"Fitting Report: {player_name}"
-        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your one-page Performance Report from Tour Proven.", 'plain'))
-        part = MIMEApplication(pdf_bytes, Name=f"Tour_Proven_{player_name}.pdf")
-        part['Content-Disposition'] = f'attachment; filename="Tour_Proven_{player_name}.pdf"'; msg.attach(part)
+        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your one-page Performance Report.", 'plain'))
+        part = MIMEApplication(pdf_bytes, Name=f"Report_{player_name}.pdf")
+        part['Content-Disposition'] = f'attachment; filename="Report_{player_name}.pdf"'; msg.attach(part)
         server = smtplib.SMTP('smtp.gmail.com', 587); server.starttls(); server.login(user, pwd); server.send_message(msg); server.quit()
         return True
     except Exception as e: return str(e)
@@ -213,10 +208,21 @@ if all_data:
             if c2.button("🔥 Calculate"): sync_all(); save_to_fittings(st.session_state.answers); st.session_state.interview_complete = True; st.rerun()
 
     else:
-        # --- DASHBOARD & LAB ---
+        # --- RESULTS DASHBOARD ---
         ans = st.session_state.answers
         player_name, player_email = ans.get('Q01', 'Player'), ans.get('Q02', '')
         st.title(f"⛳ Performance Matrix: {player_name}")
+
+        # --- RESTORED NAVIGATION BUTTONS ---
+        c_nav1, c_nav2, _ = st.columns([1,1,4])
+        if c_nav1.button("✏️ Edit Fitting"): 
+            st.session_state.interview_complete = False
+            st.session_state.email_sent = False
+            st.rerun()
+        if c_nav2.button("🆕 New Fitting"): 
+            st.session_state.clear()
+            st.rerun()
+        st.divider()
 
         tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
@@ -242,7 +248,7 @@ if all_data:
         verdicts = {f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]['Model'], "Optimized.") for k in all_winners}
         
         with tab_report:
-            # FIXED DASHBOARD PROFILE BAR (GRID LAYOUT)
+            # PROFILE BAR
             st.markdown(f"""
             <div class="profile-bar">
                 <div class="profile-grid">
@@ -269,19 +275,22 @@ if all_data:
 
             v_items = list(verdicts.items())
             col1, col2 = st.columns(2)
-            for i, (cat, c_name) in enumerate([("Balanced", "⚖️ Balanced"), ("Maximum Stability", "🛡️ Stability"), ("Launch & Height", "🚀 Launch"), ("Feel & Smoothness", "☁️ Feel")]):
+            for i, (cat, c_name) in enumerate([("Balanced", "⚖️ Balanced Choice"), ("Maximum Stability", "🛡️ Maximum Stability"), ("Launch & Height", "🚀 Launch & Height"), ("Feel & Smoothness", "☁️ Feel & Smoothness")]):
                 with col1 if i < 2 else col2:
                     st.subheader(c_name)
                     st.table(all_winners[cat])
                     st.markdown(f"<div class='verdict-text'><b>Fitter's Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
             
             if not st.session_state.email_sent and player_email:
-                with st.spinner("Dispatching Report..."):
+                with st.spinner("Emailing Performance Report..."):
                     pdf_bytes = create_pdf_bytes(player_name, all_winners, ans, verdicts)
-                    if send_email_with_pdf(player_email, player_name, pdf_bytes) is True: st.success("📬 Sent!"); st.session_state.email_sent = True
+                    if send_email_with_pdf(player_email, player_name, pdf_bytes) is True: 
+                        st.success(f"📬 Report emailed to {player_email}!")
+                        st.session_state.email_sent = True
 
         with tab_lab:
-            st.header("🧪 Testing & Correlation Lab")
+            st.header("🧪 Trackman Correlation Lab")
+            st.write("Upload Trackman data to compare live session numbers against predictions.")
             c_up, c_res = st.columns([1,2])
             with c_up:
                 test_list = [all_winners[k].iloc[0]['Model'] for k in all_winners]
@@ -297,7 +306,7 @@ if all_data:
                     st.table(lab_df)
                     if len(lab_df) > 1:
                         top_shaft = lab_df.loc[lab_df['Smash Factor'].idxmax()]['Shaft ID']
-                        st.success(f"🏆 **Phase 5 Selection:** {top_shaft} (Highest Smash Efficiency)")
+                        st.success(f"🏆 **Winner (Efficiency):** {top_shaft}")
                         avg_spin = lab_df['Spin Rate'].mean()
-                        if avg_spin > 3200: st.warning("💡 **Optimization:** Spin is high. Consider a lower loft head or different ball.")
-                else: st.info("Upload Trackman files to begin Phase 4 comparison.")
+                        if avg_spin > 3200: st.warning("💡 **Tip:** Spin is high. Consider lower loft or different ball.")
+                else: st.info("Upload files to start live comparison.")
