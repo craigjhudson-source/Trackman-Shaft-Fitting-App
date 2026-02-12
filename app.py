@@ -40,6 +40,32 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
+# 🟢 NEW: FUNCTION TO SAVE DATA TO GOOGLE SHEETS
+def save_to_fittings(answers):
+    try:
+        creds_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(
+            creds_info, 
+            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        )
+        gc = gspread.authorize(creds)
+        SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
+        sh = gc.open_by_url(SHEET_URL)
+        worksheet = sh.worksheet('Fittings')
+        
+        # Prepare row: Timestamp + Q01 through Q23
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row = [timestamp]
+        for i in range(1, 24):
+            qid = f"Q{i:02d}"
+            row.append(answers.get(qid, ""))
+            
+        worksheet.append_row(row)
+        return True
+    except Exception as e:
+        st.error(f"❌ Could not write to 'Fittings' tab: {e}")
+        return False
+
 # --- 2. STATE MANAGEMENT ---
 if 'form_step' not in st.session_state: st.session_state.form_step = 0
 if 'interview_complete' not in st.session_state: st.session_state.interview_complete = False
@@ -119,6 +145,8 @@ if all_data:
         else:
             if c2.button("🔥 Generate Prescription"):
                 sync_answers(q_master['QuestionID'].tolist())
+                # 🟢 SAVE TO GOOGLE SHEET ON FINISH
+                save_to_fittings(st.session_state.answers)
                 st.session_state.interview_complete = True
                 st.rerun()
 
@@ -126,7 +154,7 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # 🟢 ADDED: QUESTIONNAIRE SUMMARY
+        # 🟢 RESTORED: QUESTIONNAIRE SUMMARY
         with st.expander("📋 View Full Questionnaire Summary", expanded=False):
             ver_cols = st.columns(3)
             for i, cat in enumerate(categories):
@@ -175,10 +203,10 @@ if all_data:
         final_recs.append(candidates[candidates['Material'] == 'Steel'].head(1).assign(Archetype='⚓ Tour Standard'))
         final_recs.append(candidates[candidates['Model'].str.contains('LZ|Modus|KBS Tour', case=False, na=False)].head(1).assign(Archetype='🎨 Feel Option'))
         final_recs.append(candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype='🎯 Dispersion Killer'))
-        # 🟢 ADDED: 5TH ARCHETYPE
+        # 🟢 RESTORED: 5TH ARCHETYPE
         final_recs.append(candidates[candidates['Model'].str.contains('Fiber|MMT|Recoil|Axiom', case=False, na=False)].head(1).assign(Archetype='🧪 Alt Tech'))
         
-        # 🟢 UPDATED: .head(5) instead of .head(4)
+        # 🟢 RESTORED: .head(5)
         final_df = pd.concat(final_recs).drop_duplicates(subset=['Model']).head(5)
 
         st.subheader("🚀 Top Recommended Prescription")
@@ -197,7 +225,7 @@ if all_data:
             st.caption(f"{blurb}")
 
         st.divider()
-        # 🟢 ADDED: EDIT SURVEY BUTTON
+        # 🟢 RESTORED: EDIT SURVEY BUTTON
         b1, b2, _ = st.columns([1,1,4])
         if b1.button("✏️ Edit Survey"):
             st.session_state.interview_complete = False
