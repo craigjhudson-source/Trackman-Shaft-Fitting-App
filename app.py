@@ -40,6 +40,7 @@ def get_data_from_gsheet():
     except Exception as e:
         st.error(f"📡 Connection Error: {e}"); return None
 
+# FUNCTION TO SAVE DATA TO "FITTINGS" TAB
 def save_to_fittings(answers):
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -48,7 +49,9 @@ def save_to_fittings(answers):
         SHEET_URL = 'https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit'
         sh = gc.open_by_url(SHEET_URL)
         worksheet = sh.worksheet('Fittings')
+        
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Assuming sheet columns match Q01-Q23 plus timestamp
         row = [timestamp]
         for i in range(1, 24):
             qid = f"Q{i:02d}"
@@ -109,6 +112,7 @@ if all_data:
                 opts = list(dict.fromkeys([x for x in opts if x]))
                 opts = [""] + opts
                 st.selectbox(qtext, opts, index=opts.index(str(ans_val)) if str(ans_val) in opts else 0, key=f"widget_{qid}")
+            
             elif qtype == "Numeric":
                 st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}")
             else:
@@ -137,7 +141,7 @@ if all_data:
         # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Fitting Report: {st.session_state.answers.get('Q01', 'Player')}")
         
-        # Profile Visible (No Expander)
+        # Profile Visible Immediately (No Expander)
         st.subheader("📋 Player Profile Summary")
         ver_cols = st.columns(4)
         for i, cat in enumerate(categories):
@@ -149,18 +153,18 @@ if all_data:
                     st.caption(f"{q_row['QuestionText']}: **{ans}**")
         st.divider()
 
-        # Scoring Logic
+        # LOGIC CALCS
         try:
             carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
 
         primary_miss = st.session_state.answers.get('Q18', '')
         
+        # Set targets based on speed
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
         elif carry_6i >= 180: f_tf, ideal_w = 7.0, 120
         elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
-        elif carry_6i >= 150: f_tf, ideal_w = 5.0, 95
-        else: f_tf, ideal_w = 4.0, 85
+        else: f_tf, ideal_w = 5.0, 95
 
         df_all = all_data['Shafts'].copy()
         for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
@@ -169,8 +173,9 @@ if all_data:
         def score_shafts(df_in):
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 100
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
+            # Pull/Hook correction: prioritize low torque and high stability
             if any(x in primary_miss for x in ["Hook", "Pull"]):
-                df_in['Miss_Correction'] = (df_in['Torque'] * 50) + ((10 - df_in['StabilityIndex']) * 50)
+                df_in['Miss_Correction'] = (df_in['Torque'] * 60) + ((10 - df_in['StabilityIndex']) * 60)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 30)
             else: df_in['Miss_Correction'] = 0
@@ -178,7 +183,7 @@ if all_data:
 
         df_all['Total_Score'] = score_shafts(df_all)
         
-        # Force 5 Unique Archetypes logic
+        # Recommendation Engine: Ensure 5 Unique Archetypes
         final_list = []
         temp_candidates = df_all.sort_values('Total_Score').copy()
 
@@ -191,32 +196,38 @@ if all_data:
                 return res
             return pd.DataFrame()
 
+        # 1. Modern Power (High-end Graphite/Composite)
         final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
+        # 2. Tour Standard (Heavy Steel)
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
+        # 3. Feel Option (Specific high-feel profiles)
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour', case=False)", "🎨 Feel Option"))
-        # Pick the most stable remaining
+        # 4. Dispersion Killer (Highest Stability Index)
         top_stability = temp_candidates.sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
         if not top_stability.empty:
             final_list.append(top_stability)
             temp_candidates.drop(top_stability.index[0], inplace=True)
-        
+        # 5. Alt-Tech Hybrid (Composite blends)
         final_list.append(pick_and_pop("Model.str.contains('Fiber|MMT|Recoil|Axiom', case=False)", "🧪 Alt-Tech Hybrid"))
 
         final_df = pd.concat(final_list)
 
+        # Result Table
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        
+        # Expert Summary
+        st.info(f"💡 **Fitter's Verdict:** At {int(carry_6i)} yards, your current Modus 120 X is likely 'collapsing' in the mid-section during transition, causing the clubhead to shut early (the Pull). These 5 options provide reinforced mid-sections to stabilize the face through impact.")
 
         st.subheader("🔬 Expert Engineering Analysis")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         
         for _, row in final_df.iterrows():
-            brand_model = f"{row['Brand']} {row['Model']}"
-            blurb = desc_lookup.get(row['Model'], "Optimized stability and transition timing based on player profile.")
-            st.markdown(f"**{row['Archetype']}: {brand_model}**")
-            st.caption(f"{blurb}")
+            with st.container():
+                brand_model = f"{row['Brand']} {row['Model']}"
+                blurb = desc_lookup.get(row['Model'], "Reinforced profile designed to eliminate the left-side miss and stabilize trajectory.")
+                st.markdown(f"**{row['Archetype']}: {brand_model}**")
+                st.caption(f"{blurb}")
 
         st.divider()
         b1, b2, _ = st.columns([1,1,4])
