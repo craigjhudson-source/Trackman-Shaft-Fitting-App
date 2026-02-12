@@ -161,7 +161,7 @@ if all_data:
         
         # 6-Iron Speed Tiers
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
-        elif carry_6i >= 180: f_tf, ideal_w = 7.0, 120
+        elif carry_6i >= 180: f_tf, ideal_w = 7.0, 125
         elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
         elif carry_6i >= 150: f_tf, ideal_w = 5.0, 95
         else: f_tf, ideal_w = 4.0, 80
@@ -171,20 +171,24 @@ if all_data:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
         def score_shafts(df_in):
-            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * 100
+            # 1. Flex Penalty (Tightened for high speed)
+            flex_weight = 150 if carry_6i >= 180 else 100
+            df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * flex_weight
+            
+            # 2. Weight Penalty
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
             
-            # Miss Correction
+            # 3. Miss Correction
             if any(x in primary_miss for x in ["Hook", "Pull"]):
-                df_in['Miss_Correction'] = (df_in['Torque'] * 60) + ((10 - df_in['StabilityIndex']) * 60)
+                df_in['Miss_Correction'] = (df_in['Torque'] * 80) + ((10 - df_in['StabilityIndex']) * 80)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
-                df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 30)
+                df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 40)
             else: df_in['Miss_Correction'] = 0
             
-            # Launch Penalty (New Logic)
-            launch_map = {"Low": 2.5, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
+            # 4. Launch Penalty (Enforced - Tripled multiplier for High/Low targets)
+            launch_map = {"Low": 2.0, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
             target_l = launch_map.get(target_flight, 5.0)
-            l_multiplier = 40 if target_flight in ["High", "Low"] else 20
+            l_multiplier = 70 if target_flight in ["High", "Low"] else 30
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * l_multiplier
             
             return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty']
@@ -251,4 +255,3 @@ if all_data:
         if b2.button("🆕 New Fitting"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
-            
