@@ -37,12 +37,25 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. DATA CONNECTION ---
+# --- 2. SECURITY & DATA CONNECTION ---
+def get_google_creds(scopes):
+    """Critical fix for the InvalidHeader / InvalidByte errors in Streamlit Cloud"""
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        if "private_key" in creds_dict:
+            # Clean literal backslashes and strip whitespace added by triple quotes
+            pk = creds_dict["private_key"].replace("\\n", "\n").strip()
+            creds_dict["private_key"] = pk
+        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    except Exception as e:
+        st.error(f"🔐 Security Error: {e}")
+        st.stop()
+
 @st.cache_data(ttl=600)
 def get_data_from_gsheet():
     try:
-        creds_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = get_google_creds(scopes)
         gc = gspread.authorize(creds)
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         
@@ -57,22 +70,23 @@ def get_data_from_gsheet():
 
         return {k: get_clean_df(k) for k in ['Heads', 'Shafts', 'Questions', 'Responses', 'Config', 'Descriptions']}
     except Exception as e:
-        st.error(f"📡 Database Error: {e}"); return None
+        st.error(f"📡 Database Error: {e}")
+        return None
 
 def save_to_fittings(answers):
     try:
-        creds_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = get_google_creds(scopes)
         gc = gspread.authorize(creds)
         sh = gc.open_by_url('https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit')
         worksheet = sh.worksheet('Fittings')
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # Ensure all 21 questions from the new CSV are captured
         row = [timestamp] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)]
         worksheet.append_row(row)
-    except Exception as e: st.error(f"Error saving fitting: {e}")
+    except Exception as e: 
+        st.error(f"Error saving fitting: {e}")
 
-# --- 3. PRO PDF ENGINE (ENHANCED BASELINES) ---
+# --- 3. PRO PDF ENGINE ---
 def clean_text(text):
     if not text: return ""
     return re.sub(r'[^\x00-\x7F]+', '', str(text))
@@ -91,11 +105,8 @@ class ProFittingPDF(FPDF):
         self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, 'L')
         self.set_font('Arial', '', 8); self.set_text_color(0, 0, 0)
         
-        # Line 1: Performance Baselines
         line1 = f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
-        # Line 2: Equipment Baselines (Added Length and Swing Weight)
         line2 = f"Club: {answers.get('Q08','')} {answers.get('Q09','')} | Length: {answers.get('Q13','')} | SW: {answers.get('Q14','')}"
-        # Line 3: Shaft/Grip/Ball
         line3 = f"Shaft: {answers.get('Q12','')} ({answers.get('Q11','')}) | Grip: {answers.get('Q06','')} | Ball: {answers.get('Q07','')}"
         
         self.cell(0, 4, clean_text(line1), 0, 1, 'L')
@@ -133,6 +144,7 @@ def create_pdf_bytes(player_name, all_winners, answers, verdicts):
     v_keys = list(verdicts.keys())
     for i, (label, calc_key) in enumerate(mapping.items()):
         pdf.draw_recommendation_block(label, all_winners[calc_key], verdicts[v_keys[i]])
+    # Use 'latin-1' for compatibility with fpdf output
     return pdf.output(dest='S').encode('latin-1')
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
@@ -215,7 +227,6 @@ if all_data:
         if c_nav1.button("✏️ Edit"): st.session_state.interview_complete = False; st.session_state.email_sent = False; st.rerun()
         if c_nav2.button("🆕 New"): st.session_state.clear(); st.rerun()
 
-        # PLAYER PROFILE SUMMARY BAR (Enhanced with Length/SW)
         st.markdown(f"""
         <div class="profile-bar">
             <b>CARRY:</b> {ans.get('Q15','')}yd &nbsp;&nbsp;|&nbsp;&nbsp; 
@@ -260,7 +271,6 @@ if all_data:
             f"Feel/Transition: {all_winners['Feel & Smoothness'].iloc[0]['Model']}": desc_map.get(all_winners['Feel & Smoothness'].iloc[0]['Model'], "Smooth transition profile.")
         }
 
-        # Integrated Grid Display
         v_items = list(verdicts.items())
         col1, col2 = st.columns(2)
         
@@ -282,7 +292,6 @@ if all_data:
             st.table(all_winners["Feel & Smoothness"])
             st.markdown(f"<div class='verdict-text'><b>Fitter's Verdict:</b> {v_items[3][1]}</div>", unsafe_allow_html=True)
 
-        # Email Trigger
         if not st.session_state.email_sent and player_email:
             with st.spinner("Dispatching One-Page Report..."):
                 pdf_bytes = create_pdf_bytes(player_name, all_winners, ans, verdicts)
