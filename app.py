@@ -137,7 +137,7 @@ if all_data:
                 sync_all(); save_to_fittings(st.session_state.answers); st.session_state.interview_complete = True; st.rerun()
 
     else:
-        # --- 4. MASTER FITTER REPORT (MATRIX VIEW) ---
+        # --- 4. MASTER FITTER REPORT ---
         st.title(f"🎯 Master Fitting Matrix: {st.session_state.answers.get('Q01', 'Player')}")
         
         with st.expander("👤 View Player Profile Summary"):
@@ -158,7 +158,6 @@ if all_data:
         primary_miss = st.session_state.answers.get('Q18', '')
         target_flight = st.session_state.answers.get('Q17', 'Mid')
         target_feel = st.session_state.answers.get('Q20', 'Unsure')
-        feel_priority = st.session_state.answers.get('Q21', '1 - Do. Not. Care!')
         current_shaft_model = st.session_state.answers.get('Q12', 'Unknown')
         
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
@@ -185,7 +184,6 @@ if all_data:
                 df_temp['Penalty'] += (df_temp['EI_Mid'] * 400)
             
             res = df_temp.sort_values('Penalty').head(3)[['Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']]
-            # Current vs New Logic
             res['Status'] = res['Model'].apply(lambda x: "✅ CURRENT" if x == current_shaft_model else "🆕 NEW")
             return res
 
@@ -195,7 +193,7 @@ if all_data:
         row2_cols = st.columns(2)
         all_cols = row1_cols + row2_cols
         
-        winners = {} # Store winners for the verdict
+        winners = {}
         for i, mode in enumerate(modes):
             with all_cols[i]:
                 st.subheader(f"🚀 {mode}")
@@ -205,34 +203,37 @@ if all_data:
 
         st.divider()
         
-        # --- EXPANDED TECHNICAL VERDICT ---
+        # --- ORDERED TECHNICAL VERDICT ---
         st.subheader("🔬 Fitter's Technical Verdict")
         desc_lookup = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb'])) if not all_data['Descriptions'].empty else {}
         
-        # Columned Verdicts for clarity
-        v_col1, v_col2 = st.columns(2)
+        # Layout in 2x2 grid to match recommendation order
+        v_row1_c1, v_row1_c2 = st.columns(2)
+        v_row2_c1, v_row2_c2 = st.columns(2)
         
-        with v_col1:
-            # BALANCED VERDICT
+        # 1. Balanced
+        with v_row1_c1:
             b_win = winners["Balanced"]
-            st.markdown(f"**Primary Fit (Balanced): {b_win['Brand']} {b_win['Model']}**")
-            st.write(f"Chosen because it aligns most closely with your {carry_6i}yd carry requirements. {desc_lookup.get(b_win['Model'], 'Optimized for total control.')}")
-            
-            # STABILITY VERDICT
+            st.markdown(f"**🚀 Balanced: {b_win['Brand']} {b_win['Model']}**")
+            st.write(f"Chosen as the mathematical center for your profile. {desc_lookup.get(b_win['Model'], 'Optimized for total control and consistency.')}")
+        
+        # 2. Maximum Stability
+        with v_row1_c2:
             s_win = winners["Maximum Stability"]
-            st.markdown(f"**Stability Optimization: {s_win['Brand']} {s_win['Model']}**")
-            st.write(f"We prioritized the **Stability Index** here. Given your miss is a **{primary_miss}**, this shaft's reinforced section helps stabilize the face through impact to tighten dispersion.")
+            st.markdown(f"**🚀 Maximum Stability: {s_win['Brand']} {s_win['Model']}**")
+            st.write(f"Prioritized for the **{primary_miss}** miss. This selection features a higher Stability Index to keep the face square through the impact zone.")
 
-        with v_col2:
-            # LAUNCH VERDICT
+        # 3. Launch & Height
+        with v_row2_c1:
             l_win = winners["Launch & Height"]
-            st.markdown(f"**Flight Optimization: {l_win['Brand']} {l_win['Model']}**")
-            st.write(f"Specifically selected to achieve your **{target_flight}** flight target. This profile utilizes a specific tip-stiffness to manipulate the dynamic loft.")
-            
-            # FEEL VERDICT
+            st.markdown(f"**🚀 Launch & Height: {l_win['Brand']} {l_win['Model']}**")
+            st.write(f"Optimized to hit your **{target_flight}** flight window. This profile uses tip-stiffness manipulation to adjust dynamic loft and spin.")
+
+        # 4. Feel & Smoothness
+        with v_row2_c2:
             f_win = winners["Feel & Smoothness"]
-            st.markdown(f"**Feel Optimization: {f_win['Brand']} {f_win['Model']}**")
-            st.write(f"A recommendation for when **{target_feel}** feel is the priority. This shaft features a higher mid-section energy transfer (EI Mid) for a smoother transition.")
+            st.markdown(f"**🚀 Feel & Smoothness: {f_win['Brand']} {f_win['Model']}**")
+            st.write(f"Selected for your **{target_feel}** feel preference. This shaft maximizes the mid-section energy transfer for a smoother, less boardy transition.")
 
         
 
