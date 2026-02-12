@@ -1,13 +1,9 @@
 pandas
-
 gspread
-
 google-auth
-
 google-auth-oauthlib
-
-fpdf
-
+google-api-python-client
+fpdf2
 openpyxl
-
 plotly
+cryptography>=42.0.0
