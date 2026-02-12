@@ -151,15 +151,17 @@ if all_data:
                     st.caption(f"{q_row['QuestionText']}: **{ans}**")
         st.divider()
 
-        # LOGIC CALCS (6-IRON SPECIFIC)
+        # LOGIC CALCS
         try:
             carry_6i = float(st.session_state.answers.get('Q15', 150))
         except: carry_6i = 150.0
 
         primary_miss = st.session_state.answers.get('Q18', '')
         target_flight = st.session_state.answers.get('Q17', 'Mid')
+        target_feel = st.session_state.answers.get('Q20', 'Unsure')
+        feel_priority = st.session_state.answers.get('Q21', '1 - Do. Not. Care!')
         
-        # 6-Iron Speed Tiers
+        # Flex/Weight Tiers
         if carry_6i >= 195: f_tf, ideal_w = 8.5, 130
         elif carry_6i >= 180: f_tf, ideal_w = 7.0, 125
         elif carry_6i >= 165: f_tf, ideal_w = 6.0, 110
@@ -167,37 +169,47 @@ if all_data:
         else: f_tf, ideal_w = 4.0, 80
 
         df_all = all_data['Shafts'].copy()
-        for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex']:
+        for col in ['FlexScore', 'LaunchScore', 'Weight (g)', 'Torque', 'StabilityIndex', 'EI_Mid']:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
         def score_shafts(df_in):
-            # 1. Flex Penalty
+            # 1. Flex Penalty (Tightened for high speed)
             flex_weight = 150 if carry_6i >= 180 else 100
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * flex_weight
             
             # 2. Weight Penalty
             df_in['Weight_Penalty'] = abs(df_in['Weight (g)'] - ideal_w) * 10
             
-            # 3. Miss Correction
+            # 3. Miss Correction (Anti-Hook / Anti-Slice)
             if any(x in primary_miss for x in ["Hook", "Pull"]):
                 df_in['Miss_Correction'] = (df_in['Torque'] * 80) + ((10 - df_in['StabilityIndex']) * 80)
             elif any(x in primary_miss for x in ["Slice", "Push"]):
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 40)
             else: df_in['Miss_Correction'] = 0
             
-            # 4. Launch Penalty (Surgical Strike Override)
+            # 4. Launch Penalty (High-Priority Override)
             launch_map = {"Low": 2.0, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
             target_l = launch_map.get(target_flight, 5.0)
-            
-            # If player explicitly asks for High or Low, we prioritize this above almost everything
             l_multiplier = 150 if target_flight in ["High", "Low"] else 40
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * l_multiplier
+
+            # 5. FEEL LOGIC (The New Bonus/Penalty)
+            # If player wants "Smooth/Active" feel and prioritized it (Rank 4 or 5)
+            if target_feel in ["Smooth", "Whippy", "Responsive"] and any(x in feel_priority for x in ["4", "5"]):
+                # Give a huge bonus to shafts with an active mid-section (lower EI_Mid)
+                # Normal EI_Mid for steel is ~18-21. Anything below 17 is "active".
+                df_in['Feel_Adjustment'] = (df_in['EI_Mid'] - 16.0) * 50
+            elif target_feel in ["Firm", "Boardy", "Stable"] and any(x in feel_priority for x in ["4", "5"]):
+                # Give a bonus to shafts with a stiff mid-section (higher EI_Mid)
+                df_in['Feel_Adjustment'] = (22.0 - df_in['EI_Mid']) * 50
+            else:
+                df_in['Feel_Adjustment'] = 0
             
-            return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty']
+            return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty'] + df_in['Feel_Adjustment']
 
         df_all['Total_Score'] = score_shafts(df_all)
         
-        # PICK AND POP UNIQUE ARCHETYPES
+        # PICK AND POP
         final_list = []
         temp_candidates = df_all.sort_values('Total_Score').copy()
 
@@ -210,12 +222,11 @@ if all_data:
                 return res
             return pd.DataFrame()
 
-        # Archetype Assignment
         final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
-        final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour', case=False)", "🎨 Feel Option"))
+        # Feel Option: Specifically searches for lower EI_Mid if player wants smooth, or high if they want boardy
+        final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour|Elevate', case=False)", "🎨 Feel Option"))
         
-        # Dispersion Killer
         weight_cap = ideal_w + 20
         top_stability = temp_candidates[temp_candidates['Weight (g)'] <= weight_cap].sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
         
@@ -231,7 +242,7 @@ if all_data:
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        # Verdict Logic
+        # Dynamic Verdict
         if target_flight == "High":
             tip_logic = "an active tip-section to increase peak height while maintaining mid-section stability"
         else:
