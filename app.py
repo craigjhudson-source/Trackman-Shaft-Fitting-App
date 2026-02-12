@@ -171,7 +171,7 @@ if all_data:
             df_all[col] = pd.to_numeric(df_all[col], errors='coerce').fillna(0)
         
         def score_shafts(df_in):
-            # 1. Flex Penalty (Tightened for high speed)
+            # 1. Flex Penalty
             flex_weight = 150 if carry_6i >= 180 else 100
             df_in['Flex_Penalty'] = abs(df_in['FlexScore'] - f_tf) * flex_weight
             
@@ -185,10 +185,12 @@ if all_data:
                 df_in['Miss_Correction'] = (abs(df_in['Torque'] - 3.5) * 40)
             else: df_in['Miss_Correction'] = 0
             
-            # 4. Launch Penalty (Enforced - Tripled multiplier for High/Low targets)
+            # 4. Launch Penalty (Surgical Strike Override)
             launch_map = {"Low": 2.0, "Mid-Low": 3.5, "Mid": 5.0, "Mid-High": 6.5, "High": 8.0}
             target_l = launch_map.get(target_flight, 5.0)
-            l_multiplier = 70 if target_flight in ["High", "Low"] else 30
+            
+            # If player explicitly asks for High or Low, we prioritize this above almost everything
+            l_multiplier = 150 if target_flight in ["High", "Low"] else 40
             df_in['Launch_Penalty'] = abs(df_in['LaunchScore'] - target_l) * l_multiplier
             
             return df_in['Flex_Penalty'] + df_in['Weight_Penalty'] + df_in['Miss_Correction'] + df_in['Launch_Penalty']
@@ -208,11 +210,12 @@ if all_data:
                 return res
             return pd.DataFrame()
 
+        # Archetype Assignment
         final_list.append(pick_and_pop("Material.str.contains('Graphite', case=False)", "🚀 Modern Power"))
         final_list.append(pick_and_pop("Material == 'Steel'", "⚓ Tour Standard"))
         final_list.append(pick_and_pop("Model.str.contains('LZ|Modus|KBS Tour', case=False)", "🎨 Feel Option"))
         
-        # DISPERSION KILLER (Weight-capped)
+        # Dispersion Killer
         weight_cap = ideal_w + 20
         top_stability = temp_candidates[temp_candidates['Weight (g)'] <= weight_cap].sort_values(['StabilityIndex', 'Total_Score'], ascending=[False, True]).head(1).assign(Archetype="🎯 Dispersion Killer")
         
@@ -228,7 +231,7 @@ if all_data:
         st.subheader("🚀 Top Recommended Prescription")
         st.table(final_df[['Archetype', 'Brand', 'Model', 'Flex', 'Weight (g)', 'Launch']])
         
-        # Dynamic Expert Summary
+        # Verdict Logic
         if target_flight == "High":
             tip_logic = "an active tip-section to increase peak height while maintaining mid-section stability"
         else:
