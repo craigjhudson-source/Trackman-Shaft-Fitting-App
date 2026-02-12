@@ -18,6 +18,7 @@ st.markdown("""
     [data-testid="stTable"] { font-size: 13px !important; }
     [data-testid="stTable"] td { padding: 4px !important; }
     .main { background-color: #f8f9fa; }
+    .condensed-text { font-size: 14px; line-height: 1.2; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -55,67 +56,65 @@ def save_to_fittings(answers):
         worksheet.append_row(row)
     except Exception as e: st.error(f"Error saving fitting: {e}")
 
-# --- 3. PRO PDF ENGINE (WITH ENCODING FIX) ---
+# --- 3. PRO PDF ENGINE (CONDENSED) ---
 def clean_text(text):
-    """Removes emojis and non-latin-1 characters to prevent PDF crashes."""
     if not text: return ""
     return re.sub(r'[^\x00-\x7F]+', '', str(text))
 
 class ProFittingPDF(FPDF):
     def header(self):
         self.set_fill_color(20, 40, 80)
-        self.rect(0, 0, 210, 30, 'F')
-        self.set_font('Arial', 'B', 16)
+        self.rect(0, 0, 210, 25, 'F')
+        self.set_font('Arial', 'B', 15)
         self.set_text_color(255, 255, 255)
-        self.cell(0, 15, 'TOUR PROVEN PERFORMANCE REPORT', 0, 1, 'C')
-        self.set_font('Arial', '', 9); self.cell(0, -5, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, 'C')
-        self.ln(15)
+        self.cell(0, 12, 'TOUR PROVEN PERFORMANCE REPORT', 0, 1, 'C')
+        self.set_font('Arial', '', 8); self.cell(0, -4, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, 'C')
+        self.ln(12)
 
     def section_title(self, label):
         label = clean_text(label)
-        self.set_font('Arial', 'B', 11); self.set_fill_color(230, 230, 230); self.set_text_color(20, 40, 80)
-        self.cell(0, 8, f"  {label.upper()}", 0, 1, 'L', True); self.ln(2)
+        self.set_font('Arial', 'B', 10); self.set_fill_color(240, 240, 240); self.set_text_color(20, 40, 80)
+        self.cell(0, 7, f" {label.upper()}", 0, 1, 'L', True); self.ln(1)
 
-    def draw_summary_table(self, title, data_list):
-        title = clean_text(title)
-        self.set_font('Arial', 'B', 10); self.set_text_color(0, 0, 0); self.cell(0, 8, title, 0, 1, 'L')
-        self.set_font('Arial', '', 9)
-        for item in data_list:
-            self.cell(45, 6, f"{clean_text(item['Detail'])}:", 0, 0)
-            self.cell(0, 6, clean_text(item['Value']), 0, 1)
-        self.ln(4)
+    def draw_condensed_summary(self, categories, q_master, answers):
+        self.set_font('Arial', '', 9); self.set_text_color(0, 0, 0)
+        for cat in categories:
+            self.set_font('Arial', 'B', 9); self.cell(0, 6, clean_text(cat), 0, 1)
+            self.set_font('Arial', '', 9)
+            qs = q_master[q_master['Category'] == cat]
+            summary_line = " | ".join([f"{r['QuestionText'].replace('Current ','')}: {answers.get(r['QuestionID'], 'N/A')}" for _, r in qs.iterrows()])
+            self.multi_cell(0, 5, clean_text(summary_line))
+            self.ln(2)
 
     def draw_recommendation_grid(self, title, df_top3):
         title = clean_text(title)
-        self.set_font('Arial', 'B', 10); self.set_text_color(180, 0, 0); self.cell(0, 8, title, 0, 1, 'L')
+        self.set_font('Arial', 'B', 10); self.set_text_color(180, 0, 0); self.cell(0, 7, title, 0, 1, 'L')
         self.set_font('Arial', 'B', 8); self.set_fill_color(245, 245, 245); self.set_text_color(0, 0, 0)
-        cols, w = ["Brand", "Model", "Flex", "Weight"], [40, 80, 35, 30]
-        for i, col in enumerate(cols): self.cell(w[i], 7, col, 1, 0, 'C', True)
+        cols, w = ["Brand", "Model", "Flex", "Weight"], [40, 85, 30, 30]
+        for i, col in enumerate(cols): self.cell(w[i], 6, col, 1, 0, 'C', True)
         self.ln()
         self.set_font('Arial', '', 8)
         for _, row in df_top3.iterrows():
-            self.cell(w[0], 7, clean_text(row['Brand']), 1, 0, 'C')
-            self.cell(w[1], 7, clean_text(row['Model']), 1, 0, 'C')
-            self.cell(w[2], 7, clean_text(row['Flex']), 1, 0, 'C')
-            self.cell(w[3], 7, f"{clean_text(row['Weight (g)'])}g", 1, 0, 'C')
+            self.cell(w[0], 6, clean_text(row['Brand']), 1, 0, 'C')
+            self.cell(w[1], 6, clean_text(row['Model']), 1, 0, 'C')
+            self.cell(w[2], 6, clean_text(row['Flex']), 1, 0, 'C')
+            self.cell(w[3], 6, f"{clean_text(row['Weight (g)'])}g", 1, 0, 'C')
             self.ln()
-        self.ln(6)
+        self.ln(4)
 
 def create_pdf_bytes(player_name, all_winners, answers, categories, q_master, verdicts):
     pdf = ProFittingPDF()
     pdf.add_page()
     pdf.section_title("Player Profile Summary")
-    for cat in categories:
-        qs = q_master[q_master['Category'] == cat]
-        data = [{"Detail": r['QuestionText'].replace("Current ",""), "Value": answers.get(r['QuestionID'], "")} for _, r in qs.iterrows()]
-        pdf.draw_summary_table(cat, data)
-    pdf.add_page()
-    pdf.section_title("Recommendation Matrix (Top 3)")
+    pdf.draw_condensed_summary(categories, q_master, answers)
+    
+    pdf.section_title("Recommendation Matrix")
     for mode, df in all_winners.items(): pdf.draw_recommendation_grid(mode, df)
+    
     pdf.section_title("Fitter's Technical Verdict")
     for title, text in verdicts.items():
         pdf.set_font('Arial', 'B', 9); pdf.cell(0, 6, clean_text(title), 0, 1)
-        pdf.set_font('Arial', '', 9); pdf.multi_cell(0, 5, clean_text(text)); pdf.ln(3)
+        pdf.set_font('Arial', '', 8.5); pdf.multi_cell(0, 4.5, clean_text(text)); pdf.ln(2)
     return pdf.output(dest='S').encode('latin-1')
 
 def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
@@ -125,10 +124,10 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg = MIMEMultipart()
         msg['From'] = f"Tour Proven Shaft Fitting <{sender_email}>"
         msg['To'] = recipient_email
-        msg['Subject'] = f"Tour Proven Fitting Report: {player_name}"
-        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your full fitting report.", 'plain'))
-        part = MIMEApplication(pdf_bytes, Name=f"Tour_Proven_{player_name}.pdf")
-        part['Content-Disposition'] = f'attachment; filename="Tour_Proven_{player_name}.pdf"'
+        msg['Subject'] = f"Fitting Report: {player_name}"
+        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your condensed fitting report.", 'plain'))
+        part = MIMEApplication(pdf_bytes, Name=f"Fitting_{player_name}.pdf")
+        part['Content-Disposition'] = f'attachment; filename="Fitting_{player_name}.pdf"'
         msg.attach(part)
         server = smtplib.SMTP('smtp.gmail.com', 587); server.starttls()
         server.login(sender_email, sender_password); server.send_message(msg); server.quit()
@@ -188,7 +187,7 @@ if all_data:
             if c2.button("🔥 Calculate"): sync_all(); save_to_fittings(st.session_state.answers); st.session_state.interview_complete = True; st.rerun()
 
     else:
-        # --- APP DASHBOARD ---
+        # --- CONDENSED DASHBOARD ---
         player_name = st.session_state.answers.get('Q01', 'Player')
         player_email = st.session_state.answers.get('Q02', '')
         st.title(f"⛳ Fitting Matrix: {player_name}")
@@ -201,9 +200,11 @@ if all_data:
         sum_cols = st.columns(len(categories))
         for i, cat in enumerate(categories):
             with sum_cols[i]:
+                st.markdown(f"**{cat}**")
                 cat_qs = q_master[q_master['Category'] == cat]
-                cat_data = [{"Detail": r['QuestionText'].replace("Current ",""), "Value": st.session_state.answers.get(r['QuestionID'], "")} for _, r in cat_qs.iterrows()]
-                st.markdown(f"**{cat}**"); st.table(pd.DataFrame(cat_data))
+                for _, r in cat_qs.iterrows():
+                    val = st.session_state.answers.get(r['QuestionID'], "N/A")
+                    st.markdown(f"- {r['QuestionText'].replace('Current ','')}: `{val}`")
 
         # --- CALCULATIONS ---
         try: carry_6i = float(st.session_state.answers.get('Q15', 150))
@@ -230,13 +231,11 @@ if all_data:
             "Feel & Smoothness": get_top_3("Feel & Smoothness")
         }
 
-        # Display 4 Grids in 2x2
         r1_c1, r1_c2 = st.columns(2); r2_c1, r2_c2 = st.columns(2); grids = [r1_c1, r1_c2, r2_c1, r2_c2]
         grid_labels = ["⚖️ Balanced", "🛡️ Maximum Stability", "🚀 Launch & Height", "☁️ Feel & Smoothness"]
         for i, (mode, df) in enumerate(all_winners.items()):
             with grids[i]: st.subheader(grid_labels[i]); st.table(df)
 
-        # Verdicts for ALL 4 Groups
         desc_map = dict(zip(all_data['Descriptions']['Model'], all_data['Descriptions']['Blurb']))
         verdicts = {
             f"Primary: {all_winners['Balanced'].iloc[0]['Model']}": desc_map.get(all_winners['Balanced'].iloc[0]['Model'], "Optimized profile."),
@@ -255,9 +254,8 @@ if all_data:
             st.error(f"**{v_items[1][0]}**\n\n{v_items[1][1]}")
             st.warning(f"**{v_items[3][0]}**\n\n{v_items[3][1]}")
 
-        # Email Trigger
         if not st.session_state.email_sent and player_email:
-            with st.spinner("Dispatching Full Pro Report..."):
+            with st.spinner("Dispatching Condensed Report..."):
                 pdf_bytes = create_pdf_bytes(player_name, all_winners, st.session_state.answers, categories, q_master, verdicts)
                 if send_email_with_pdf(player_email, player_name, pdf_bytes) is True:
-                    st.success(f"📬 Report sent to {player_email}"); st.session_state.email_sent = True
+                    st.success(f"📬 Sent to {player_email}"); st.session_state.email_sent = True
