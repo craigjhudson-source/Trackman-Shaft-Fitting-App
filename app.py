@@ -428,7 +428,14 @@ else:
             if st.button("➕ Add") and can_log:
                 stat = process_trackman_file(tm_file, selected_s)
                 if not stat:
-                    st.error("Could not parse TrackMan file. (Export format may be unexpected.)")
+    st.error("TrackMan file loaded but required metrics not found. Check export format.")
+    st.write("Debug columns detected:")
+    try:
+        raw = load_trackman(tm_file)
+        st.write(list(raw.columns))
+    except Exception:
+        pass
+
                 else:
                     shot_count = int(stat.get("Shot Count", 0) or 0)
                     if shot_count < MIN_SHOTS:
