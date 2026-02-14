@@ -2,15 +2,9 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
 
 import pandas as pd
-
-# PDF parsing (best effort)
-try:
-    import PyPDF2  # type: ignore
-except Exception:  # pragma: no cover
-    PyPDF2 = None
 
 
 METRIC_ALIASES: Dict[str, List[str]] = {
@@ -34,7 +28,7 @@ METRIC_ALIASES: Dict[str, List[str]] = {
 
 DISPERSION_ALIASES: Dict[str, List[str]] = {
     "carry_side": ["carry flat - side", "carry side"],
-    "total_side": ["est. total flat - side", "total side", "est total flat - side"],
+    "total_side": ["est. total flat - side", "total side"],
     "launch_dir": ["launch direction"],
 }
 
@@ -49,7 +43,18 @@ def _norm_col(col: str) -> str:
 
 
 def _find_col(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
-    norm_map = {c: _norm_col(c) for c in df.columns}
+    """
+    Finds the first matching column based on normalized header text.
+    Also supports deduped headers like "Club Speed__1" by stripping "__<n>".
+    """
+    if df is None or df.empty:
+        return None
+
+    def strip_suffix(x: str) -> str:
+        return re.sub(r"__\d+$", "", x)
+
+    norm_map = {c: _norm_col(strip_suffix(str(c))) for c in df.columns}
+
     for col, n in norm_map.items():
         for a in aliases:
             if a in n:
@@ -57,60 +62,39 @@ def _find_col(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
     return None
 
 
-def _read_csv_robust(uploaded_file) -> pd.DataFrame:
+def _dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Robust CSV reader for TrackMan exports.
-    Handles:
-      - UTF-8 BOM
-      - Excel/TrackMan "sep=," first line
-      - occasional delimiter oddities
+    Ensure unique column names (PyArrow/Streamlit hard-fails on duplicates).
     """
-    data = None
-    try:
-        data = uploaded_file.getvalue()
-    except Exception:
-        pass
-
-    if isinstance(data, (bytes, bytearray)) and len(data) > 0:
-        try:
-            text = data.decode("utf-8-sig", errors="replace")
-        except Exception:
-            text = data.decode(errors="replace")
-
-        lines = text.splitlines()
-        if lines and lines[0].strip().lower().startswith("sep="):
-            text = "\n".join(lines[1:])
-
-        try:
-            from io import StringIO
-
-            return pd.read_csv(StringIO(text))
-        except Exception:
-            pass
-
-    try:
-        return pd.read_csv(uploaded_file, encoding="utf-8-sig")
-    except Exception:
-        pass
-
-    try:
-        return pd.read_csv(uploaded_file, sep=None, engine="python", encoding="utf-8-sig")
-    except Exception:
-        return pd.read_csv(uploaded_file)
+    if df is None or df.empty:
+        return df
+    cols = [str(c) for c in df.columns]
+    seen = {}
+    new_cols = []
+    for c in cols:
+        if c in seen:
+            seen[c] += 1
+            new_cols.append(f"{c}__{seen[c]}")
+        else:
+            seen[c] = 0
+            new_cols.append(c)
+    df = df.copy()
+    df.columns = new_cols
+    return df
 
 
 def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
     """
-    TrackMan exports often include:
-      - a junk/title row
-      - embedded header row in row 0 or row 1
-      - a units row (mph/rpm/deg) that should be dropped
-
-    We detect and fix common cases without breaking clean exports.
+    Attempts to clean common TrackMan CSV/XLSX shapes:
+      - junk title rows
+      - header row living in row 0 or row 1
+      - units row ("mph", "rpm", "deg") that breaks numeric parsing
     """
+
     if df is None or df.empty:
         return df
 
+    # If the headers look like 0..N, it's probably missing proper headers.
     headers_are_default = all(str(c).strip().isdigit() for c in df.columns)
 
     def row_contains_keywords(row_idx: int) -> bool:
@@ -123,8 +107,7 @@ def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
             or ("ball speed" in joined)
             or ("smash" in joined)
             or ("spin rate" in joined)
-            or ("carry flat" in joined)
-            or ("use in stat" in joined)
+            or ("carry" in joined)
         )
 
     if headers_are_default or row_contains_keywords(0) or row_contains_keywords(1):
@@ -139,18 +122,19 @@ def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
             df2 = df2.iloc[2:].reset_index(drop=True)
             df = df2
 
+    # Remove rows that are clearly units rows (deg, mph, rpm) across many columns
     def is_units_row(row: pd.Series) -> bool:
         vals = row.astype(str).str.lower()
         unit_hits = vals.str.contains(r"\b(mph|rpm|deg|°|m/s|yd|yards)\b", regex=True, na=False).sum()
         return unit_hits >= max(3, int(len(vals) * 0.2))
 
-    if len(df) > 0:
-        try:
+    try:
+        if len(df) > 0:
             mask_units = df.apply(is_units_row, axis=1)
             if mask_units.any():
                 df = df.loc[~mask_units].reset_index(drop=True)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     return df
 
@@ -176,101 +160,35 @@ def _filter_use_in_stat(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _load_trackman_pdf(uploaded_file) -> pd.DataFrame:
-    """
-    Best-effort parser for TrackMan 'Normalized' PDFs.
-
-    We scan lines that contain 'Premium' and extract numeric fields after it.
-    This mapping matches the common TrackMan shot-row layout.
-
-    If your PDF format differs, CSV/XLSX is still recommended.
-    """
-    if PyPDF2 is None:
-        raise RuntimeError("PyPDF2 not available in environment")
-
-    try:
-        data = uploaded_file.getvalue()
-    except Exception:
-        data = uploaded_file.read()
-
-    from io import BytesIO
-
-    reader = PyPDF2.PdfReader(BytesIO(data))
-    full_text = ""
-    for p in reader.pages:
-        full_text += "\n" + (p.extract_text() or "")
-
-    lines = [ln.strip() for ln in full_text.splitlines() if ln.strip()]
-    shot_lines = [ln for ln in lines if " premium " in f" {ln.lower()} "]
-
-    rows = []
-    for ln in shot_lines:
-        # Use In Stat (optional)
-        use_in_stat = None
-        m_truefalse = re.search(r"\b(TRUE|FALSE)\b", ln, re.IGNORECASE)
-        if m_truefalse:
-            use_in_stat = m_truefalse.group(1).upper()
-
-        if "Premium" not in ln:
-            continue
-        after = ln.split("Premium", 1)[1]
-
-        floats = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", after)]
-        if len(floats) < 30:
-            continue
-
-        # Index mapping validated against common TrackMan normalized PDFs
-        row = {
-            "Club Speed": floats[0],
-            "Face To Path": floats[8],
-            "Ball Speed": floats[9],
-            "Smash Factor": floats[10],
-            "Launch Angle": floats[11],
-            "Launch Direction": floats[12],
-            "Spin Rate": floats[13],
-            "Carry Flat - Length": floats[22],
-            "Carry Flat - Side": floats[23],
-            "Carry Flat - Land Angle": floats[24],
-            "Est. Total Flat - Side": floats[28],
-            "Dynamic Lie": floats[29],
-        }
-        if use_in_stat is not None:
-            row["Use In Stat"] = use_in_stat
-
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
 def load_trackman(uploaded_file) -> pd.DataFrame:
     """
-    Supports:
-      - .csv
-      - .xlsx
-      - .pdf (best-effort)
+    Reads CSV/XLSX. (PDF handled in app.py with a message; we do not parse it here.)
     """
     name = getattr(uploaded_file, "name", "") or ""
-    lower = name.lower()
-
-    if lower.endswith(".pdf"):
-        df = _load_trackman_pdf(uploaded_file)
-    elif lower.endswith(".csv"):
-        df = _read_csv_robust(uploaded_file)
+    if name.lower().endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
 
     df = _maybe_cleanup_trackman_export(df)
     df = _filter_use_in_stat(df)
+
+    # IMPORTANT: make columns unique for Streamlit/Arrow + stable matching
+    df = _dedupe_columns(df)
+
     return df
 
 
-def summarize_trackman(df: pd.DataFrame, shaft_tag: str, *, include_std: bool = True) -> Dict[str, float | str]:
+def summarize_trackman(
+    df: pd.DataFrame,
+    shaft_tag: str,
+    *,
+    include_std: bool = True
+) -> Dict[str, float | str]:
     out: Dict[str, float | str] = {"Shaft ID": shaft_tag}
 
-    try:
-        out["Shot Count"] = int(len(df))
-    except Exception:
-        out["Shot Count"] = 0
+    # Always include shot count (after filtering)
+    out["Shot Count"] = int(len(df)) if df is not None else 0
 
     def add_metric(label: str, canon_key: str) -> None:
         col = _find_col(df, METRIC_ALIASES.get(canon_key, []))
@@ -314,3 +232,24 @@ def summarize_trackman(df: pd.DataFrame, shaft_tag: str, *, include_std: bool = 
     add_disp("Launch Direction", DISPERSION_ALIASES["launch_dir"])
 
     return out
+
+
+def debug_trackman(uploaded_file) -> Dict[str, Any]:
+    """
+    Returns a debug bundle to help you see exactly what the parser read.
+    Safe for Streamlit display (preview df will be deduped).
+    """
+    try:
+        df = load_trackman(uploaded_file)
+        cols = [str(c) for c in df.columns]
+        preview = df.head(12).copy()
+        preview = _dedupe_columns(preview)
+
+        return {
+            "ok": True,
+            "rows_after_cleanup": int(len(df)),
+            "columns": cols[:200],
+            "head_preview": preview,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
