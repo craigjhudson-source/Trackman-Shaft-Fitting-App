@@ -165,13 +165,11 @@ if not all_data:
 
 cfg = all_data["Config"]
 
-# Config-driven SD thresholds (fallback defaults)
+# Config-driven thresholds (fallback defaults)
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.15)
-
-# ✅ Config-driven minimum shots (fallback default)
-MIN_SHOTS = max(1, int(cfg_float(cfg, "MIN_SHOTS", 5)))
+MIN_SHOTS = int(cfg_float(cfg, "MIN_SHOTS", 5))
 
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
@@ -374,6 +372,13 @@ else:
     with tab_lab:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
+        st.caption(
+            f"Quality rules: MIN_SHOTS={MIN_SHOTS} | "
+            f"WARN_FACE_TO_PATH_SD={WARN_FACE_TO_PATH_SD} | "
+            f"WARN_CARRY_SD={WARN_CARRY_SD} | "
+            f"WARN_SMASH_SD={WARN_SMASH_SD}"
+        )
+
         # Allow override here, keep it synced to Q22 so PDF stays consistent
         env_choice = st.radio(
             "Testing environment",
@@ -461,66 +466,108 @@ else:
                 ]
                 st.table(lab_df[show_cols])
 
+                # Baseline (must meet min shots to use for deltas)
                 baseline_row = None
                 if (lab_df["Shaft ID"] == "Current Baseline").any():
-                    baseline_row = lab_df[lab_df["Shaft ID"] == "Current Baseline"].iloc[-1]
-
-                cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
-
-                if len(cand) >= 1 and "Smash Factor" in cand.columns:
-                    top_idx = cand["Smash Factor"].astype(float).idxmax()
-                    winner_row = cand.loc[top_idx]
-                    winner_name = winner_row["Shaft ID"]
-                    st.success(f"🏆 **Efficiency Winner:** {winner_name} (Smash {winner_row.get('Smash Factor','')})")
-
-                    # ---------- SD Threshold Warnings ----------
                     try:
-                        ftp_sd = float(winner_row.get("Face To Path SD", 0) or 0)
-                        carry_sd = float(winner_row.get("Carry SD", 0) or 0)
-                        smash_sd = float(winner_row.get("Smash Factor SD", 0) or 0)
-
-                        if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
-                            st.warning(
-                                f"⚠️ Face-to-Path variance is high (SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}). "
-                                "Re-test or tighten strike controls."
-                            )
-
-                        if carry_sd and carry_sd > WARN_CARRY_SD:
-                            st.warning(
-                                f"⚠️ Carry variance is high (SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}). "
-                                "Recommend more shots or better control."
-                            )
-
-                        if smash_sd and smash_sd > WARN_SMASH_SD:
-                            st.warning(
-                                f"⚠️ Smash variance is high (SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}). "
-                                "Contact is inconsistent — re-test."
+                        baseline_candidate = lab_df[lab_df["Shaft ID"] == "Current Baseline"].iloc[-1]
+                        b_shots = int(float(baseline_candidate.get("Shot Count", 0) or 0))
+                        if b_shots >= MIN_SHOTS:
+                            baseline_row = baseline_candidate
+                        else:
+                            st.info(
+                                f"Baseline loaded but below MIN_SHOTS ({b_shots} < {MIN_SHOTS}). "
+                                "Phase 6 deltas will be skipped until baseline is re-tested."
                             )
                     except Exception:
-                        pass
+                        baseline_row = None
 
-                    if "Face To Path SD" in cand.columns:
+                # Candidates (filter to meet min shots)
+                cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
+                if "Shot Count" in cand.columns:
+                    def _shots_ok(x):
                         try:
-                            most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
-                            st.info(f"🛡️ **Most Stable (Face-to-Path SD):** {most_stable}")
+                            return int(float(x or 0)) >= MIN_SHOTS
                         except Exception:
-                            pass
+                            return False
+                    cand = cand[cand["Shot Count"].apply(_shots_ok)]
 
-                    st.subheader("Phase 6 Optimization Suggestions")
-
-                    recs = phase6_recommendations(
-                        winner_row,
-                        baseline_row=baseline_row,
-                        club="6i",
-                        environment=st.session_state.environment,
-                    )
-                    st.session_state.phase6_recs = recs
-
-                    for r in recs:
-                        css = "rec-warn" if r["severity"] == "warn" else "rec-info"
-                        st.markdown(
-                            f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>",
-                            unsafe_allow_html=True,
-                        )
+                if len(cand) < 1:
+                    st.warning(f"Add at least 1 candidate shaft test with Shot Count ≥ {MIN_SHOTS}.")
+                elif "Smash Factor" not in cand.columns:
+                    st.warning("Smash Factor missing from TrackMan export — cannot pick a winner.")
                 else:
-                    st.info("Log at least 1 candidate shaft file (and ideally baseline) to select a winner + Phase 6 recommendations.")
+                    # Pick top by efficiency (Smash)
+                    top_idx = cand["Smash Factor"].astype(float).idxmax()
+                    winner_row = cand.loc[top_idx]
+                    winner_name = winner_row.get("Shaft ID", "Winner")
+
+                    # ---------- Data Quality Gate (SD thresholds) ----------
+                    quality_ok = True
+                    issues = []
+
+                    def _f(row, k):
+                        try:
+                            return float(row.get(k, 0) or 0)
+                        except Exception:
+                            return 0.0
+
+                    ftp_sd = _f(winner_row, "Face To Path SD")
+                    carry_sd = _f(winner_row, "Carry SD")
+                    smash_sd = _f(winner_row, "Smash Factor SD")
+
+                    if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
+                        quality_ok = False
+                        issues.append(
+                            f"Face-to-Path SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}"
+                        )
+                    if carry_sd and carry_sd > WARN_CARRY_SD:
+                        quality_ok = False
+                        issues.append(
+                            f"Carry SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}"
+                        )
+                    if smash_sd and smash_sd > WARN_SMASH_SD:
+                        quality_ok = False
+                        issues.append(
+                            f"Smash SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}"
+                        )
+
+                    if not quality_ok:
+                        st.warning("⚠️ Data quality is not good enough to declare a winner yet.")
+                        st.write("**Re-test recommended:**")
+                        for it in issues:
+                            st.write(f"- {it}")
+                        st.info(
+                            "Tip: tighten controls (same tee/ball/target, remove obvious mishits, "
+                            "use 'Use In Stat = TRUE', and collect more shots)."
+                        )
+                    else:
+                        # Winner + supporting callouts
+                        st.success(
+                            f"🏆 **Efficiency Winner:** {winner_name} "
+                            f"(Smash {winner_row.get('Smash Factor','')})"
+                        )
+
+                        if "Face To Path SD" in cand.columns:
+                            try:
+                                most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
+                                st.info(f"🛡️ **Most Stable (Face-to-Path SD):** {most_stable}")
+                            except Exception:
+                                pass
+
+                        st.subheader("Phase 6 Optimization Suggestions")
+
+                        recs = phase6_recommendations(
+                            winner_row,
+                            baseline_row=baseline_row,
+                            club="6i",
+                            environment=st.session_state.environment,
+                        )
+                        st.session_state.phase6_recs = recs
+
+                        for r in recs:
+                            css = "rec-warn" if r["severity"] == "warn" else "rec-info"
+                            st.markdown(
+                                f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>",
+                                unsafe_allow_html=True,
+                            )
