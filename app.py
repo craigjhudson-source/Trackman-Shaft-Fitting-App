@@ -195,3 +195,171 @@ if not st.session_state.interview_complete:
     else:
         if c2.button("🔥 Calculate"):
             sync_all()
+            save_to_fittings(st.session_state.answers)
+            st.session_state.interview_complete = True
+            st.rerun()
+
+else:
+    ans = st.session_state.answers
+    p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
+    st.title(f"⛳ Results: {p_name}")
+
+    c_nav1, c_nav2, _ = st.columns([1, 1, 4])
+    if c_nav1.button("✏️ Edit Fitting"):
+        st.session_state.interview_complete = False
+        st.session_state.email_sent = False
+        st.rerun()
+    if c_nav2.button("🆕 New Fitting"):
+        st.session_state.clear()
+        st.rerun()
+
+    st.divider()
+    tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
+
+    # -------- Phase 1 Predictor --------
+    try:
+        carry_6i = float(ans.get("Q15", 150))
+    except Exception:
+        carry_6i = 150.0
+
+    f_tf, ideal_w = (8.5, 130) if carry_6i >= 195 else (7.0, 125) if carry_6i >= 180 else (6.0, 110) if carry_6i >= 165 else (5.0, 95)
+
+    df_all = all_data["Shafts"].copy()
+    for col in ["FlexScore", "Weight (g)", "StabilityIndex", "LaunchScore", "EI_Mid"]:
+        df_all[col] = pd.to_numeric(df_all[col], errors="coerce").fillna(0)
+
+    def get_top_3(mode):
+        df_t = df_all.copy()
+        df_t["Penalty"] = abs(df_t["FlexScore"] - f_tf) * 200 + abs(df_t["Weight (g)"] - ideal_w) * 15
+        if carry_6i >= 180:
+            df_t.loc[df_t["FlexScore"] < 6.5, "Penalty"] += 4000
+        if mode == "Maximum Stability":
+            df_t["Penalty"] -= (df_t["StabilityIndex"] * 600)
+        elif mode == "Launch & Height":
+            df_t["Penalty"] -= (df_t["LaunchScore"] * 500)
+        elif mode == "Feel & Smoothness":
+            df_t["Penalty"] += (df_t["EI_Mid"] * 400)
+        return df_t.sort_values("Penalty").head(3)[["Brand", "Model", "Flex", "Weight (g)"]]
+
+    all_winners = {k: get_top_3(k) for k in ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]}
+    desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
+    verdicts = {f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.") for k in all_winners}
+
+    # -------- Report Tab --------
+    with tab_report:
+        st.markdown(
+            f"""<div class="profile-bar"><div class="profile-grid">
+            <div><b>CARRY:</b> {ans.get('Q15','')}yd | <b>FLIGHT:</b> {ans.get('Q16','')} | <b>TARGET:</b> {ans.get('Q17','')}</div>
+            <div><b>HEAD:</b> {ans.get('Q08','')} {ans.get('Q09','')}</div>
+            <div><b>CURRENT:</b> {ans.get('Q12','')} ({ans.get('Q11','')}) | <b>MISS:</b> {ans.get('Q18','')}</div>
+            <div><b>SPECS:</b> {ans.get('Q13','')} L / {ans.get('Q14','')} SW | <b>GRIP/BALL:</b> {ans.get('Q06','')}/{ans.get('Q07','')}</div>
+            </div></div>""",
+            unsafe_allow_html=True,
+        )
+
+        v_items = list(verdicts.items())
+        col1, col2 = st.columns(2)
+        for i, (cat, c_name) in enumerate(
+            [("Balanced", "⚖️ Balanced"), ("Maximum Stability", "🛡️ Stability"), ("Launch & Height", "🚀 Launch"), ("Feel & Smoothness", "☁️ Feel")]
+        ):
+            with col1 if i < 2 else col2:
+                st.subheader(c_name)
+                st.table(all_winners[cat])
+                st.markdown(f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
+
+        # ✅ Safe PDF sending (uses stored Phase-6 recs if available)
+        if not st.session_state.email_sent and p_email:
+            with st.spinner("Dispatching PDF..."):
+                pdf_bytes = create_pdf_bytes(
+                    p_name,
+                    all_winners,
+                    ans,
+                    verdicts,
+                    phase6_recs=st.session_state.get("phase6_recs", None),
+                )
+                if send_email_with_pdf(p_email, p_name, pdf_bytes) is True:
+                    st.success(f"📬 Sent to {p_email}!")
+                    st.session_state.email_sent = True
+
+    # -------- TrackMan Lab Tab --------
+    with tab_lab:
+        st.header("🧪 Trackman Lab (Controlled Testing)")
+
+        with st.expander("✅ Lab Controls (required before logging)", expanded=True):
+            st.session_state.lab_controls["length_matched"] = st.checkbox("Length matched (same playing length)", value=st.session_state.lab_controls["length_matched"])
+            st.session_state.lab_controls["swing_weight_matched"] = st.checkbox("Swing weight matched", value=st.session_state.lab_controls["swing_weight_matched"])
+            st.session_state.lab_controls["grip_matched"] = st.checkbox("Grip matched", value=st.session_state.lab_controls["grip_matched"])
+            st.session_state.lab_controls["same_head"] = st.checkbox("Same head used", value=st.session_state.lab_controls["same_head"])
+            st.session_state.lab_controls["same_ball"] = st.checkbox("Same ball used", value=st.session_state.lab_controls["same_ball"])
+
+            if controls_complete():
+                st.success("Controls confirmed. Logged data will be marked as controlled.")
+            else:
+                st.warning("Complete all controls before logging data (prevents bad correlation).")
+
+        c_up, c_res = st.columns([1, 2])
+
+        with c_up:
+            test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
+            selected_s = st.selectbox("Assign Data to:", test_list)
+
+            tm_file = st.file_uploader("Upload Trackman CSV/Excel", type=["csv", "xlsx"])
+
+            can_log = tm_file is not None and controls_complete()
+            if st.button("➕ Add") and can_log:
+                stat = process_trackman_file(tm_file, selected_s)
+                if stat:
+                    stat["Controlled"] = "Yes"
+                    stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    st.session_state.tm_lab_data.append(stat)
+                    st.rerun()
+                else:
+                    st.error("Could not parse TrackMan file. (Export format may be unexpected.)")
+
+            if tm_file is not None and not controls_complete():
+                st.info("Finish Lab Controls above to enable logging.")
+
+        with c_res:
+            if not st.session_state.tm_lab_data:
+                st.info("Upload files to begin correlation.")
+            else:
+                lab_df = pd.DataFrame(st.session_state.tm_lab_data)
+
+                preferred_cols = [
+                    "Timestamp", "Shaft ID", "Controlled",
+                    "Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate",
+                    "Launch Angle", "Landing Angle", "Face To Path", "Dynamic Lie",
+                    "Carry Side", "Total Side",
+                    "Club Speed SD", "Ball Speed SD", "Smash Factor SD", "Carry SD", "Spin Rate SD",
+                    "Face To Path SD", "Dynamic Lie SD",
+                ]
+                show_cols = [c for c in preferred_cols if c in lab_df.columns] + [c for c in lab_df.columns if c not in preferred_cols]
+                st.table(lab_df[show_cols])
+
+                baseline_row = None
+                if (lab_df["Shaft ID"] == "Current Baseline").any():
+                    baseline_row = lab_df[lab_df["Shaft ID"] == "Current Baseline"].iloc[-1]
+
+                cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
+                if len(cand) >= 1 and "Smash Factor" in cand.columns:
+                    top_idx = cand["Smash Factor"].astype(float).idxmax()
+                    winner_row = cand.loc[top_idx]
+                    winner_name = winner_row["Shaft ID"]
+                    st.success(f"🏆 **Efficiency Winner:** {winner_name} (Smash {winner_row.get('Smash Factor','')})")
+
+                    if "Face To Path SD" in cand.columns:
+                        try:
+                            most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
+                            st.info(f"🛡️ **Most Stable (Face-to-Path SD):** {most_stable}")
+                        except Exception:
+                            pass
+
+                    st.subheader("Phase 6 Optimization Suggestions")
+                    recs = phase6_recommendations(winner_row, baseline_row=baseline_row, club="6i")
+                    st.session_state.phase6_recs = recs  # ✅ store for PDF use
+
+                    for r in recs:
+                        css = "rec-warn" if r["severity"] == "warn" else "rec-info"
+                        st.markdown(f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>", unsafe_allow_html=True)
+                else:
+                    st.info("Log at least 1 candidate shaft file (and ideally baseline) to select a winner + Phase 6 recommendations.")
