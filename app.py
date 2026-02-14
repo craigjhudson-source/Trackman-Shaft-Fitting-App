@@ -27,6 +27,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # ------------------ DB ------------------
 def get_google_creds(scopes):
     try:
@@ -59,11 +60,17 @@ def get_data_from_gsheet():
             rows = sh.worksheet(ws_name).get_all_values()
             df = pd.DataFrame(
                 rows[1:],
-                columns=[h.strip() if h.strip() else f"Col_{i}" for i, h in enumerate(rows[0])],
+                columns=[
+                    h.strip() if h.strip() else f"Col_{i}"
+                    for i, h in enumerate(rows[0])
+                ],
             )
             return df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
-        return {k: get_clean_df(k) for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]}
+        return {
+            k: get_clean_df(k)
+            for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
+        }
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -81,7 +88,9 @@ def save_to_fittings(answers):
             "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
         )
         worksheet = sh.worksheet("Fittings")
-        row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)]
+        row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [
+            answers.get(f"Q{i:02d}", "") for i in range(1, 23)  # includes Q22 now
+        ]
         worksheet.append_row(row)
     except Exception as e:
         st.error(f"Error saving: {e}")
@@ -110,9 +119,9 @@ if "tm_lab_data" not in st.session_state:
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
 
-# One environment source-of-truth (default indoor)
+# Default environment (matches your Config wording)
 if "environment" not in st.session_state:
-    st.session_state.environment = "Indoor (mat)"
+    st.session_state.environment = "Indoors (Mat)"
 
 if "lab_controls" not in st.session_state:
     st.session_state.lab_controls = {
@@ -142,6 +151,7 @@ if not all_data:
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
 
+
 # ------------------ Interview ------------------
 if not st.session_state.interview_complete:
     st.title("⛳ Tour Proven Fitting Interview")
@@ -164,7 +174,13 @@ if not st.session_state.interview_complete:
                     opts += sorted(all_data["Heads"]["Manufacturer"].unique().tolist())
                 else:
                     opts += (
-                        sorted(all_data["Heads"][all_data["Heads"]["Manufacturer"] == brand_val]["Model"].unique().tolist())
+                        sorted(
+                            all_data["Heads"][
+                                all_data["Heads"]["Manufacturer"] == brand_val
+                            ]["Model"]
+                            .unique()
+                            .tolist()
+                        )
                         if brand_val
                         else ["Select Brand First"]
                     )
@@ -175,14 +191,21 @@ if not st.session_state.interview_complete:
                     opts += sorted(all_data["Shafts"]["Brand"].unique().tolist())
                 elif "Flex" in qtext:
                     opts += (
-                        sorted(all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"].unique().tolist())
+                        sorted(
+                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
+                            .unique()
+                            .tolist()
+                        )
                         if s_brand
                         else ["Select Brand First"]
                     )
                 elif "Model" in qtext:
                     if s_brand and s_flex:
                         opts += sorted(
-                            all_data["Shafts"][(all_data["Shafts"]["Brand"] == s_brand) & (all_data["Shafts"]["Flex"] == s_flex)]["Model"]
+                            all_data["Shafts"][
+                                (all_data["Shafts"]["Brand"] == s_brand)
+                                & (all_data["Shafts"]["Flex"] == s_flex)
+                            ]["Model"]
                             .unique()
                             .tolist()
                         )
@@ -195,7 +218,10 @@ if not st.session_state.interview_complete:
                     opts += all_data["Config"][col].dropna().tolist()
 
             else:
-                opts += all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"].tolist()
+                opts += (
+                    all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"]
+                    .tolist()
+                )
 
             opts = list(dict.fromkeys([str(x) for x in opts if x]))
             st.selectbox(
@@ -207,9 +233,19 @@ if not st.session_state.interview_complete:
             )
 
         elif qtype == "Numeric":
-            st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_all)
+            st.number_input(
+                qtext,
+                value=float(ans_val) if ans_val else 0.0,
+                key=f"widget_{qid}",
+                on_change=sync_all,
+            )
         else:
-            st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_all)
+            st.text_input(
+                qtext,
+                value=str(ans_val),
+                key=f"widget_{qid}",
+                on_change=sync_all,
+            )
 
     c1, c2, _ = st.columns([1, 1, 4])
     if c1.button("⬅️ Back") and st.session_state.form_step > 0:
@@ -225,14 +261,25 @@ if not st.session_state.interview_complete:
     else:
         if c2.button("🔥 Calculate"):
             sync_all()
+
+            # Sync environment from Q22 if present
+            if st.session_state.answers.get("Q22"):
+                st.session_state.environment = st.session_state.answers["Q22"]
+
             save_to_fittings(st.session_state.answers)
             st.session_state.interview_complete = True
             st.rerun()
+
 
 # ------------------ Results / Dashboard ------------------
 else:
     ans = st.session_state.answers
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
+
+    # Environment comes from Q22 (Google Sheet question). Default if missing.
+    env_from_answers = ans.get("Q22") or st.session_state.environment or "Indoors (Mat)"
+    st.session_state.environment = env_from_answers
+
     st.title(f"⛳ Results: {p_name}")
 
     c_nav1, c_nav2, _ = st.columns([1, 1, 4])
@@ -257,7 +304,8 @@ else:
 
     desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
     verdicts = {
-        f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
+        f"{k}: {all_winners[k].iloc[0]['Model']}":
+        desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
         for k in all_winners
     }
 
@@ -269,6 +317,7 @@ else:
             <div><b>HEAD:</b> {ans.get('Q08','')} {ans.get('Q09','')}</div>
             <div><b>CURRENT:</b> {ans.get('Q12','')} ({ans.get('Q11','')}) | <b>MISS:</b> {ans.get('Q18','')}</div>
             <div><b>SPECS:</b> {ans.get('Q13','')} L / {ans.get('Q14','')} SW | <b>GRIP/BALL:</b> {ans.get('Q06','')}/{ans.get('Q07','')}</div>
+            <div><b>ENVIRONMENT:</b> {st.session_state.environment}</div>
             </div></div>""",
             unsafe_allow_html=True,
         )
@@ -283,7 +332,7 @@ else:
                 st.table(all_winners[cat])
                 st.markdown(f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
 
-        # PDF sending (includes environment + phase6 recs)
+        # PDF sending (includes environment + stored Phase-6 recs)
         if not st.session_state.email_sent and p_email:
             with st.spinner("Dispatching PDF..."):
                 pdf_bytes = create_pdf_bytes(
@@ -292,31 +341,25 @@ else:
                     ans,
                     verdicts,
                     phase6_recs=st.session_state.get("phase6_recs", None),
-                    environment=st.session_state.get("environment", None),
+                    environment=st.session_state.environment,
                 )
-                result = send_email_with_pdf(
-                    p_email,
-                    p_name,
-                    pdf_bytes,
-                    environment=st.session_state.get("environment", None),
-                )
-                if result is True:
+                if send_email_with_pdf(p_email, p_name, pdf_bytes, environment=st.session_state.environment) is True:
                     st.success(f"📬 Sent to {p_email}!")
                     st.session_state.email_sent = True
-                else:
-                    st.error(f"Email failed: {result}")
 
     # -------- TrackMan Lab Tab --------
     with tab_lab:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
-        # Single environment selector (default indoor)
-        st.session_state.environment = st.radio(
+        # Optional: allow override here, but sync it back to Q22 so PDF stays consistent
+        env_choice = st.radio(
             "Testing environment",
-            ["Indoor (mat)", "Outdoor (turf)"],
+            ["Indoors (Mat)", "Outdoors (Turf)"],
             horizontal=True,
-            index=0 if st.session_state.environment == "Indoor (mat)" else 1,
+            index=0 if st.session_state.environment == "Indoors (Mat)" else 1,
         )
+        st.session_state.environment = env_choice
+        st.session_state.answers["Q22"] = env_choice  # keep Google-sheet answer in sync
 
         with st.expander("✅ Lab Controls (required before logging)", expanded=True):
             st.session_state.lab_controls["length_matched"] = st.checkbox(
@@ -359,6 +402,7 @@ else:
                 if stat:
                     stat["Shaft ID"] = selected_s
                     stat["Controlled"] = "Yes"
+                    stat["Environment"] = st.session_state.environment
                     stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     st.session_state.tm_lab_data.append(stat)
                     st.rerun()
@@ -375,7 +419,7 @@ else:
                 lab_df = pd.DataFrame(st.session_state.tm_lab_data)
 
                 preferred_cols = [
-                    "Timestamp", "Shaft ID", "Controlled",
+                    "Timestamp", "Shaft ID", "Controlled", "Environment",
                     "Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate",
                     "Launch Angle", "Landing Angle", "Face To Path", "Dynamic Lie",
                     "Carry Side", "Total Side",
@@ -414,7 +458,7 @@ else:
                         environment=st.session_state.environment,
                     )
 
-                    st.session_state.phase6_recs = recs  # store for PDF
+                    st.session_state.phase6_recs = recs
 
                     for r in recs:
                         css = "rec-warn" if r["severity"] == "warn" else "rec-info"
