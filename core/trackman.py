@@ -1,6 +1,7 @@
 # core/trackman.py
 from __future__ import annotations
 
+import io
 import re
 from typing import Dict, List, Optional
 
@@ -51,24 +52,11 @@ def _find_col(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
 
 
 def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    TrackMan CSVs often come as:
-      row 0: report title / junk
-      row 1: real column headers
-      row 2: units row (mph, rpm, deg) which breaks numeric parsing
-
-    Some exports already come clean with proper headers.
-    We'll detect and fix the common cases without breaking the clean case.
-    """
-
     if df is None or df.empty:
         return df
 
-    # If the headers look like 0..N, it's probably missing proper headers.
-    # Or if the first row contains known header names like "Club Speed".
     headers_are_default = all(str(c).strip().isdigit() for c in df.columns)
 
-    # Heuristic: check if row 0 or row 1 contains "club speed" / "ball speed"
     def row_contains_keywords(row_idx: int) -> bool:
         if row_idx < 0 or row_idx >= len(df):
             return False
@@ -77,28 +65,20 @@ def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
         return ("club speed" in joined) or ("ball speed" in joined) or ("smash" in joined) or ("spin rate" in joined)
 
     if headers_are_default or row_contains_keywords(0) or row_contains_keywords(1):
-        # Try setting header from row 0 first (some exports do that)
         if row_contains_keywords(0):
             df2 = df.copy()
             df2.columns = df2.iloc[0].astype(str).tolist()
             df2 = df2.iloc[1:].reset_index(drop=True)
             df = df2
-
-        # Otherwise, try header from row 1 (very common)
         elif row_contains_keywords(1):
             df2 = df.copy()
             df2.columns = df2.iloc[1].astype(str).tolist()
             df2 = df2.iloc[2:].reset_index(drop=True)
             df = df2
 
-        # If it was default headers but we couldn't detect keywords, leave it alone.
-
-    # Remove rows that are clearly "units" rows (deg, mph, rpm) across many columns
-    # This keeps real data rows.
     def is_units_row(row: pd.Series) -> bool:
         vals = row.astype(str).str.lower()
-        unit_hits = vals.str.contains(r"\b(mph|rpm|deg|°|m/s|yd|yards)\b", regex=True, na=False).sum()
-        # If lots of cells look like units, it’s almost certainly a units row
+        unit_hits = vals.str.contains(r"\b(mph|rpm|deg|°|m/s|yd|yards|ft|in|mm|s)\b", regex=True, na=False).sum()
         return unit_hits >= max(3, int(len(vals) * 0.2))
 
     if len(df) > 0:
@@ -113,10 +93,6 @@ def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _filter_use_in_stat(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    If 'Use In Stat' column exists, keep only TRUE shots.
-    Handles TRUE/False, Yes/No, 1/0, etc.
-    """
     if df is None or df.empty:
         return df
 
@@ -129,40 +105,45 @@ def _filter_use_in_stat(df: pd.DataFrame) -> pd.DataFrame:
     if keep.any():
         return df.loc[keep].reset_index(drop=True)
 
-    # If nothing matched, do not filter (safer than dropping everything)
     return df
+
+
+def _read_csv_handle_sep_line(uploaded_file) -> pd.DataFrame:
+    """
+    TrackMan sometimes outputs:
+      sep=,
+      Date, TMD No, ... (real header lives in the first data row)
+    Pandas will treat 'sep=' as header unless we skip it.
+    """
+    # Read raw bytes so we can inspect first line safely
+    raw = uploaded_file.read()
+    try:
+        text = raw.decode("utf-8-sig", errors="ignore")
+    except Exception:
+        text = raw.decode(errors="ignore")
+
+    lines = text.splitlines()
+    if lines and lines[0].strip().lower().startswith("sep="):
+        text = "\n".join(lines[1:])
+
+    return pd.read_csv(io.StringIO(text))
 
 
 def load_trackman(uploaded_file) -> pd.DataFrame:
     name = getattr(uploaded_file, "name", "") or ""
-
     if name.lower().endswith(".csv"):
-        # detect TrackMan sep= header
-        df = pd.read_csv(uploaded_file, header=None)
-
-        # If first cell contains "sep=", skip first row
-        if str(df.iloc[0, 0]).lower().startswith("sep="):
-            df = df.iloc[1:].reset_index(drop=True)
-
-        # now reload using row 0 as header
-        df.columns = df.iloc[0]
-        df = df.iloc[1:].reset_index(drop=True)
-
+        df = _read_csv_handle_sep_line(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
 
     df = _maybe_cleanup_trackman_export(df)
     df = _filter_use_in_stat(df)
-
     return df
-
-
 
 
 def summarize_trackman(df: pd.DataFrame, shaft_tag: str, *, include_std: bool = True) -> Dict[str, float | str]:
     out: Dict[str, float | str] = {"Shaft ID": shaft_tag}
 
-    # Always add shot count (after filtering)
     try:
         out["Shot Count"] = int(len(df))
     except Exception:
