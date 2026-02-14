@@ -59,17 +59,11 @@ def get_data_from_gsheet():
             rows = sh.worksheet(ws_name).get_all_values()
             df = pd.DataFrame(
                 rows[1:],
-                columns=[
-                    h.strip() if h.strip() else f"Col_{i}"
-                    for i, h in enumerate(rows[0])
-                ],
+                columns=[h.strip() if h.strip() else f"Col_{i}" for i, h in enumerate(rows[0])],
             )
             return df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
-        return {
-            k: get_clean_df(k)
-            for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
-        }
+        return {k: get_clean_df(k) for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]}
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -87,9 +81,7 @@ def save_to_fittings(answers):
             "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
         )
         worksheet = sh.worksheet("Fittings")
-        row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [
-            answers.get(f"Q{i:02d}", "") for i in range(1, 22)
-        ]
+        row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)]
         worksheet.append_row(row)
     except Exception as e:
         st.error(f"Error saving: {e}")
@@ -118,7 +110,7 @@ if "tm_lab_data" not in st.session_state:
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
 
-# Single source of truth for environment (default indoor)
+# One environment source-of-truth (default indoor)
 if "environment" not in st.session_state:
     st.session_state.environment = "Indoor (mat)"
 
@@ -172,13 +164,7 @@ if not st.session_state.interview_complete:
                     opts += sorted(all_data["Heads"]["Manufacturer"].unique().tolist())
                 else:
                     opts += (
-                        sorted(
-                            all_data["Heads"][
-                                all_data["Heads"]["Manufacturer"] == brand_val
-                            ]["Model"]
-                            .unique()
-                            .tolist()
-                        )
+                        sorted(all_data["Heads"][all_data["Heads"]["Manufacturer"] == brand_val]["Model"].unique().tolist())
                         if brand_val
                         else ["Select Brand First"]
                     )
@@ -189,21 +175,14 @@ if not st.session_state.interview_complete:
                     opts += sorted(all_data["Shafts"]["Brand"].unique().tolist())
                 elif "Flex" in qtext:
                     opts += (
-                        sorted(
-                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
-                            .unique()
-                            .tolist()
-                        )
+                        sorted(all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"].unique().tolist())
                         if s_brand
                         else ["Select Brand First"]
                     )
                 elif "Model" in qtext:
                     if s_brand and s_flex:
                         opts += sorted(
-                            all_data["Shafts"][
-                                (all_data["Shafts"]["Brand"] == s_brand)
-                                & (all_data["Shafts"]["Flex"] == s_flex)
-                            ]["Model"]
+                            all_data["Shafts"][(all_data["Shafts"]["Brand"] == s_brand) & (all_data["Shafts"]["Flex"] == s_flex)]["Model"]
                             .unique()
                             .tolist()
                         )
@@ -216,10 +195,7 @@ if not st.session_state.interview_complete:
                     opts += all_data["Config"][col].dropna().tolist()
 
             else:
-                opts += (
-                    all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"]
-                    .tolist()
-                )
+                opts += all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"].tolist()
 
             opts = list(dict.fromkeys([str(x) for x in opts if x]))
             st.selectbox(
@@ -231,19 +207,9 @@ if not st.session_state.interview_complete:
             )
 
         elif qtype == "Numeric":
-            st.number_input(
-                qtext,
-                value=float(ans_val) if ans_val else 0.0,
-                key=f"widget_{qid}",
-                on_change=sync_all,
-            )
+            st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_all)
         else:
-            st.text_input(
-                qtext,
-                value=str(ans_val),
-                key=f"widget_{qid}",
-                on_change=sync_all,
-            )
+            st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_all)
 
     c1, c2, _ = st.columns([1, 1, 4])
     if c1.button("⬅️ Back") and st.session_state.form_step > 0:
@@ -291,8 +257,7 @@ else:
 
     desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
     verdicts = {
-        f"{k}: {all_winners[k].iloc[0]['Model']}":
-        desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
+        f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
         for k in all_winners
     }
 
@@ -318,7 +283,7 @@ else:
                 st.table(all_winners[cat])
                 st.markdown(f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
 
-        # PDF sending (uses stored Phase-6 recs if available)
+        # PDF sending (includes environment + phase6 recs)
         if not st.session_state.email_sent and p_email:
             with st.spinner("Dispatching PDF..."):
                 pdf_bytes = create_pdf_bytes(
@@ -327,10 +292,19 @@ else:
                     ans,
                     verdicts,
                     phase6_recs=st.session_state.get("phase6_recs", None),
+                    environment=st.session_state.get("environment", None),
                 )
-                if send_email_with_pdf(p_email, p_name, pdf_bytes) is True:
+                result = send_email_with_pdf(
+                    p_email,
+                    p_name,
+                    pdf_bytes,
+                    environment=st.session_state.get("environment", None),
+                )
+                if result is True:
                     st.success(f"📬 Sent to {p_email}!")
                     st.session_state.email_sent = True
+                else:
+                    st.error(f"Email failed: {result}")
 
     # -------- TrackMan Lab Tab --------
     with tab_lab:
