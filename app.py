@@ -56,6 +56,15 @@ def get_data_from_gsheet():
             "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
         )
 
+def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
+    try:
+        if key in cfg_df.columns and len(cfg_df) >= 1:
+            return float(str(cfg_df.iloc[0][key]).strip())
+    except Exception:
+        pass
+    return float(default)
+
+        
         def get_clean_df(ws_name):
             rows = sh.worksheet(ws_name).get_all_values()
             df = pd.DataFrame(
@@ -147,6 +156,13 @@ def controls_complete() -> bool:
 all_data = get_data_from_gsheet()
 if not all_data:
     st.stop()
+
+cfg = all_data["Config"]
+
+WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
+WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 6.0)
+WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.03)
+
 
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
