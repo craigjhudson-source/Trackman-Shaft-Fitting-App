@@ -135,15 +135,24 @@ def _filter_use_in_stat(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_trackman(uploaded_file) -> pd.DataFrame:
     name = getattr(uploaded_file, "name", "") or ""
-    if name.lower().endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+
+    try:
+        if name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded_file, header=None)
+        else:
+            df = pd.read_excel(uploaded_file, header=None)
+    except Exception:
+        # second attempt
+        if name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
 
     df = _maybe_cleanup_trackman_export(df)
     df = _filter_use_in_stat(df)
 
     return df
+
 
 
 def summarize_trackman(df: pd.DataFrame, shaft_tag: str, *, include_std: bool = True) -> Dict[str, float | str]:
