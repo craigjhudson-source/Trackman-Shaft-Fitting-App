@@ -5,7 +5,6 @@ from google.oauth2.service_account import Credentials
 import datetime
 
 from utils import create_pdf_bytes, send_email_with_pdf
-
 from core.trackman import load_trackman, summarize_trackman
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
@@ -43,6 +42,21 @@ def get_google_creds(scopes):
         st.stop()
 
 
+def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
+    """
+    Reads a float from Config sheet using FIRST ROW values.
+    Your Config tab is laid out as columns with values in row 2 (index 0 here).
+    Example columns: WARN_FACE_TO_PATH_SD, WARN_CARRY_SD, WARN_SMASH_SD
+    """
+    try:
+        if key in cfg_df.columns and len(cfg_df) >= 1:
+            val = str(cfg_df.iloc[0][key]).strip()
+            return float(val)
+    except Exception:
+        pass
+    return float(default)
+
+
 @st.cache_data(ttl=600)
 def get_data_from_gsheet():
     try:
@@ -56,15 +70,6 @@ def get_data_from_gsheet():
             "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
         )
 
-def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
-    try:
-        if key in cfg_df.columns and len(cfg_df) >= 1:
-            return float(str(cfg_df.iloc[0][key]).strip())
-    except Exception:
-        pass
-    return float(default)
-
-        
         def get_clean_df(ws_name):
             rows = sh.worksheet(ws_name).get_all_values()
             df = pd.DataFrame(
@@ -80,6 +85,7 @@ def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
             k: get_clean_df(k)
             for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
         }
+
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -98,7 +104,7 @@ def save_to_fittings(answers):
         )
         worksheet = sh.worksheet("Fittings")
         row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [
-            answers.get(f"Q{i:02d}", "") for i in range(1, 23)  # includes Q22 now
+            answers.get(f"Q{i:02d}", "") for i in range(1, 23)  # includes Q22
         ]
         worksheet.append_row(row)
     except Exception as e:
@@ -159,10 +165,10 @@ if not all_data:
 
 cfg = all_data["Config"]
 
+# Config-driven SD thresholds (fallback defaults)
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
-WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 6.0)
-WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.03)
-
+WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
+WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.15)
 
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
@@ -191,9 +197,7 @@ if not st.session_state.interview_complete:
                 else:
                     opts += (
                         sorted(
-                            all_data["Heads"][
-                                all_data["Heads"]["Manufacturer"] == brand_val
-                            ]["Model"]
+                            all_data["Heads"][all_data["Heads"]["Manufacturer"] == brand_val]["Model"]
                             .unique()
                             .tolist()
                         )
@@ -202,16 +206,13 @@ if not st.session_state.interview_complete:
                     )
 
             elif "Shafts" in qopts:
-                s_brand, s_flex = st.session_state.answers.get("Q10", ""), st.session_state.answers.get("Q11", "")
+                s_brand = st.session_state.answers.get("Q10", "")
+                s_flex = st.session_state.answers.get("Q11", "")
                 if "Brand" in qtext:
                     opts += sorted(all_data["Shafts"]["Brand"].unique().tolist())
                 elif "Flex" in qtext:
                     opts += (
-                        sorted(
-                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
-                            .unique()
-                            .tolist()
-                        )
+                        sorted(all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"].unique().tolist())
                         if s_brand
                         else ["Select Brand First"]
                     )
@@ -292,9 +293,8 @@ else:
     ans = st.session_state.answers
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
 
-    # Environment comes from Q22 (Google Sheet question). Default if missing.
-    env_from_answers = ans.get("Q22") or st.session_state.environment or "Indoors (Mat)"
-    st.session_state.environment = env_from_answers
+    # Environment from Q22; default if missing
+    st.session_state.environment = ans.get("Q22") or st.session_state.environment or "Indoors (Mat)"
 
     st.title(f"⛳ Results: {p_name}")
 
@@ -310,7 +310,7 @@ else:
     st.divider()
     tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
-    # -------- Phase 1 Predictor (Frozen) --------
+    # -------- Phase 1 Predictor --------
     try:
         carry_6i = float(ans.get("Q15", 150))
     except Exception:
@@ -341,7 +341,8 @@ else:
         v_items = list(verdicts.items())
         col1, col2 = st.columns(2)
         for i, (cat, c_name) in enumerate(
-            [("Balanced", "⚖️ Balanced"), ("Maximum Stability", "🛡️ Stability"), ("Launch & Height", "🚀 Launch"), ("Feel & Smoothness", "☁️ Feel")]
+            [("Balanced", "⚖️ Balanced"), ("Maximum Stability", "🛡️ Stability"),
+             ("Launch & Height", "🚀 Launch"), ("Feel & Smoothness", "☁️ Feel")]
         ):
             with col1 if i < 2 else col2:
                 st.subheader(c_name)
@@ -359,15 +360,18 @@ else:
                     phase6_recs=st.session_state.get("phase6_recs", None),
                     environment=st.session_state.environment,
                 )
-                if send_email_with_pdf(p_email, p_name, pdf_bytes, environment=st.session_state.environment) is True:
+                ok = send_email_with_pdf(p_email, p_name, pdf_bytes, environment=st.session_state.environment)
+                if ok is True:
                     st.success(f"📬 Sent to {p_email}!")
                     st.session_state.email_sent = True
+                else:
+                    st.error(f"Email failed: {ok}")
 
     # -------- TrackMan Lab Tab --------
     with tab_lab:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
-        # Optional: allow override here, but sync it back to Q22 so PDF stays consistent
+        # Allow override here, keep it synced to Q22 so PDF stays consistent
         env_choice = st.radio(
             "Testing environment",
             ["Indoors (Mat)", "Outdoors (Turf)"],
@@ -375,7 +379,7 @@ else:
             index=0 if st.session_state.environment == "Indoors (Mat)" else 1,
         )
         st.session_state.environment = env_choice
-        st.session_state.answers["Q22"] = env_choice  # keep Google-sheet answer in sync
+        st.session_state.answers["Q22"] = env_choice
 
         with st.expander("✅ Lab Controls (required before logging)", expanded=True):
             st.session_state.lab_controls["length_matched"] = st.checkbox(
@@ -409,31 +413,29 @@ else:
         with c_up:
             test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
             selected_s = st.selectbox("Assign Data to:", test_list)
-
             tm_file = st.file_uploader("Upload Trackman CSV/Excel", type=["csv", "xlsx"])
 
             MIN_SHOTS = 5
+            can_log = tm_file is not None and controls_complete()
 
-can_log = tm_file is not None and controls_complete()
-if st.button("➕ Add") and can_log:
-    stat = process_trackman_file(tm_file, selected_s)
-    if not stat:
-        st.error("Could not parse TrackMan file. (Export format may be unexpected.)")
-    else:
-        shot_count = int(stat.get("Shot Count", 0) or 0)
-
-        if shot_count < MIN_SHOTS:
-            st.error(
-                f"Not enough shots to log: {shot_count} found. "
-                f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots (Use In Stat = TRUE)."
-            )
-        else:
-            stat["Shaft ID"] = selected_s
-            stat["Controlled"] = "Yes"
-            stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.tm_lab_data.append(stat)
-            st.rerun()
-
+            if st.button("➕ Add") and can_log:
+                stat = process_trackman_file(tm_file, selected_s)
+                if not stat:
+                    st.error("Could not parse TrackMan file. (Export format may be unexpected.)")
+                else:
+                    shot_count = int(stat.get("Shot Count", 0) or 0)
+                    if shot_count < MIN_SHOTS:
+                        st.error(
+                            f"Not enough shots to log: {shot_count} found. "
+                            f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots."
+                        )
+                    else:
+                        stat["Shaft ID"] = selected_s
+                        stat["Controlled"] = "Yes"
+                        stat["Environment"] = st.session_state.environment
+                        stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        st.session_state.tm_lab_data.append(stat)
+                        st.rerun()
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
@@ -445,7 +447,7 @@ if st.button("➕ Add") and can_log:
                 lab_df = pd.DataFrame(st.session_state.tm_lab_data)
 
                 preferred_cols = [
-                    "Timestamp", "Shaft ID", "Controlled", "Environment",
+                    "Timestamp", "Shaft ID", "Controlled", "Environment", "Shot Count",
                     "Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate",
                     "Launch Angle", "Landing Angle", "Face To Path", "Dynamic Lie",
                     "Carry Side", "Total Side",
@@ -462,32 +464,39 @@ if st.button("➕ Add") and can_log:
                     baseline_row = lab_df[lab_df["Shaft ID"] == "Current Baseline"].iloc[-1]
 
                 cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
+
                 if len(cand) >= 1 and "Smash Factor" in cand.columns:
                     top_idx = cand["Smash Factor"].astype(float).idxmax()
                     winner_row = cand.loc[top_idx]
                     winner_name = winner_row["Shaft ID"]
                     st.success(f"🏆 **Efficiency Winner:** {winner_name} (Smash {winner_row.get('Smash Factor','')})")
 
-# ---------- SD Threshold Warnings (from Config tab) ----------
-# These values come from the Config sheet (set earlier in app.py)
-try:
-    ftp_sd = float(winner_row.get("Face To Path SD", 0) or 0)
-    carry_sd = float(winner_row.get("Carry SD", 0) or 0)
-    smash_sd = float(winner_row.get("Smash Factor SD", 0) or 0)
+                    # ---------- SD Threshold Warnings ----------
+                    try:
+                        ftp_sd = float(winner_row.get("Face To Path SD", 0) or 0)
+                        carry_sd = float(winner_row.get("Carry SD", 0) or 0)
+                        smash_sd = float(winner_row.get("Smash Factor SD", 0) or 0)
 
-    if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
-        st.warning(f"⚠️ Face-to-Path variance is high (SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}). Re-test or tighten strike controls.")
+                        if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
+                            st.warning(
+                                f"⚠️ Face-to-Path variance is high (SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}). "
+                                "Re-test or tighten strike controls."
+                            )
 
-    if carry_sd and carry_sd > WARN_CARRY_SD:
-        st.warning(f"⚠️ Carry variance is high (SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}). Recommend more shots or better control.")
+                        if carry_sd and carry_sd > WARN_CARRY_SD:
+                            st.warning(
+                                f"⚠️ Carry variance is high (SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}). "
+                                "Recommend more shots or better control."
+                            )
 
-    if smash_sd and smash_sd > WARN_SMASH_SD:
-        st.warning(f"⚠️ Smash variance is high (SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}). Contact is inconsistent—re-test.")
-except Exception:
-    # If any of the SD columns don't exist, don't break the app
-    pass
+                        if smash_sd and smash_sd > WARN_SMASH_SD:
+                            st.warning(
+                                f"⚠️ Smash variance is high (SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}). "
+                                "Contact is inconsistent — re-test."
+                            )
+                    except Exception:
+                        pass
 
-                    
                     if "Face To Path SD" in cand.columns:
                         try:
                             most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
@@ -503,7 +512,6 @@ except Exception:
                         club="6i",
                         environment=st.session_state.environment,
                     )
-
                     st.session_state.phase6_recs = recs
 
                     for r in recs:
