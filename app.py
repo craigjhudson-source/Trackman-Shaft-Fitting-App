@@ -210,6 +210,19 @@ else:
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
     st.title(f"⛳ Results: {p_name}")
 
+    # --- Environment selector (Indoor vs Outdoor) ---
+if "fit_environment" not in st.session_state:
+    st.session_state.fit_environment = "Indoor"
+
+st.session_state.fit_environment = st.radio(
+    "Fitting Environment",
+    ["Indoor (Mat / Simulator)", "Outdoor (Turf / Range)"],
+    horizontal=True,
+)
+
+fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor"
+
+
     c_nav1, c_nav2, _ = st.columns([1, 1, 4])
     if c_nav1.button("✏️ Edit Fitting"):
         st.session_state.interview_complete = False
