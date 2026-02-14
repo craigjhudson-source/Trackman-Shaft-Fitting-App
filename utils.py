@@ -23,13 +23,14 @@ class ProFittingPDF(FPDF):
         self.cell(0, -2, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, "C")
         self.ln(12)
 
-    def draw_player_header(self, answers):
+    def draw_player_header(self, answers, environment: str | None = None):
         self.set_font("helvetica", "B", 9)
         self.set_text_color(20, 40, 80)
         self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, "L")
 
         self.set_font("helvetica", "", 8)
         self.set_text_color(0, 0, 0)
+
         l1 = (
             f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | "
             f"Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
@@ -46,6 +47,14 @@ class ProFittingPDF(FPDF):
         self.cell(0, 4, clean_text(l1), 0, 1, "L")
         self.cell(0, 4, clean_text(l2), 0, 1, "L")
         self.cell(0, 4, clean_text(l3), 0, 1, "L")
+
+        if environment:
+            self.set_font("helvetica", "B", 8)
+            self.set_text_color(20, 40, 80)
+            self.cell(0, 4, f"Environment: {clean_text(environment)}", 0, 1, "L")
+            self.set_text_color(0, 0, 0)
+            self.set_font("helvetica", "", 8)
+
         self.ln(2)
         self.line(10, self.get_y(), 200, self.get_y())
         self.ln(4)
@@ -76,26 +85,29 @@ class ProFittingPDF(FPDF):
         self.multi_cell(0, 4, clean_text(verdict_text))
         self.ln(4)
 
-    def draw_phase6_section(self, recs):
+    def draw_phase6_section(self, recs, environment: str | None = None):
         """
         recs expected format (recommended):
         [
           {"type": "Lie", "severity": "warn|info", "text": "..."},
           ...
         ]
-        But we also accept a list[str] safely.
+        But we also accept list[str] safely.
         """
         if not recs:
             return
 
+        header = "PHASE 6: OPTIMIZATION SUGGESTIONS"
+        if environment:
+            header = f"{header} ({clean_text(environment)})"
+
         self.set_font("helvetica", "B", 10)
         self.set_text_color(20, 40, 80)
-        self.cell(0, 6, "PHASE 6: OPTIMIZATION SUGGESTIONS", 0, 1, "L")
+        self.cell(0, 6, header, 0, 1, "L")
         self.set_text_color(0, 0, 0)
         self.set_font("helvetica", "", 8)
 
         # normalize input
-        normalized = []
         if isinstance(recs, list) and len(recs) > 0 and isinstance(recs[0], dict):
             normalized = recs
         elif isinstance(recs, list):
@@ -108,7 +120,6 @@ class ProFittingPDF(FPDF):
             sev = (r.get("severity", "info") or "info").lower()
             txt = clean_text(r.get("text", ""))
 
-            # severity styling
             if sev == "warn":
                 self.set_text_color(180, 0, 0)
                 bullet = "!"
@@ -122,15 +133,16 @@ class ProFittingPDF(FPDF):
         self.ln(2)
 
 
-def create_pdf_bytes(player_name, all_winners, answers, verdicts, phase6_recs=None):
+def create_pdf_bytes(player_name, all_winners, answers, verdicts, phase6_recs=None, environment=None):
     """
     Backwards compatible:
-      - existing calls work (phase6_recs defaults to None)
+      - existing calls work (phase6_recs/environment default to None)
       - if phase6_recs is provided, a Phase 6 section is added at the end
+      - if environment is provided, it prints in header + Phase 6 header
     """
     pdf = ProFittingPDF()
     pdf.add_page()
-    pdf.draw_player_header(answers)
+    pdf.draw_player_header(answers, environment=environment)
 
     mapping = {
         "Balanced Choice": "Balanced",
@@ -139,21 +151,20 @@ def create_pdf_bytes(player_name, all_winners, answers, verdicts, phase6_recs=No
         "Feel & Smoothness": "Feel & Smoothness",
     }
 
-    # Keep the order stable: match verdicts by mapping order if possible
+    # Stable order for verdicts: match mapping order if possible
     v_items = list(verdicts.items())
 
     for i, (label, calc_key) in enumerate(mapping.items()):
         verdict_text = v_items[i][1] if i < len(v_items) else ""
         pdf.draw_recommendation_block(label, all_winners[calc_key], verdict_text)
 
-    # Optional Phase 6 section
     if phase6_recs:
-        pdf.draw_phase6_section(phase6_recs)
+        pdf.draw_phase6_section(phase6_recs, environment=environment)
 
     return bytes(pdf.output())
 
 
-def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
+def send_email_with_pdf(recipient_email, player_name, pdf_bytes, environment=None):
     try:
         user = st.secrets["email"]["user"]
         pwd = st.secrets["email"]["password"].replace(" ", "").strip()
@@ -163,7 +174,9 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes):
         msg["To"] = recipient_email
         msg["Subject"] = f"Fitting Report: {player_name}"
 
-        msg.attach(MIMEText(f"Hello {player_name},\n\nAttached is your Performance Report.", "plain"))
+        env_line = f"\nEnvironment: {environment}\n" if environment else "\n"
+        body = f"Hello {player_name},{env_line}\nAttached is your Performance Report."
+        msg.attach(MIMEText(body, "plain"))
 
         part = MIMEApplication(pdf_bytes, Name=f"Report_{player_name}.pdf")
         part["Content-Disposition"] = f'attachment; filename="Report_{player_name}.pdf"'
