@@ -45,11 +45,11 @@ def get_google_creds(scopes):
 def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
     """
     Reads a float from Config sheet using FIRST ROW values.
-    Your Config tab is laid out as columns with values in row 2 (index 0 here).
+    Config tab is laid out as columns with values in row 2 (index 0 here).
     Example columns: WARN_FACE_TO_PATH_SD, WARN_CARRY_SD, WARN_SMASH_SD, MIN_SHOTS
     """
     try:
-        if key in cfg_df.columns and len(cfg_df) >= 1:
+        if cfg_df is not None and key in cfg_df.columns and len(cfg_df) >= 1:
             val = str(cfg_df.iloc[0][key]).strip()
             return float(val)
     except Exception:
@@ -134,7 +134,7 @@ if "tm_lab_data" not in st.session_state:
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
 
-# Default environment (matches your Config wording)
+# Default environment
 if "environment" not in st.session_state:
     st.session_state.environment = "Indoors (Mat)"
 
@@ -426,26 +426,25 @@ else:
             can_log = tm_file is not None and controls_complete()
 
             if st.button("➕ Add") and can_log:
-    stat = process_trackman_file(tm_file, selected_s)
+                stat = process_trackman_file(tm_file, selected_s)
 
-    if not stat:
-        st.error("TrackMan file loaded but required metrics not found. Check export format.")
-    else:
-        shot_count = int(stat.get("Shot Count", 0) or 0)
+                if not stat:
+                    st.error("TrackMan file loaded but required metrics not found. Check export format.")
+                else:
+                    shot_count = int(stat.get("Shot Count", 0) or 0)
 
-        if shot_count < MIN_SHOTS:
-            st.error(
-                f"Not enough shots to log: {shot_count} found. "
-                f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots."
-            )
-        else:
-            stat["Shaft ID"] = selected_s
-            stat["Controlled"] = "Yes"
-            stat["Environment"] = st.session_state.environment
-            stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.tm_lab_data.append(stat)
-            st.rerun()
-
+                    if shot_count < MIN_SHOTS:
+                        st.error(
+                            f"Not enough shots to log: {shot_count} found. "
+                            f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots."
+                        )
+                    else:
+                        stat["Shaft ID"] = selected_s
+                        stat["Controlled"] = "Yes"
+                        stat["Environment"] = st.session_state.environment
+                        stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        st.session_state.tm_lab_data.append(stat)
+                        st.rerun()
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
@@ -487,6 +486,7 @@ else:
 
                 # Candidates (filter to meet min shots)
                 cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
+
                 if "Shot Count" in cand.columns:
                     def _shots_ok(x):
                         try:
@@ -521,19 +521,13 @@ else:
 
                     if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
                         quality_ok = False
-                        issues.append(
-                            f"Face-to-Path SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}"
-                        )
+                        issues.append(f"Face-to-Path SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}")
                     if carry_sd and carry_sd > WARN_CARRY_SD:
                         quality_ok = False
-                        issues.append(
-                            f"Carry SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}"
-                        )
+                        issues.append(f"Carry SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}")
                     if smash_sd and smash_sd > WARN_SMASH_SD:
                         quality_ok = False
-                        issues.append(
-                            f"Smash SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}"
-                        )
+                        issues.append(f"Smash SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}")
 
                     if not quality_ok:
                         st.warning("⚠️ Data quality is not good enough to declare a winner yet.")
@@ -545,7 +539,6 @@ else:
                             "use 'Use In Stat = TRUE', and collect more shots)."
                         )
                     else:
-                        # Winner + supporting callouts
                         st.success(
                             f"🏆 **Efficiency Winner:** {winner_name} "
                             f"(Smash {winner_row.get('Smash Factor','')})"
