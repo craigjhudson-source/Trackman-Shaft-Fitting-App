@@ -426,30 +426,26 @@ else:
             can_log = tm_file is not None and controls_complete()
 
             if st.button("➕ Add") and can_log:
-                stat = process_trackman_file(tm_file, selected_s)
-                if not stat:
-    st.error("TrackMan file loaded but required metrics not found. Check export format.")
-    st.write("Debug columns detected:")
-    try:
-        raw = load_trackman(tm_file)
-        st.write(list(raw.columns))
-    except Exception:
-        pass
+    stat = process_trackman_file(tm_file, selected_s)
 
-                else:
-                    shot_count = int(stat.get("Shot Count", 0) or 0)
-                    if shot_count < MIN_SHOTS:
-                        st.error(
-                            f"Not enough shots to log: {shot_count} found. "
-                            f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots."
-                        )
-                    else:
-                        stat["Shaft ID"] = selected_s
-                        stat["Controlled"] = "Yes"
-                        stat["Environment"] = st.session_state.environment
-                        stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        st.session_state.tm_lab_data.append(stat)
-                        st.rerun()
+    if not stat:
+        st.error("TrackMan file loaded but required metrics not found. Check export format.")
+    else:
+        shot_count = int(stat.get("Shot Count", 0) or 0)
+
+        if shot_count < MIN_SHOTS:
+            st.error(
+                f"Not enough shots to log: {shot_count} found. "
+                f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots."
+            )
+        else:
+            stat["Shaft ID"] = selected_s
+            stat["Controlled"] = "Yes"
+            stat["Environment"] = st.session_state.environment
+            stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.tm_lab_data.append(stat)
+            st.rerun()
+
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
