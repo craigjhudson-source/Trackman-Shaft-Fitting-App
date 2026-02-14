@@ -9,7 +9,6 @@ from core.trackman import load_trackman, summarize_trackman
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
-
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
 st.markdown(
@@ -25,7 +24,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
 
 # ------------------ DB ------------------
 def get_google_creds(scopes):
@@ -45,11 +43,10 @@ def get_google_creds(scopes):
 def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
     """
     Reads a float from Config sheet using FIRST ROW values.
-    Config tab is laid out as columns with values in row 2 (index 0 here).
-    Example columns: WARN_FACE_TO_PATH_SD, WARN_CARRY_SD, WARN_SMASH_SD, MIN_SHOTS
+    Config tab layout: columns are keys; row 2 contains values (index 0 here).
     """
     try:
-        if cfg_df is not None and key in cfg_df.columns and len(cfg_df) >= 1:
+        if key in cfg_df.columns and len(cfg_df) >= 1:
             val = str(cfg_df.iloc[0][key]).strip()
             return float(val)
     except Exception:
@@ -85,7 +82,6 @@ def get_data_from_gsheet():
             k: get_clean_df(k)
             for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
         }
-
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -134,7 +130,6 @@ if "tm_lab_data" not in st.session_state:
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
 
-# Default environment
 if "environment" not in st.session_state:
     st.session_state.environment = "Indoors (Mat)"
 
@@ -165,10 +160,11 @@ if not all_data:
 
 cfg = all_data["Config"]
 
-# Config-driven thresholds (fallback defaults)
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.15)
+
+# ✅ MIN_SHOTS now comes from Config
 MIN_SHOTS = int(cfg_float(cfg, "MIN_SHOTS", 5))
 
 q_master = all_data["Questions"]
@@ -294,7 +290,6 @@ else:
     ans = st.session_state.answers
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
 
-    # Environment from Q22; default if missing
     st.session_state.environment = ans.get("Q22") or st.session_state.environment or "Indoors (Mat)"
 
     st.title(f"⛳ Results: {p_name}")
@@ -350,7 +345,6 @@ else:
                 st.table(all_winners[cat])
                 st.markdown(f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
 
-        # PDF sending (includes environment + stored Phase-6 recs)
         if not st.session_state.email_sent and p_email:
             with st.spinner("Dispatching PDF..."):
                 pdf_bytes = create_pdf_bytes(
@@ -379,7 +373,6 @@ else:
             f"WARN_SMASH_SD={WARN_SMASH_SD}"
         )
 
-        # Allow override here, keep it synced to Q22 so PDF stays consistent
         env_choice = st.radio(
             "Testing environment",
             ["Indoors (Mat)", "Outdoors (Turf)"],
@@ -429,14 +422,13 @@ else:
                 stat = process_trackman_file(tm_file, selected_s)
 
                 if not stat:
-                    st.error("TrackMan file loaded but required metrics not found. Check export format.")
+                    st.error("Could not parse TrackMan file. Check export format.")
                 else:
-                    shot_count = int(stat.get("Shot Count", 0) or 0)
-
+                    shot_count = int(float(stat.get("Shot Count", 0) or 0))
                     if shot_count < MIN_SHOTS:
                         st.error(
                             f"Not enough shots to log: {shot_count} found. "
-                            f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots."
+                            f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots (Use In Stat = TRUE)."
                         )
                     else:
                         stat["Shaft ID"] = selected_s
@@ -468,7 +460,7 @@ else:
                 ]
                 st.table(lab_df[show_cols])
 
-                # Baseline (must meet min shots to use for deltas)
+                # Baseline must meet min shots
                 baseline_row = None
                 if (lab_df["Shaft ID"] == "Current Baseline").any():
                     try:
@@ -484,9 +476,8 @@ else:
                     except Exception:
                         baseline_row = None
 
-                # Candidates (filter to meet min shots)
+                # Candidates must meet min shots
                 cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
-
                 if "Shot Count" in cand.columns:
                     def _shots_ok(x):
                         try:
@@ -500,15 +491,11 @@ else:
                 elif "Smash Factor" not in cand.columns:
                     st.warning("Smash Factor missing from TrackMan export — cannot pick a winner.")
                 else:
-                    # Pick top by efficiency (Smash)
                     top_idx = cand["Smash Factor"].astype(float).idxmax()
                     winner_row = cand.loc[top_idx]
                     winner_name = winner_row.get("Shaft ID", "Winner")
 
-                    # ---------- Data Quality Gate (SD thresholds) ----------
-                    quality_ok = True
-                    issues = []
-
+                    # ---------- SD Threshold Gating ----------
                     def _f(row, k):
                         try:
                             return float(row.get(k, 0) or 0)
@@ -519,24 +506,22 @@ else:
                     carry_sd = _f(winner_row, "Carry SD")
                     smash_sd = _f(winner_row, "Smash Factor SD")
 
+                    issues = []
                     if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
-                        quality_ok = False
                         issues.append(f"Face-to-Path SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}")
                     if carry_sd and carry_sd > WARN_CARRY_SD:
-                        quality_ok = False
                         issues.append(f"Carry SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}")
                     if smash_sd and smash_sd > WARN_SMASH_SD:
-                        quality_ok = False
                         issues.append(f"Smash SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}")
 
-                    if not quality_ok:
+                    if issues:
                         st.warning("⚠️ Data quality is not good enough to declare a winner yet.")
                         st.write("**Re-test recommended:**")
                         for it in issues:
                             st.write(f"- {it}")
                         st.info(
-                            "Tip: tighten controls (same tee/ball/target, remove obvious mishits, "
-                            "use 'Use In Stat = TRUE', and collect more shots)."
+                            "Tip: tighten controls (same target/ball/head, remove obvious mishits using Use In Stat, "
+                            "and collect more shots)."
                         )
                     else:
                         st.success(
