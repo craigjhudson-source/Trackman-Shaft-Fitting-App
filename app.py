@@ -46,7 +46,7 @@ def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
     """
     Reads a float from Config sheet using FIRST ROW values.
     Your Config tab is laid out as columns with values in row 2 (index 0 here).
-    Example columns: WARN_FACE_TO_PATH_SD, WARN_CARRY_SD, WARN_SMASH_SD
+    Example columns: WARN_FACE_TO_PATH_SD, WARN_CARRY_SD, WARN_SMASH_SD, MIN_SHOTS
     """
     try:
         if key in cfg_df.columns and len(cfg_df) >= 1:
@@ -169,6 +169,9 @@ cfg = all_data["Config"]
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.15)
+
+# ✅ Config-driven minimum shots (fallback default)
+MIN_SHOTS = max(1, int(cfg_float(cfg, "MIN_SHOTS", 5)))
 
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
@@ -415,7 +418,6 @@ else:
             selected_s = st.selectbox("Assign Data to:", test_list)
             tm_file = st.file_uploader("Upload Trackman CSV/Excel", type=["csv", "xlsx"])
 
-            MIN_SHOTS = 5
             can_log = tm_file is not None and controls_complete()
 
             if st.button("➕ Add") and can_log:
