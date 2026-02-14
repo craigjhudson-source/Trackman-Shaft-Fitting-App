@@ -11,10 +11,10 @@ from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
 
-
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
-st.markdown("""
+st.markdown(
+    """
     <style>
     [data-testid="stTable"] { font-size: 12px !important; }
     .profile-bar { background-color: #142850; color: white; padding: 20px; border-radius: 10px; margin-bottom: 25px; }
@@ -23,8 +23,9 @@ st.markdown("""
     .rec-warn { border-left: 4px solid #b40000; padding-left: 10px; margin: 6px 0; }
     .rec-info { border-left: 4px solid #2c6bed; padding-left: 10px; margin: 6px 0; }
     </style>
-""", unsafe_allow_html=True)
-
+    """,
+    unsafe_allow_html=True,
+)
 
 # ------------------ DB ------------------
 def get_google_creds(scopes):
@@ -33,7 +34,7 @@ def get_google_creds(scopes):
         if "private_key" in creds_dict:
             pk = creds_dict["private_key"].replace("\\n", "\n")
             if "-----BEGIN PRIVATE KEY-----" in pk:
-                pk = pk[pk.find("-----BEGIN PRIVATE KEY-----"):]
+                pk = pk[pk.find("-----BEGIN PRIVATE KEY-----") :]
             creds_dict["private_key"] = pk.strip()
         return Credentials.from_service_account_info(creds_dict, scopes=scopes)
     except Exception as e:
@@ -44,17 +45,31 @@ def get_google_creds(scopes):
 @st.cache_data(ttl=600)
 def get_data_from_gsheet():
     try:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
         creds = get_google_creds(scopes)
         gc = gspread.authorize(creds)
-        sh = gc.open_by_url("https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit")
+        sh = gc.open_by_url(
+            "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
+        )
 
         def get_clean_df(ws_name):
             rows = sh.worksheet(ws_name).get_all_values()
-            df = pd.DataFrame(rows[1:], columns=[h.strip() if h.strip() else f"Col_{i}" for i, h in enumerate(rows[0])])
+            df = pd.DataFrame(
+                rows[1:],
+                columns=[
+                    h.strip() if h.strip() else f"Col_{i}"
+                    for i, h in enumerate(rows[0])
+                ],
+            )
             return df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
-        return {k: get_clean_df(k) for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]}
+        return {
+            k: get_clean_df(k)
+            for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
+        }
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -62,12 +77,19 @@ def get_data_from_gsheet():
 
 def save_to_fittings(answers):
     try:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
         creds = get_google_creds(scopes)
         gc = gspread.authorize(creds)
-        sh = gc.open_by_url("https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit")
+        sh = gc.open_by_url(
+            "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
+        )
         worksheet = sh.worksheet("Fittings")
-        row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [answers.get(f"Q{i:02d}", "") for i in range(1, 22)]
+        row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [
+            answers.get(f"Q{i:02d}", "") for i in range(1, 22)
+        ]
         worksheet.append_row(row)
     except Exception as e:
         st.error(f"Error saving: {e}")
@@ -96,7 +118,7 @@ if "tm_lab_data" not in st.session_state:
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
 
-# ✅ NEW: environment default
+# Single source of truth for environment (default indoor)
 if "environment" not in st.session_state:
     st.session_state.environment = "Indoor (mat)"
 
@@ -111,7 +133,7 @@ if "lab_controls" not in st.session_state:
 
 
 def sync_all():
-    for key in st.session_state:
+    for key in list(st.session_state.keys()):
         if key.startswith("widget_"):
             st.session_state.answers[key.replace("widget_", "")] = st.session_state[key]
 
@@ -128,6 +150,7 @@ if not all_data:
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
 
+# ------------------ Interview ------------------
 if not st.session_state.interview_complete:
     st.title("⛳ Tour Proven Fitting Interview")
     current_cat = categories[st.session_state.form_step]
@@ -149,8 +172,15 @@ if not st.session_state.interview_complete:
                     opts += sorted(all_data["Heads"]["Manufacturer"].unique().tolist())
                 else:
                     opts += (
-                        sorted(all_data["Heads"][all_data["Heads"]["Manufacturer"] == brand_val]["Model"].unique().tolist())
-                        if brand_val else ["Select Brand First"]
+                        sorted(
+                            all_data["Heads"][
+                                all_data["Heads"]["Manufacturer"] == brand_val
+                            ]["Model"]
+                            .unique()
+                            .tolist()
+                        )
+                        if brand_val
+                        else ["Select Brand First"]
                     )
 
             elif "Shafts" in qopts:
@@ -158,10 +188,25 @@ if not st.session_state.interview_complete:
                 if "Brand" in qtext:
                     opts += sorted(all_data["Shafts"]["Brand"].unique().tolist())
                 elif "Flex" in qtext:
-                    opts += sorted(all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"].unique().tolist()) if s_brand else ["Select Brand First"]
+                    opts += (
+                        sorted(
+                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
+                            .unique()
+                            .tolist()
+                        )
+                        if s_brand
+                        else ["Select Brand First"]
+                    )
                 elif "Model" in qtext:
                     if s_brand and s_flex:
-                        opts += sorted(all_data["Shafts"][(all_data["Shafts"]["Brand"] == s_brand) & (all_data["Shafts"]["Flex"] == s_flex)]["Model"].unique().tolist())
+                        opts += sorted(
+                            all_data["Shafts"][
+                                (all_data["Shafts"]["Brand"] == s_brand)
+                                & (all_data["Shafts"]["Flex"] == s_flex)
+                            ]["Model"]
+                            .unique()
+                            .tolist()
+                        )
                     else:
                         opts += ["Select Brand/Flex First"]
 
@@ -171,7 +216,10 @@ if not st.session_state.interview_complete:
                     opts += all_data["Config"][col].dropna().tolist()
 
             else:
-                opts += all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"].tolist()
+                opts += (
+                    all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"]
+                    .tolist()
+                )
 
             opts = list(dict.fromkeys([str(x) for x in opts if x]))
             st.selectbox(
@@ -183,9 +231,19 @@ if not st.session_state.interview_complete:
             )
 
         elif qtype == "Numeric":
-            st.number_input(qtext, value=float(ans_val) if ans_val else 0.0, key=f"widget_{qid}", on_change=sync_all)
+            st.number_input(
+                qtext,
+                value=float(ans_val) if ans_val else 0.0,
+                key=f"widget_{qid}",
+                on_change=sync_all,
+            )
         else:
-            st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_all)
+            st.text_input(
+                qtext,
+                value=str(ans_val),
+                key=f"widget_{qid}",
+                on_change=sync_all,
+            )
 
     c1, c2, _ = st.columns([1, 1, 4])
     if c1.button("⬅️ Back") and st.session_state.form_step > 0:
@@ -205,23 +263,11 @@ if not st.session_state.interview_complete:
             st.session_state.interview_complete = True
             st.rerun()
 
+# ------------------ Results / Dashboard ------------------
 else:
     ans = st.session_state.answers
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
     st.title(f"⛳ Results: {p_name}")
-
-    # --- Environment selector (Indoor vs Outdoor) ---
-if "fit_environment" not in st.session_state:
-    st.session_state.fit_environment = "Indoor"
-
-st.session_state.fit_environment = st.radio(
-    "Fitting Environment",
-    ["Indoor (Mat / Simulator)", "Outdoor (Turf / Range)"],
-    horizontal=True,
-)
-
-fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor"
-
 
     c_nav1, c_nav2, _ = st.columns([1, 1, 4])
     if c_nav1.button("✏️ Edit Fitting"):
@@ -235,34 +281,20 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
     st.divider()
     tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
-    # -------- Phase 1 Predictor --------
+    # -------- Phase 1 Predictor (Frozen) --------
     try:
         carry_6i = float(ans.get("Q15", 150))
     except Exception:
         carry_6i = 150.0
 
-    f_tf, ideal_w = (8.5, 130) if carry_6i >= 195 else (7.0, 125) if carry_6i >= 180 else (6.0, 110) if carry_6i >= 165 else (5.0, 95)
+    all_winners = predict_shaft_winners(all_data["Shafts"], carry_6i)
 
-    df_all = all_data["Shafts"].copy()
-    for col in ["FlexScore", "Weight (g)", "StabilityIndex", "LaunchScore", "EI_Mid"]:
-        df_all[col] = pd.to_numeric(df_all[col], errors="coerce").fillna(0)
-
-    def get_top_3(mode):
-        df_t = df_all.copy()
-        df_t["Penalty"] = abs(df_t["FlexScore"] - f_tf) * 200 + abs(df_t["Weight (g)"] - ideal_w) * 15
-        if carry_6i >= 180:
-            df_t.loc[df_t["FlexScore"] < 6.5, "Penalty"] += 4000
-        if mode == "Maximum Stability":
-            df_t["Penalty"] -= (df_t["StabilityIndex"] * 600)
-        elif mode == "Launch & Height":
-            df_t["Penalty"] -= (df_t["LaunchScore"] * 500)
-        elif mode == "Feel & Smoothness":
-            df_t["Penalty"] += (df_t["EI_Mid"] * 400)
-        return df_t.sort_values("Penalty").head(3)[["Brand", "Model", "Flex", "Weight (g)"]]
-
-    all_winners = {k: get_top_3(k) for k in ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]}
     desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
-    verdicts = {f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.") for k in all_winners}
+    verdicts = {
+        f"{k}: {all_winners[k].iloc[0]['Model']}":
+        desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
+        for k in all_winners
+    }
 
     # -------- Report Tab --------
     with tab_report:
@@ -286,7 +318,7 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
                 st.table(all_winners[cat])
                 st.markdown(f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
 
-        # ✅ Safe PDF sending (uses stored Phase-6 recs if available)
+        # PDF sending (uses stored Phase-6 recs if available)
         if not st.session_state.email_sent and p_email:
             with st.spinner("Dispatching PDF..."):
                 pdf_bytes = create_pdf_bytes(
@@ -304,7 +336,7 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
     with tab_lab:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
-        # ✅ NEW: Indoor/Outdoor toggle
+        # Single environment selector (default indoor)
         st.session_state.environment = st.radio(
             "Testing environment",
             ["Indoor (mat)", "Outdoor (turf)"],
@@ -313,11 +345,26 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
         )
 
         with st.expander("✅ Lab Controls (required before logging)", expanded=True):
-            st.session_state.lab_controls["length_matched"] = st.checkbox("Length matched (same playing length)", value=st.session_state.lab_controls["length_matched"])
-            st.session_state.lab_controls["swing_weight_matched"] = st.checkbox("Swing weight matched", value=st.session_state.lab_controls["swing_weight_matched"])
-            st.session_state.lab_controls["grip_matched"] = st.checkbox("Grip matched", value=st.session_state.lab_controls["grip_matched"])
-            st.session_state.lab_controls["same_head"] = st.checkbox("Same head used", value=st.session_state.lab_controls["same_head"])
-            st.session_state.lab_controls["same_ball"] = st.checkbox("Same ball used", value=st.session_state.lab_controls["same_ball"])
+            st.session_state.lab_controls["length_matched"] = st.checkbox(
+                "Length matched (same playing length)",
+                value=st.session_state.lab_controls["length_matched"],
+            )
+            st.session_state.lab_controls["swing_weight_matched"] = st.checkbox(
+                "Swing weight matched",
+                value=st.session_state.lab_controls["swing_weight_matched"],
+            )
+            st.session_state.lab_controls["grip_matched"] = st.checkbox(
+                "Grip matched",
+                value=st.session_state.lab_controls["grip_matched"],
+            )
+            st.session_state.lab_controls["same_head"] = st.checkbox(
+                "Same head used",
+                value=st.session_state.lab_controls["same_head"],
+            )
+            st.session_state.lab_controls["same_ball"] = st.checkbox(
+                "Same ball used",
+                value=st.session_state.lab_controls["same_ball"],
+            )
 
             if controls_complete():
                 st.success("Controls confirmed. Logged data will be marked as controlled.")
@@ -336,6 +383,7 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
             if st.button("➕ Add") and can_log:
                 stat = process_trackman_file(tm_file, selected_s)
                 if stat:
+                    stat["Shaft ID"] = selected_s
                     stat["Controlled"] = "Yes"
                     stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     st.session_state.tm_lab_data.append(stat)
@@ -360,7 +408,9 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
                     "Club Speed SD", "Ball Speed SD", "Smash Factor SD", "Carry SD", "Spin Rate SD",
                     "Face To Path SD", "Dynamic Lie SD",
                 ]
-                show_cols = [c for c in preferred_cols if c in lab_df.columns] + [c for c in lab_df.columns if c not in preferred_cols]
+                show_cols = [c for c in preferred_cols if c in lab_df.columns] + [
+                    c for c in lab_df.columns if c not in preferred_cols
+                ]
                 st.table(lab_df[show_cols])
 
                 baseline_row = None
@@ -383,7 +433,6 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
 
                     st.subheader("Phase 6 Optimization Suggestions")
 
-                    # ✅ UPDATED: pass environment into Phase 6 optimizer
                     recs = phase6_recommendations(
                         winner_row,
                         baseline_row=baseline_row,
@@ -391,10 +440,13 @@ fit_env = "Indoor" if "Indoor" in st.session_state.fit_environment else "Outdoor
                         environment=st.session_state.environment,
                     )
 
-                    st.session_state.phase6_recs = recs  # ✅ store for PDF use
+                    st.session_state.phase6_recs = recs  # store for PDF
 
                     for r in recs:
                         css = "rec-warn" if r["severity"] == "warn" else "rec-info"
-                        st.markdown(f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>", unsafe_allow_html=True)
+                        st.markdown(
+                            f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>",
+                            unsafe_allow_html=True,
+                        )
                 else:
                     st.info("Log at least 1 candidate shaft file (and ideally baseline) to select a winner + Phase 6 recommendations.")
