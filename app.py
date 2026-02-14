@@ -468,6 +468,26 @@ if st.button("➕ Add") and can_log:
                     winner_name = winner_row["Shaft ID"]
                     st.success(f"🏆 **Efficiency Winner:** {winner_name} (Smash {winner_row.get('Smash Factor','')})")
 
+# ---------- SD Threshold Warnings (from Config tab) ----------
+# These values come from the Config sheet (set earlier in app.py)
+try:
+    ftp_sd = float(winner_row.get("Face To Path SD", 0) or 0)
+    carry_sd = float(winner_row.get("Carry SD", 0) or 0)
+    smash_sd = float(winner_row.get("Smash Factor SD", 0) or 0)
+
+    if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
+        st.warning(f"⚠️ Face-to-Path variance is high (SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f}). Re-test or tighten strike controls.")
+
+    if carry_sd and carry_sd > WARN_CARRY_SD:
+        st.warning(f"⚠️ Carry variance is high (SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f}). Recommend more shots or better control.")
+
+    if smash_sd and smash_sd > WARN_SMASH_SD:
+        st.warning(f"⚠️ Smash variance is high (SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}). Contact is inconsistent—re-test.")
+except Exception:
+    # If any of the SD columns don't exist, don't break the app
+    pass
+
+                    
                     if "Face To Path SD" in cand.columns:
                         try:
                             most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
