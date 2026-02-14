@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import gspread
@@ -8,6 +9,7 @@ from utils import create_pdf_bytes, send_email_with_pdf
 from core.trackman import load_trackman, summarize_trackman
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
+
 
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
@@ -209,7 +211,11 @@ if not st.session_state.interview_complete:
                     opts += sorted(all_data["Shafts"]["Brand"].unique().tolist())
                 elif "Flex" in qtext:
                     opts += (
-                        sorted(all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"].unique().tolist())
+                        sorted(
+                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
+                            .unique()
+                            .tolist()
+                        )
                         if s_brand
                         else ["Select Brand First"]
                     )
