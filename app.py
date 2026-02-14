@@ -10,7 +10,6 @@ from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
 
-# ------------------ PAGE ------------------
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
 st.markdown(
@@ -47,34 +46,14 @@ def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
     """
     Reads a float from Config sheet using FIRST ROW values.
     Config tab layout: columns are keys; row 2 contains values (index 0 here).
-    Treats blank/None as missing -> returns default.
     """
     try:
         if key in cfg_df.columns and len(cfg_df) >= 1:
-            raw = cfg_df.iloc[0][key]
-            if raw is None:
-                return float(default)
-            s = str(raw).strip()
-            if s == "":
-                return float(default)
-            return float(s)
+            val = str(cfg_df.iloc[0][key]).strip()
+            return float(val)
     except Exception:
         pass
     return float(default)
-
-
-def cfg_text(cfg_df: pd.DataFrame, key: str, default: str = "") -> str:
-    """
-    Reads a string from Config sheet using FIRST ROW values.
-    """
-    try:
-        if key in cfg_df.columns and len(cfg_df) >= 1:
-            raw = cfg_df.iloc[0][key]
-            s = "" if raw is None else str(raw).strip()
-            return s if s else default
-    except Exception:
-        pass
-    return default
 
 
 @st.cache_data(ttl=600)
@@ -94,7 +73,10 @@ def get_data_from_gsheet():
             rows = sh.worksheet(ws_name).get_all_values()
             df = pd.DataFrame(
                 rows[1:],
-                columns=[h.strip() if h.strip() else f"Col_{i}" for i, h in enumerate(rows[0])],
+                columns=[
+                    h.strip() if h.strip() else f"Col_{i}"
+                    for i, h in enumerate(rows[0])
+                ],
             )
             return df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
@@ -102,7 +84,6 @@ def get_data_from_gsheet():
             k: get_clean_df(k)
             for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
         }
-
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -131,20 +112,20 @@ def save_to_fittings(answers):
 # ------------------ TrackMan ------------------
 def process_trackman_file(uploaded_file, shaft_id):
     """
-    Returns a stats dict or None.
+    Returns (stat_dict, debug_dict)
     """
+    debug = {}
     try:
-        raw = load_trackman(uploaded_file)
-        stat = summarize_trackman(raw, shaft_id, include_std=True)
+        raw_df = load_trackman(uploaded_file)
+        debug["rows_after_cleanup"] = int(len(raw_df))
+        debug["columns"] = [str(c) for c in raw_df.columns][:120]
+        debug["head_preview"] = raw_df.head(10)
 
-        # Require at least one primary metric (otherwise it's not a usable parse)
-        required_any = ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
-        if not any(k in stat for k in required_any):
-            return None
-
-        return stat
-    except Exception:
-        return None
+        stat = summarize_trackman(raw_df, shaft_id, include_std=True)
+        return stat, debug
+    except Exception as e:
+        debug["error"] = str(e)
+        return None, debug
 
 
 # ------------------ Session ------------------
@@ -191,24 +172,9 @@ if not all_data:
 
 cfg = all_data["Config"]
 
-# Title/Description from Config (optional). Add columns in Config if you want:
-# APP_TITLE, APP_DESCRIPTION
-APP_TITLE = cfg_text(cfg, "APP_TITLE", "Trackman Lab (Controlled Testing)")
-APP_DESCRIPTION = cfg_text(
-    cfg,
-    "APP_DESCRIPTION",
-    "Upload TrackMan exports (CSV/XLSX; PDF best-effort). Enforces minimum shots and stability thresholds before declaring a winner.",
-)
-
-# Thresholds from Config (fallback defaults)
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.15)
-
-# MIN_SHOTS from Config
-MIN_SHOTS = int(cfg_float(cfg, "MIN_SHOTS", 5))
-if MIN_SHOTS < 1:
-    MIN_SHOTS = 5  # safety guard
 
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
@@ -319,7 +285,6 @@ if not st.session_state.interview_complete:
         if c2.button("🔥 Calculate"):
             sync_all()
 
-            # Sync environment from Q22 if present
             if st.session_state.answers.get("Q22"):
                 st.session_state.environment = st.session_state.answers["Q22"]
 
@@ -359,8 +324,7 @@ else:
 
     desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
     verdicts = {
-        f"{k}: {all_winners[k].iloc[0]['Model']}":
-        desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
+        f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
         for k in all_winners
     }
 
@@ -407,11 +371,10 @@ else:
 
     # -------- TrackMan Lab Tab --------
     with tab_lab:
-        st.title(APP_TITLE)
-        st.caption(APP_DESCRIPTION)
+        st.header("🧪 Trackman Lab (Controlled Testing)")
 
         st.caption(
-            f"Quality rules: MIN_SHOTS={MIN_SHOTS} | "
+            f"Quality rules: "
             f"WARN_FACE_TO_PATH_SD={WARN_FACE_TO_PATH_SD} | "
             f"WARN_CARRY_SD={WARN_CARRY_SD} | "
             f"WARN_SMASH_SD={WARN_SMASH_SD}"
@@ -462,30 +425,31 @@ else:
             tm_file = st.file_uploader(
                 "Upload Trackman CSV / Excel / PDF",
                 type=["csv", "xlsx", "pdf"],
-                help="CSV/XLSX recommended. PDF is best-effort and may not parse depending on how TrackMan generated it.",
             )
 
             can_log = tm_file is not None and controls_complete()
 
             if st.button("➕ Add") and can_log:
-                stat = process_trackman_file(tm_file, selected_s)
+                stat, dbg = process_trackman_file(tm_file, selected_s)
 
                 if not stat:
                     st.error("Could not parse TrackMan file. If PDF, export CSV/XLSX from TrackMan for best results.")
+                    with st.expander("Debug details (what the parser saw)"):
+                        if "error" in dbg:
+                            st.write("**Error:**", dbg["error"])
+                        st.write("**Rows after cleanup:**", dbg.get("rows_after_cleanup"))
+                        st.write("**Columns (first 120):**")
+                        st.write(dbg.get("columns", []))
+                        if "head_preview" in dbg and isinstance(dbg["head_preview"], pd.DataFrame):
+                            st.write("**Preview:**")
+                            st.dataframe(dbg["head_preview"])
                 else:
-                    shot_count = int(float(stat.get("Shot Count", 0) or 0))
-                    if shot_count < MIN_SHOTS:
-                        st.error(
-                            f"Not enough shots to log: {shot_count} found. "
-                            f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots (Use In Stat = TRUE)."
-                        )
-                    else:
-                        stat["Shaft ID"] = selected_s
-                        stat["Controlled"] = "Yes"
-                        stat["Environment"] = st.session_state.environment
-                        stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        st.session_state.tm_lab_data.append(stat)
-                        st.rerun()
+                    stat["Shaft ID"] = selected_s
+                    stat["Controlled"] = "Yes"
+                    stat["Environment"] = st.session_state.environment
+                    stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    st.session_state.tm_lab_data.append(stat)
+                    st.rerun()
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
@@ -509,34 +473,14 @@ else:
                 ]
                 st.table(lab_df[show_cols])
 
-                # Baseline must meet min shots
                 baseline_row = None
                 if (lab_df["Shaft ID"] == "Current Baseline").any():
-                    try:
-                        baseline_candidate = lab_df[lab_df["Shaft ID"] == "Current Baseline"].iloc[-1]
-                        b_shots = int(float(baseline_candidate.get("Shot Count", 0) or 0))
-                        if b_shots >= MIN_SHOTS:
-                            baseline_row = baseline_candidate
-                        else:
-                            st.info(
-                                f"Baseline loaded but below MIN_SHOTS ({b_shots} < {MIN_SHOTS}). "
-                                "Phase 6 deltas will be skipped until baseline is re-tested."
-                            )
-                    except Exception:
-                        baseline_row = None
+                    baseline_row = lab_df[lab_df["Shaft ID"] == "Current Baseline"].iloc[-1]
 
-                # Candidates must meet min shots
                 cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
-                if "Shot Count" in cand.columns:
-                    def _shots_ok(x):
-                        try:
-                            return int(float(x or 0)) >= MIN_SHOTS
-                        except Exception:
-                            return False
-                    cand = cand[cand["Shot Count"].apply(_shots_ok)]
 
                 if len(cand) < 1:
-                    st.warning(f"Add at least 1 candidate shaft test with Shot Count ≥ {MIN_SHOTS}.")
+                    st.warning("Add at least 1 candidate shaft test to select a winner.")
                 elif "Smash Factor" not in cand.columns:
                     st.warning("Smash Factor missing from TrackMan export — cannot pick a winner.")
                 else:
@@ -544,7 +488,6 @@ else:
                     winner_row = cand.loc[top_idx]
                     winner_name = winner_row.get("Shaft ID", "Winner")
 
-                    # ---------- SD Threshold Gating ----------
                     def _f(row, k):
                         try:
                             return float(row.get(k, 0) or 0)
@@ -564,40 +507,35 @@ else:
                         issues.append(f"Smash SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f}")
 
                     if issues:
-                        st.warning("⚠️ Data quality is not good enough to declare a winner yet.")
-                        st.write("**Re-test recommended:**")
+                        st.warning("⚠️ Data quality flags found (still showing winner, but re-test is recommended).")
                         for it in issues:
                             st.write(f"- {it}")
-                        st.info(
-                            "Tip: tighten controls (same target/ball/head, remove obvious mishits using Use In Stat, "
-                            "and collect more shots)."
+
+                    st.success(
+                        f"🏆 **Efficiency Winner:** {winner_name} "
+                        f"(Smash {winner_row.get('Smash Factor','')})"
+                    )
+
+                    if "Face To Path SD" in cand.columns:
+                        try:
+                            most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
+                            st.info(f"🛡️ **Most Stable (Face-to-Path SD):** {most_stable}")
+                        except Exception:
+                            pass
+
+                    st.subheader("Phase 6 Optimization Suggestions")
+
+                    recs = phase6_recommendations(
+                        winner_row,
+                        baseline_row=baseline_row,
+                        club="6i",
+                        environment=st.session_state.environment,
+                    )
+                    st.session_state.phase6_recs = recs
+
+                    for r in recs:
+                        css = "rec-warn" if r["severity"] == "warn" else "rec-info"
+                        st.markdown(
+                            f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>",
+                            unsafe_allow_html=True,
                         )
-                    else:
-                        st.success(
-                            f"🏆 **Efficiency Winner:** {winner_name} "
-                            f"(Smash {winner_row.get('Smash Factor','')})"
-                        )
-
-                        if "Face To Path SD" in cand.columns:
-                            try:
-                                most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
-                                st.info(f"🛡️ **Most Stable (Face-to-Path SD):** {most_stable}")
-                            except Exception:
-                                pass
-
-                        st.subheader("Phase 6 Optimization Suggestions")
-
-                        recs = phase6_recommendations(
-                            winner_row,
-                            baseline_row=baseline_row,
-                            club="6i",
-                            environment=st.session_state.environment,
-                        )
-                        st.session_state.phase6_recs = recs
-
-                        for r in recs:
-                            css = "rec-warn" if r["severity"] == "warn" else "rec-info"
-                            st.markdown(
-                                f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>",
-                                unsafe_allow_html=True,
-                            )
