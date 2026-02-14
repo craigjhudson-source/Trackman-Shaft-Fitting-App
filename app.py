@@ -396,18 +396,28 @@ else:
 
             tm_file = st.file_uploader("Upload Trackman CSV/Excel", type=["csv", "xlsx"])
 
-            can_log = tm_file is not None and controls_complete()
-            if st.button("➕ Add") and can_log:
-                stat = process_trackman_file(tm_file, selected_s)
-                if stat:
-                    stat["Shaft ID"] = selected_s
-                    stat["Controlled"] = "Yes"
-                    stat["Environment"] = st.session_state.environment
-                    stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    st.session_state.tm_lab_data.append(stat)
-                    st.rerun()
-                else:
-                    st.error("Could not parse TrackMan file. (Export format may be unexpected.)")
+            MIN_SHOTS = 5
+
+can_log = tm_file is not None and controls_complete()
+if st.button("➕ Add") and can_log:
+    stat = process_trackman_file(tm_file, selected_s)
+    if not stat:
+        st.error("Could not parse TrackMan file. (Export format may be unexpected.)")
+    else:
+        shot_count = int(stat.get("Shot Count", 0) or 0)
+
+        if shot_count < MIN_SHOTS:
+            st.error(
+                f"Not enough shots to log: {shot_count} found. "
+                f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots (Use In Stat = TRUE)."
+            )
+        else:
+            stat["Shaft ID"] = selected_s
+            stat["Controlled"] = "Yes"
+            stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.tm_lab_data.append(stat)
+            st.rerun()
+
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
