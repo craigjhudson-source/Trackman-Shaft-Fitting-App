@@ -3,5 +3,5 @@ pandas
 gspread
 google-auth
 fpdf2
-altair<5
 openpyxl
+altair<5
