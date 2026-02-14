@@ -253,11 +253,12 @@ if all_data:
                     st.markdown(f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
 
             if not st.session_state.email_sent and p_email:
-                with st.spinner("Dispatching PDF..."):
-                    pdf_bytes = create_pdf_bytes(p_name, all_winners, ans, verdicts)
-                    if send_email_with_pdf(p_email, p_name, pdf_bytes) is True:
-                        st.success(f"📬 Sent to {p_email}!")
-                        st.session_state.email_sent = True
+    with st.spinner("Dispatching PDF..."):
+        pdf_bytes = create_pdf_bytes(p_name, all_winners, ans, verdicts, phase6_recs=recs)
+        if send_email_with_pdf(p_email, p_name, pdf_bytes) is True:
+            st.success(f"📬 Sent to {p_email}!")
+            st.session_state.email_sent = True
+
 
         with tab_lab:
             st.header("🧪 Trackman Lab (Controlled Testing)")
