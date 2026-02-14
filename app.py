@@ -1,4 +1,3 @@
-import io
 import streamlit as st
 import pandas as pd
 import gspread
@@ -10,6 +9,8 @@ from core.trackman import load_trackman, summarize_trackman
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
+
+# ------------------ PAGE ------------------
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
 st.markdown(
@@ -25,6 +26,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
 
 # ------------------ DB ------------------
 def get_google_creds(scopes):
@@ -45,14 +47,34 @@ def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
     """
     Reads a float from Config sheet using FIRST ROW values.
     Config tab layout: columns are keys; row 2 contains values (index 0 here).
+    Treats blank/None as missing -> returns default.
     """
     try:
         if key in cfg_df.columns and len(cfg_df) >= 1:
-            val = str(cfg_df.iloc[0][key]).strip()
-            return float(val)
+            raw = cfg_df.iloc[0][key]
+            if raw is None:
+                return float(default)
+            s = str(raw).strip()
+            if s == "":
+                return float(default)
+            return float(s)
     except Exception:
         pass
     return float(default)
+
+
+def cfg_text(cfg_df: pd.DataFrame, key: str, default: str = "") -> str:
+    """
+    Reads a string from Config sheet using FIRST ROW values.
+    """
+    try:
+        if key in cfg_df.columns and len(cfg_df) >= 1:
+            raw = cfg_df.iloc[0][key]
+            s = "" if raw is None else str(raw).strip()
+            return s if s else default
+    except Exception:
+        pass
+    return default
 
 
 @st.cache_data(ttl=600)
@@ -72,10 +94,7 @@ def get_data_from_gsheet():
             rows = sh.worksheet(ws_name).get_all_values()
             df = pd.DataFrame(
                 rows[1:],
-                columns=[
-                    h.strip() if h.strip() else f"Col_{i}"
-                    for i, h in enumerate(rows[0])
-                ],
+                columns=[h.strip() if h.strip() else f"Col_{i}" for i, h in enumerate(rows[0])],
             )
             return df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
@@ -83,6 +102,7 @@ def get_data_from_gsheet():
             k: get_clean_df(k)
             for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
         }
+
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -108,72 +128,21 @@ def save_to_fittings(answers):
         st.error(f"Error saving: {e}")
 
 
-# ------------------ TrackMan PDF support (best-effort) ------------------
-def load_trackman_pdf(uploaded_file) -> pd.DataFrame | None:
-    """
-    Best-effort TrackMan PDF table extraction using pdfplumber.
-    If the PDF is not a real table (image-based), this will likely fail.
-    CSV/XLSX is always preferred.
-    """
-    try:
-        import pdfplumber
-    except Exception:
-        st.error("PDF support requires `pdfplumber`. Add to requirements.txt: pdfplumber")
-        return None
-
-    try:
-        pdf_bytes = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
-        rows_all = []
-
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables() or []
-                for t in tables:
-                    if not t or len(t) < 2:
-                        continue
-                    rows_all.extend(t)
-
-        if not rows_all or len(rows_all) < 2:
-            return None
-
-        def row_score(r):
-            s = " ".join([str(x or "").lower() for x in r])
-            score = 0
-            for k in ["club speed", "ball speed", "smash", "spin", "carry"]:
-                if k in s:
-                    score += 1
-            return score
-
-        best_idx = max(range(len(rows_all)), key=lambda i: row_score(rows_all[i]))
-        header = [str(x or "").strip() for x in rows_all[best_idx]]
-        data = rows_all[best_idx + 1 :]
-
-        df = pd.DataFrame(data, columns=header)
-        df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
-        return df.reset_index(drop=True)
-
-    except Exception:
-        return None
-
-
+# ------------------ TrackMan ------------------
 def process_trackman_file(uploaded_file, shaft_id):
     """
-    Supports csv/xlsx via core.trackman.load_trackman, and pdf via pdfplumber (best-effort).
-    Returns summary dict (from summarize_trackman) or None.
+    Returns a stats dict or None.
     """
     try:
-        name = getattr(uploaded_file, "name", "") or ""
-        ext = name.lower().split(".")[-1] if "." in name else ""
-
-        if ext == "pdf":
-            df = load_trackman_pdf(uploaded_file)
-            if df is None or df.empty:
-                return None
-            return summarize_trackman(df, shaft_id, include_std=True)
-
         raw = load_trackman(uploaded_file)
-        return summarize_trackman(raw, shaft_id, include_std=True)
+        stat = summarize_trackman(raw, shaft_id, include_std=True)
 
+        # Require at least one primary metric (otherwise it's not a usable parse)
+        required_any = ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
+        if not any(k in stat for k in required_any):
+            return None
+
+        return stat
     except Exception:
         return None
 
@@ -222,10 +191,24 @@ if not all_data:
 
 cfg = all_data["Config"]
 
+# Title/Description from Config (optional). Add columns in Config if you want:
+# APP_TITLE, APP_DESCRIPTION
+APP_TITLE = cfg_text(cfg, "APP_TITLE", "Trackman Lab (Controlled Testing)")
+APP_DESCRIPTION = cfg_text(
+    cfg,
+    "APP_DESCRIPTION",
+    "Upload TrackMan exports (CSV/XLSX; PDF best-effort). Enforces minimum shots and stability thresholds before declaring a winner.",
+)
+
+# Thresholds from Config (fallback defaults)
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.15)
+
+# MIN_SHOTS from Config
 MIN_SHOTS = int(cfg_float(cfg, "MIN_SHOTS", 5))
+if MIN_SHOTS < 1:
+    MIN_SHOTS = 5  # safety guard
 
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
@@ -233,8 +216,7 @@ categories = list(dict.fromkeys(q_master["Category"].tolist()))
 
 # ------------------ Interview ------------------
 if not st.session_state.interview_complete:
-    st.title("⛳ Tour Proven Shaft Fitting Interview")
-
+    st.title("⛳ Tour Proven Fitting Interview")
     current_cat = categories[st.session_state.form_step]
     q_df = q_master[q_master["Category"] == current_cat]
 
@@ -337,6 +319,7 @@ if not st.session_state.interview_complete:
         if c2.button("🔥 Calculate"):
             sync_all()
 
+            # Sync environment from Q22 if present
             if st.session_state.answers.get("Q22"):
                 st.session_state.environment = st.session_state.answers["Q22"]
 
@@ -424,7 +407,8 @@ else:
 
     # -------- TrackMan Lab Tab --------
     with tab_lab:
-        st.header("🧪 Trackman Lab (Controlled Testing)")
+        st.title(APP_TITLE)
+        st.caption(APP_DESCRIPTION)
 
         st.caption(
             f"Quality rules: MIN_SHOTS={MIN_SHOTS} | "
@@ -478,6 +462,7 @@ else:
             tm_file = st.file_uploader(
                 "Upload Trackman CSV / Excel / PDF",
                 type=["csv", "xlsx", "pdf"],
+                help="CSV/XLSX recommended. PDF is best-effort and may not parse depending on how TrackMan generated it.",
             )
 
             can_log = tm_file is not None and controls_complete()
@@ -488,30 +473,19 @@ else:
                 if not stat:
                     st.error("Could not parse TrackMan file. If PDF, export CSV/XLSX from TrackMan for best results.")
                 else:
-                    parse_ok = str(stat.get("Parse OK", "")).strip().lower() == "yes"
-                    if not parse_ok:
-                        st.error("TrackMan file loaded, but required metrics were NOT detected.")
-                        missing = stat.get("Missing Metrics", "")
-                        cols = stat.get("Detected Columns", "")
-                        if missing:
-                            st.write(f"**Missing Metrics:** {missing}")
-                        if cols:
-                            st.write("**Detected Columns (first 40):**")
-                            st.code(cols)
+                    shot_count = int(float(stat.get("Shot Count", 0) or 0))
+                    if shot_count < MIN_SHOTS:
+                        st.error(
+                            f"Not enough shots to log: {shot_count} found. "
+                            f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots (Use In Stat = TRUE)."
+                        )
                     else:
-                        shot_count = int(float(stat.get("Shot Count", 0) or 0))
-                        if shot_count < MIN_SHOTS:
-                            st.error(
-                                f"Not enough shots to log: {shot_count} found. "
-                                f"Minimum is {MIN_SHOTS}. Export at least {MIN_SHOTS} valid shots (Use In Stat = TRUE)."
-                            )
-                        else:
-                            stat["Shaft ID"] = selected_s
-                            stat["Controlled"] = "Yes"
-                            stat["Environment"] = st.session_state.environment
-                            stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            st.session_state.tm_lab_data.append(stat)
-                            st.rerun()
+                        stat["Shaft ID"] = selected_s
+                        stat["Controlled"] = "Yes"
+                        stat["Environment"] = st.session_state.environment
+                        stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        st.session_state.tm_lab_data.append(stat)
+                        st.rerun()
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
@@ -535,6 +509,7 @@ else:
                 ]
                 st.table(lab_df[show_cols])
 
+                # Baseline must meet min shots
                 baseline_row = None
                 if (lab_df["Shaft ID"] == "Current Baseline").any():
                     try:
@@ -550,6 +525,7 @@ else:
                     except Exception:
                         baseline_row = None
 
+                # Candidates must meet min shots
                 cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
                 if "Shot Count" in cand.columns:
                     def _shots_ok(x):
@@ -568,6 +544,7 @@ else:
                     winner_row = cand.loc[top_idx]
                     winner_name = winner_row.get("Shaft ID", "Winner")
 
+                    # ---------- SD Threshold Gating ----------
                     def _f(row, k):
                         try:
                             return float(row.get(k, 0) or 0)
