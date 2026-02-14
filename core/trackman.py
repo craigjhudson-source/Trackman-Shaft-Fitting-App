@@ -136,22 +136,26 @@ def _filter_use_in_stat(df: pd.DataFrame) -> pd.DataFrame:
 def load_trackman(uploaded_file) -> pd.DataFrame:
     name = getattr(uploaded_file, "name", "") or ""
 
-    try:
-        if name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded_file, header=None)
-        else:
-            df = pd.read_excel(uploaded_file, header=None)
-    except Exception:
-        # second attempt
-        if name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
+    if name.lower().endswith(".csv"):
+        # detect TrackMan sep= header
+        df = pd.read_csv(uploaded_file, header=None)
+
+        # If first cell contains "sep=", skip first row
+        if str(df.iloc[0, 0]).lower().startswith("sep="):
+            df = df.iloc[1:].reset_index(drop=True)
+
+        # now reload using row 0 as header
+        df.columns = df.iloc[0]
+        df = df.iloc[1:].reset_index(drop=True)
+
+    else:
+        df = pd.read_excel(uploaded_file)
 
     df = _maybe_cleanup_trackman_export(df)
     df = _filter_use_in_stat(df)
 
     return df
+
 
 
 
