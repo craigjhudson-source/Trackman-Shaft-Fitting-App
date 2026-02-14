@@ -5,3 +5,4 @@ google-auth
 fpdf2
 openpyxl
 altair<5
+pdfplumber
