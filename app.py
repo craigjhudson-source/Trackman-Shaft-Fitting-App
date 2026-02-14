@@ -8,6 +8,8 @@ from utils import create_pdf_bytes, send_email_with_pdf
 
 from core.trackman import load_trackman, summarize_trackman
 from core.phase6_optimizer import phase6_recommendations
+from core.shaft_predictor import predict_shaft_winners
+
 
 
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
