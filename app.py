@@ -94,6 +94,10 @@ if "tm_lab_data" not in st.session_state:
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
 
+# ✅ NEW: environment default
+if "environment" not in st.session_state:
+    st.session_state.environment = "Indoor (mat)"
+
 if "lab_controls" not in st.session_state:
     st.session_state.lab_controls = {
         "length_matched": False,
@@ -285,6 +289,14 @@ else:
     with tab_lab:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
+        # ✅ NEW: Indoor/Outdoor toggle
+        st.session_state.environment = st.radio(
+            "Testing environment",
+            ["Indoor (mat)", "Outdoor (turf)"],
+            horizontal=True,
+            index=0 if st.session_state.environment == "Indoor (mat)" else 1,
+        )
+
         with st.expander("✅ Lab Controls (required before logging)", expanded=True):
             st.session_state.lab_controls["length_matched"] = st.checkbox("Length matched (same playing length)", value=st.session_state.lab_controls["length_matched"])
             st.session_state.lab_controls["swing_weight_matched"] = st.checkbox("Swing weight matched", value=st.session_state.lab_controls["swing_weight_matched"])
@@ -355,7 +367,15 @@ else:
                             pass
 
                     st.subheader("Phase 6 Optimization Suggestions")
-                    recs = phase6_recommendations(winner_row, baseline_row=baseline_row, club="6i")
+
+                    # ✅ UPDATED: pass environment into Phase 6 optimizer
+                    recs = phase6_recommendations(
+                        winner_row,
+                        baseline_row=baseline_row,
+                        club="6i",
+                        environment=st.session_state.environment,
+                    )
+
                     st.session_state.phase6_recs = recs  # ✅ store for PDF use
 
                     for r in recs:
