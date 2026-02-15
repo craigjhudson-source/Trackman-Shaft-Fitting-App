@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 
 import pandas as pd
 
@@ -90,11 +90,9 @@ def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
       - header row living in row 0 or row 1
       - units row ("mph", "rpm", "deg") that breaks numeric parsing
     """
-
     if df is None or df.empty:
         return df
 
-    # If the headers look like 0..N, it's probably missing proper headers.
     headers_are_default = all(str(c).strip().isdigit() for c in df.columns)
 
     def row_contains_keywords(row_idx: int) -> bool:
@@ -122,7 +120,6 @@ def _maybe_cleanup_trackman_export(df: pd.DataFrame) -> pd.DataFrame:
             df2 = df2.iloc[2:].reset_index(drop=True)
             df = df2
 
-    # Remove rows that are clearly units rows (deg, mph, rpm) across many columns
     def is_units_row(row: pd.Series) -> bool:
         vals = row.astype(str).str.lower()
         unit_hits = vals.str.contains(r"\b(mph|rpm|deg|°|m/s|yd|yards)\b", regex=True, na=False).sum()
@@ -156,7 +153,6 @@ def _filter_use_in_stat(df: pd.DataFrame) -> pd.DataFrame:
     if keep.any():
         return df.loc[keep].reset_index(drop=True)
 
-    # If nothing matched, do not filter (safer than dropping everything)
     return df
 
 
@@ -187,7 +183,6 @@ def summarize_trackman(
 ) -> Dict[str, float | str]:
     out: Dict[str, float | str] = {"Shaft ID": shaft_tag}
 
-    # Always include shot count (after filtering)
     out["Shot Count"] = int(len(df)) if df is not None else 0
 
     def add_metric(label: str, canon_key: str) -> None:
@@ -242,7 +237,9 @@ def debug_trackman(uploaded_file) -> Dict[str, Any]:
     try:
         df = load_trackman(uploaded_file)
         cols = [str(c) for c in df.columns]
+
         preview = df.head(12).copy()
+        # Extra-safe: ensure no dupes for arrow conversion
         preview = _dedupe_columns(preview)
 
         return {
