@@ -1,8 +1,8 @@
-import streamlit as st
+import datetime
 import pandas as pd
+import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
-import datetime
 
 from utils import create_pdf_bytes, send_email_with_pdf
 from core.trackman import load_trackman, summarize_trackman, debug_trackman
@@ -112,8 +112,9 @@ def save_to_fittings(answers):
 # ------------------ TrackMan ------------------
 def process_trackman_file(uploaded_file, shaft_id):
     """
-    CSV/XLSX supported.
-    PDF: we accept upload but we do not parse PDF in code (TrackMan PDFs are not reliable to parse).
+    Returns:
+      - stat dict on success (even if Shot Count is small)
+      - None on parse failure or unsupported file
     """
     try:
         name = getattr(uploaded_file, "name", "") or ""
@@ -121,7 +122,16 @@ def process_trackman_file(uploaded_file, shaft_id):
             return None
 
         raw = load_trackman(uploaded_file)
-        return summarize_trackman(raw, shaft_id, include_std=True)
+        stat = summarize_trackman(raw, shaft_id, include_std=True)
+
+        # Require at least one key metric so we know parsing worked
+        required_any = any(
+            k in stat for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
+        )
+        if not required_any:
+            return None
+
+        return stat
     except Exception:
         return None
 
@@ -170,12 +180,9 @@ if not all_data:
 
 cfg = all_data["Config"]
 
-WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 3.0)
+WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 2.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.15)
-
-# We still READ MIN_SHOTS if you want it displayed, but we do NOT enforce it.
-MIN_SHOTS = int(cfg_float(cfg, "MIN_SHOTS", 5))
 
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
@@ -286,6 +293,7 @@ if not st.session_state.interview_complete:
         if c2.button("🔥 Calculate"):
             sync_all()
 
+            # Sync environment from Q22 if present
             if st.session_state.answers.get("Q22"):
                 st.session_state.environment = st.session_state.answers["Q22"]
 
@@ -376,7 +384,7 @@ else:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
         st.caption(
-            f"Quality rules (not enforced): MIN_SHOTS={MIN_SHOTS} | "
+            f"Quality signals (not enforced): "
             f"WARN_FACE_TO_PATH_SD={WARN_FACE_TO_PATH_SD} | "
             f"WARN_CARRY_SD={WARN_CARRY_SD} | "
             f"WARN_SMASH_SD={WARN_SMASH_SD}"
@@ -425,9 +433,8 @@ else:
             selected_s = st.selectbox("Assign Data to:", test_list)
 
             tm_file = st.file_uploader(
-                "Upload Trackman CSV / Excel / PDF",
+                "Upload Trackman CSV/Excel/PDF",
                 type=["csv", "xlsx", "pdf"],
-                help="CSV/XLSX are parsed. PDF uploads are accepted but not reliably parseable; export CSV/XLSX from TrackMan for best results.",
             )
 
             can_log = tm_file is not None and controls_complete()
@@ -435,11 +442,29 @@ else:
             if st.button("➕ Add") and can_log:
                 name = getattr(tm_file, "name", "") or ""
                 if name.lower().endswith(".pdf"):
-                    st.error("PDF parsing is not supported yet. Please export CSV/XLSX from TrackMan.")
+                    st.warning(
+                        "PDF uploads are accepted, but **not parsed**. "
+                        "Please export TrackMan as **CSV or XLSX** for analysis."
+                    )
                 else:
                     stat = process_trackman_file(tm_file, selected_s)
+
                     if not stat:
-                        st.error("Could not parse TrackMan file. Open Debug below to see the raw columns.")
+                        st.error("Could not parse TrackMan file (no required metrics found). Showing debug below.")
+                        with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
+                            dbg = debug_trackman(tm_file)
+                            if not dbg.get("ok"):
+                                st.error(f"Debug failed: {dbg.get('error')}")
+                            else:
+                                st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
+                                st.write("Detected columns (first 200):")
+                                st.code("\n".join(dbg.get("columns", [])))
+                                # Make preview Arrow-safe: stringify columns
+                                prev = dbg.get("head_preview")
+                                if isinstance(prev, pd.DataFrame):
+                                    prev = prev.copy()
+                                    prev.columns = [str(c) for c in prev.columns]
+                                    st.dataframe(prev)
                     else:
                         stat["Shaft ID"] = selected_s
                         stat["Controlled"] = "Yes"
@@ -447,30 +472,6 @@ else:
                         stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         st.session_state.tm_lab_data.append(stat)
                         st.rerun()
-
-            if tm_file is not None:
-                with st.expander("Debug (what the parser saw)", expanded=False):
-                    dbg = debug_trackman(tm_file) if not (getattr(tm_file, "name", "").lower().endswith(".pdf")) else {"ok": False, "error": "PDF not parsed."}
-                    if not dbg.get("ok", False):
-                        st.write("**Error:**", dbg.get("error", "Unknown"))
-                    st.write("**Rows after cleanup:**", dbg.get("rows_after_cleanup"))
-                    st.write("**Columns (first 200):**")
-                    st.write(dbg.get("columns", []))
-                    hp = dbg.get("head_preview")
-                    if isinstance(hp, pd.DataFrame):
-                        # Avoid Streamlit/PyArrow crash on duplicate names (already deduped, but extra-safe)
-                        safe = hp.copy()
-                        seen = {}
-                        new_cols = []
-                        for c in safe.columns.astype(str):
-                            if c in seen:
-                                seen[c] += 1
-                                new_cols.append(f"{c}__{seen[c]}")
-                            else:
-                                seen[c] = 0
-                                new_cols.append(c)
-                        safe.columns = new_cols
-                        st.dataframe(safe)
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
@@ -500,11 +501,40 @@ else:
 
                 cand = lab_df[lab_df["Shaft ID"] != "Current Baseline"].copy()
 
-                if len(cand) >= 1 and "Smash Factor" in cand.columns:
+                if len(cand) < 1:
+                    st.warning("Add at least 1 candidate shaft test to select a winner.")
+                elif "Smash Factor" not in cand.columns:
+                    st.warning("Smash Factor missing from TrackMan export — cannot pick a winner.")
+                else:
                     top_idx = cand["Smash Factor"].astype(float).idxmax()
                     winner_row = cand.loc[top_idx]
                     winner_name = winner_row.get("Shaft ID", "Winner")
-                    st.success(f"🏆 **Efficiency Winner:** {winner_name} (Smash {winner_row.get('Smash Factor','')})")
+
+                    st.success(
+                        f"🏆 **Efficiency Winner:** {winner_name} "
+                        f"(Smash {winner_row.get('Smash Factor','')})"
+                    )
+
+                    # Non-enforced quality warnings
+                    try:
+                        ftp_sd = float(winner_row.get("Face To Path SD", 0) or 0)
+                        carry_sd = float(winner_row.get("Carry SD", 0) or 0)
+                        smash_sd = float(winner_row.get("Smash Factor SD", 0) or 0)
+
+                        if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
+                            st.warning(
+                                f"⚠️ Face-to-Path variance is high (SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f})."
+                            )
+                        if carry_sd and carry_sd > WARN_CARRY_SD:
+                            st.warning(
+                                f"⚠️ Carry variance is high (SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f})."
+                            )
+                        if smash_sd and smash_sd > WARN_SMASH_SD:
+                            st.warning(
+                                f"⚠️ Smash variance is high (SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f})."
+                            )
+                    except Exception:
+                        pass
 
                     if "Face To Path SD" in cand.columns:
                         try:
@@ -524,10 +554,8 @@ else:
                     st.session_state.phase6_recs = recs
 
                     for r in recs:
-                        css = "rec-warn" if r["severity"] == "warn" else "rec-info"
+                        css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
                         st.markdown(
-                            f"<div class='{css}'><b>{r['type']}:</b> {r['text']}</div>",
+                            f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
                             unsafe_allow_html=True,
                         )
-                else:
-                    st.info("Log at least 1 candidate shaft file (and ideally baseline) to select a winner + Phase 6 recommendations.")
