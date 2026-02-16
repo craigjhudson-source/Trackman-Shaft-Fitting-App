@@ -467,15 +467,16 @@ else:
 
             can_log = tm_file is not None and controls_complete()
 
-            if st.button("➕ Add") and can_log:
+                       if st.button("➕ Add") and can_log:
                 name = getattr(tm_file, "name", "") or ""
+
                 if name.lower().endswith(".pdf"):
                     st.warning(
                         "PDF uploads are accepted, but **not parsed**. "
                         "Please export TrackMan as **CSV or XLSX** for analysis."
                     )
                 else:
-                                        raw, stat = process_trackman_file(tm_file, selected_s)
+                    raw, stat = process_trackman_file(tm_file, selected_s)
 
                     if not stat:
                         st.error("Could not parse TrackMan file (no required metrics found). Showing debug below.")
@@ -499,6 +500,7 @@ else:
                         stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         st.session_state.tm_lab_data.append(stat)
                         st.rerun()
+
 
 
             if tm_file is not None and not controls_complete():
