@@ -4,7 +4,6 @@ import streamlit as st
 KEY_COLS = [
     "TMD No",
     "Club",
-    "ShaftTag",
     "Club Speed [mph]",
     "Ball Speed [mph]",
     "Smash Factor []",
@@ -12,9 +11,11 @@ KEY_COLS = [
     "Spin Rate [rpm]",
     "Carry Flat - Length [yds]",
     "Carry Flat - Side [yds]",
+    "Tags",
 ]
 
 RENAME_UI = {
+    "TMD No": "Shot #",
     "Club Speed [mph]": "Club Speed",
     "Ball Speed [mph]": "Ball Speed",
     "Smash Factor []": "Smash",
@@ -22,7 +23,9 @@ RENAME_UI = {
     "Spin Rate [rpm]": "Spin",
     "Carry Flat - Length [yds]": "Carry",
     "Carry Flat - Side [yds]": "Offline",
+    "Tags": "Tags",
 }
+
 
 def _metric_med_sd(df: pd.DataFrame, col: str):
     if col not in df.columns:
@@ -32,7 +35,43 @@ def _metric_med_sd(df: pd.DataFrame, col: str):
         return None
     return float(s.median()), float(s.std(ddof=1)) if len(s) > 1 else 0.0
 
+
+def _normalize_club_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensures df has a usable 'Club' column for display even when TrackMan export varies.
+    If 'Club' exists but is mostly empty/None, tries common alternatives.
+    """
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+
+    # If Club exists and has real values, keep it
+    if "Club" in df.columns:
+        non_empty = df["Club"].astype(str).str.strip()
+        if (non_empty != "").sum() >= max(1, int(0.2 * len(df))):
+            return df
+
+    # Try common variants
+    candidates = [
+        "Club Name",
+        "Club Type",
+        "ClubType",
+        "Club (Description)",
+        "Club (Name)",
+    ]
+    for c in candidates:
+        if c in df.columns:
+            df["Club"] = df[c]
+            return df
+
+    # If nothing else exists, make Club blank (not None)
+    df["Club"] = ""
+    return df
+
+
 def render_trackman_session(df: pd.DataFrame):
+    df = _normalize_club_column(df)
 
     st.subheader("Session Summary")
 
