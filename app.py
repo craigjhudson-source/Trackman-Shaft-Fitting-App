@@ -429,9 +429,9 @@ else:
             else:
                 st.warning("Complete all controls before logging data (prevents bad correlation).")
 
-        c_up, c_res = st.columns([1, 2])
+               c_up, c_res = st.columns([1, 2])
 
-               with c_up:
+        with c_up:
             test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
             selected_s = st.selectbox("Assign Data to:", test_list)
 
@@ -443,12 +443,7 @@ else:
             # --- Preview parsed TrackMan session (readable) ---
             if tm_file is not None:
                 name = getattr(tm_file, "name", "") or ""
-                if name.lower().endswith(".pdf"):
-                    st.info(
-                        "PDF uploaded. PDF is accepted but not parsed. "
-                        "Export TrackMan as CSV or XLSX for analysis."
-                    )
-                else:
+                if not name.lower().endswith(".pdf"):
                     raw_preview, stat_preview = process_trackman_file(tm_file, selected_s)
                     if raw_preview is not None:
                         render_trackman_session(raw_preview)
@@ -466,9 +461,7 @@ else:
                 else:
                     raw, stat = process_trackman_file(tm_file, selected_s)
 
-                    if not stat:
-                        st.error("Could not parse TrackMan file (no required metrics found).")
-                    else:
+                    if stat:
                         stat["Shaft ID"] = selected_s
                         stat["Controlled"] = "Yes"
                         stat["Environment"] = st.session_state.environment
