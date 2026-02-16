@@ -124,7 +124,13 @@ def process_trackman_file(uploaded_file, shaft_id):
             return None, None
 
         raw = load_trackman(uploaded_file)
-        stat = summarize_trackman(raw, shaft_id, include_std=True)
+
+# --- ensure no duplicate columns (TrackMan Normalized exports can contain duplicates) ---
+if hasattr(raw, "columns"):
+    raw = raw.loc[:, ~raw.columns.duplicated()].copy()
+
+stat = summarize_trackman(raw, shaft_id, include_std=True)
+
 
         # Require at least one key metric so we know parsing worked
         required_any = any(
