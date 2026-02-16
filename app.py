@@ -41,7 +41,45 @@ def get_google_creds(scopes):
     except Exception as e:
         st.error(f"🔐 Security Error: {e}")
         st.stop()
+def find_baseline_shaft_id_from_answers(ans: dict, shafts_df: pd.DataFrame) -> str | None:
+    """
+    Attempts to match the interview's 'current shaft' answers to a row in Shafts sheet.
+    Returns the Shafts.ID as a string or None if not found.
 
+    Adjust Q-IDs below if your questionnaire uses different fields.
+    """
+    if shafts_df is None or shafts_df.empty:
+        return None
+
+    # These are based on your current interview layout (update if yours differ)
+    current_brand = str(ans.get("Q10", "")).strip()   # Shaft Brand
+    current_flex  = str(ans.get("Q11", "")).strip()   # Flex
+    current_model = str(ans.get("Q12", "")).strip()   # Model (or current shaft model)
+
+    if not (current_brand and current_model):
+        return None
+
+    df = shafts_df.copy()
+    for c in ["ID", "Brand", "Model", "Flex"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+
+    # Strong match: Brand + Model + (optional) Flex
+    m = (df["Brand"].str.lower() == current_brand.lower()) & (df["Model"].str.lower() == current_model.lower())
+    if current_flex and "Flex" in df.columns:
+        m = m & (df["Flex"].str.lower() == current_flex.lower())
+
+    hit = df[m]
+    if len(hit) >= 1:
+        return str(hit.iloc[0]["ID"]).strip()
+
+    # Fallback: Brand + Model only
+    m2 = (df["Brand"].str.lower() == current_brand.lower()) & (df["Model"].str.lower() == current_model.lower())
+    hit2 = df[m2]
+    if len(hit2) >= 1:
+        return str(hit2.iloc[0]["ID"]).strip()
+
+    return None
 
 def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
     """
@@ -492,9 +530,13 @@ else:
 
         with c_up:
             shaft_map = _shaft_label_map(all_data["Shafts"])
+            
+            baseline_id = find_baseline_shaft_id_from_answers(ans, all_data["Shafts"])
+            baseline_label = shaft_map.get(str(baseline_id), "Current Baseline") if baseline_id else "Current Baseline"
 
-            test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
-            selected_s = st.selectbox("Default Assign (if no Tags in file):", test_list)
+            test_list = [baseline_label] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
+            selected_s = st.selectbox("Default Assign (if no Tags in file):", test_list, index=0)
+
 
             tm_file = st.file_uploader(
                 "Upload Trackman CSV/Excel/PDF",
