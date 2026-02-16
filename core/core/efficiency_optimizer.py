@@ -208,3 +208,4 @@ def build_comparison_table(
         rows.append(
             {
                 "Shaft": r.get(
+                     
