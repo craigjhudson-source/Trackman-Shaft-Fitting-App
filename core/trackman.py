@@ -215,23 +215,102 @@ def _read_csv_best_effort(uploaded_file) -> pd.DataFrame:
         return pd.read_csv(io.BytesIO(data), sep=None, engine="python")
 
 
+import io
+import pandas as pd
+import numpy as np
+
+
+def _looks_like_units_row(row_values) -> bool:
+    hits = 0
+    total = 0
+    for v in row_values:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            continue
+        s = str(v).strip()
+        if not s:
+            continue
+        total += 1
+        if (s.startswith("[") and s.endswith("]")) or s == "[]":
+            hits += 1
+    return total > 0 and (hits / total) >= 0.35  # allow sparse unit rows
+
+
+def _make_unique_columns(cols):
+    """
+    TrackMan exports can contain duplicate header names.
+    If columns are duplicated, df[col] returns a DataFrame -> breaks to_numeric.
+    This makes them unique by appending .2, .3, etc.
+    """
+    counts = {}
+    out = []
+    for c in cols:
+        c = str(c).strip()
+        if c not in counts:
+            counts[c] = 1
+            out.append(c)
+        else:
+            counts[c] += 1
+            out.append(f"{c}.{counts[c]}")
+    return out
+
+
+def _build_columns_from_header_and_units(header_row, units_row=None):
+    cols = []
+    for i, name in enumerate(header_row):
+        n = "" if name is None or (isinstance(name, float) and np.isnan(name)) else str(name).strip()
+        u = ""
+        if units_row is not None and i < len(units_row):
+            uu = units_row[i]
+            u = "" if uu is None or (isinstance(uu, float) and np.isnan(uu)) else str(uu).strip()
+
+        if u and ((u.startswith("[") and u.endswith("]")) or u == "[]"):
+            col = f"{n} {u}".strip()
+        else:
+            col = n
+
+        cols.append(col if col else f"Col_{i}")
+
+    return _make_unique_columns(cols)
+
+
+def _read_excel_raw(uploaded_file) -> pd.DataFrame:
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    data = uploaded_file.read()
+    return pd.read_excel(io.BytesIO(data), sheet_name=0, header=None)
+
+
+def _read_csv_best_effort(uploaded_file) -> pd.DataFrame:
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    data = uploaded_file.read()
+    try:
+        return pd.read_csv(io.BytesIO(data))
+    except Exception:
+        return pd.read_csv(io.BytesIO(data), sep=None, engine="python")
+
+
 def load_trackman(uploaded_file) -> pd.DataFrame:
     """
-    Loads TrackMan CSV/XLSX exports into a cleaned dataframe with canonical
-    column names (including units).
-    Handles 'Normalized' Excel exports where headers are embedded as the first row
-    and units are on the second row (common symptoms: Unnamed: 1, and row contains 'TMD No').
+    Robust loader for TrackMan CSV/XLSX (including Normalized XLSX with embedded headers).
+    Fixes duplicate column names and avoids 2-D to_numeric crashes.
     """
     name = getattr(uploaded_file, "name", "") or ""
     lower = name.lower()
 
+    # ---- CSV ----
     if lower.endswith(".csv"):
         df = _read_csv_best_effort(uploaded_file)
         if df is None or df.empty:
             return pd.DataFrame()
-        df.columns = [str(c).strip() for c in df.columns]
+        df.columns = _make_unique_columns([str(c).strip() for c in df.columns])
         return df
 
+    # ---- XLSX ----
     if not (lower.endswith(".xlsx") or lower.endswith(".xls")):
         raise ValueError("Unsupported file type")
 
@@ -239,22 +318,25 @@ def load_trackman(uploaded_file) -> pd.DataFrame:
     if raw is None or raw.empty:
         return pd.DataFrame()
 
-    # Find the header row: TrackMan normalized exports often contain "TMD No" on the header row.
+    # Find header row by searching for "TMD No"
     header_idx = None
-    for i in range(min(len(raw), 30)):  # scan first ~30 rows
+    for i in range(min(len(raw), 40)):
         row = raw.iloc[i].tolist()
-        row_str = [str(x).strip().lower() if x is not None else "" for x in row]
+        row_str = [
+            str(x).strip().lower()
+            if x is not None and not (isinstance(x, float) and np.isnan(x))
+            else ""
+            for x in row
+        ]
         if "tmd no" in row_str:
             header_idx = i
             break
 
-    # If we didn't find it, fall back to row 0 as header.
     if header_idx is None:
         header_idx = 0
 
     header_row = raw.iloc[header_idx].tolist()
 
-    # Units row is usually the next row if it looks like [mph], [deg], etc.
     units_row = None
     if header_idx + 1 < len(raw):
         candidate_units = raw.iloc[header_idx + 1].tolist()
@@ -263,20 +345,22 @@ def load_trackman(uploaded_file) -> pd.DataFrame:
 
     cols = _build_columns_from_header_and_units(header_row, units_row=units_row)
 
-    # Data starts after header row (+ units row if present)
     data_start = header_idx + 1 + (1 if units_row is not None else 0)
     out = raw.iloc[data_start:].copy()
     out.columns = cols
 
-    # Drop completely empty columns
+    # Drop fully-empty columns and reset index
     out = out.dropna(axis=1, how="all").reset_index(drop=True)
 
-    # Strip column names
-    out.columns = [str(c).strip() for c in out.columns]
-
-    # Coerce numeric columns where possible
-    for c in out.columns:
-        out[c] = pd.to_numeric(out[c], errors="ignore")
+    # Safe numeric coercion: only attempt on 1-D Series columns
+    for c in list(out.columns):
+        try:
+            s = out[c]
+            if isinstance(s, pd.Series):
+                out[c] = pd.to_numeric(s, errors="coerce")
+        except Exception:
+            # Leave as-is if conversion fails
+            pass
 
     return out
 
