@@ -431,7 +431,7 @@ else:
 
         c_up, c_res = st.columns([1, 2])
 
-        with c_up:
+               with c_up:
             test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
             selected_s = st.selectbox("Assign Data to:", test_list)
 
@@ -439,35 +439,23 @@ else:
                 "Upload Trackman CSV/Excel/PDF",
                 type=["csv", "xlsx", "pdf"],
             )
-        # --- Preview parsed TrackMan session (readable) ---
-        if tm_file is not None:
-            name = getattr(tm_file, "name", "") or ""
-            if name.lower().endswith(".pdf"):
-                st.info("PDF uploaded. PDF is accepted but not parsed. Export TrackMan as CSV or XLSX for analysis.")
-            else:
-                raw_preview, stat_preview = process_trackman_file(tm_file, selected_s)
-                if raw_preview is None:
-                    st.error("Could not parse TrackMan file for preview. Showing debug below.")
-                    with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
-                        dbg = debug_trackman(tm_file)
-                        if not dbg.get("ok"):
-                            st.error(f"Debug failed: {dbg.get('error')}")
-                        else:
-                            st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
-                            st.write("Detected columns (first 200):")
-                            st.code("\n".join(dbg.get("columns", [])))
-                            prev = dbg.get("head_preview")
-                            if isinstance(prev, pd.DataFrame):
-                                prev = prev.copy()
-                                prev.columns = [str(c) for c in prev.columns]
-                                st.dataframe(prev, use_container_width=True)
+
+            # --- Preview parsed TrackMan session (readable) ---
+            if tm_file is not None:
+                name = getattr(tm_file, "name", "") or ""
+                if name.lower().endswith(".pdf"):
+                    st.info(
+                        "PDF uploaded. PDF is accepted but not parsed. "
+                        "Export TrackMan as CSV or XLSX for analysis."
+                    )
                 else:
-                    # This is the readable, player-friendly view
-                    render_trackman_session(raw_preview)
+                    raw_preview, stat_preview = process_trackman_file(tm_file, selected_s)
+                    if raw_preview is not None:
+                        render_trackman_session(raw_preview)
 
             can_log = tm_file is not None and controls_complete()
 
-                       if st.button("➕ Add") and can_log:
+            if st.button("➕ Add") and can_log:
                 name = getattr(tm_file, "name", "") or ""
 
                 if name.lower().endswith(".pdf"):
@@ -479,20 +467,7 @@ else:
                     raw, stat = process_trackman_file(tm_file, selected_s)
 
                     if not stat:
-                        st.error("Could not parse TrackMan file (no required metrics found). Showing debug below.")
-                        with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
-                            dbg = debug_trackman(tm_file)
-                            if not dbg.get("ok"):
-                                st.error(f"Debug failed: {dbg.get('error')}")
-                            else:
-                                st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
-                                st.write("Detected columns (first 200):")
-                                st.code("\n".join(dbg.get("columns", [])))
-                                prev = dbg.get("head_preview")
-                                if isinstance(prev, pd.DataFrame):
-                                    prev = prev.copy()
-                                    prev.columns = [str(c) for c in prev.columns]
-                                    st.dataframe(prev, use_container_width=True)
+                        st.error("Could not parse TrackMan file (no required metrics found).")
                     else:
                         stat["Shaft ID"] = selected_s
                         stat["Controlled"] = "Yes"
@@ -501,10 +476,9 @@ else:
                         st.session_state.tm_lab_data.append(stat)
                         st.rerun()
 
-
-
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
+
 
         with c_res:
             if not st.session_state.tm_lab_data:
