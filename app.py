@@ -116,7 +116,7 @@ def process_trackman_file(uploaded_file, shaft_id):
     """
     Returns:
       - (raw_df, stat_dict) on success
-      - (None, None) on parse failure or unsupported file
+      - (None, None) on parse failure
     """
     try:
         name = getattr(uploaded_file, "name", "") or ""
@@ -125,14 +125,12 @@ def process_trackman_file(uploaded_file, shaft_id):
 
         raw = load_trackman(uploaded_file)
 
-# --- ensure no duplicate columns (TrackMan Normalized exports can contain duplicates) ---
-if hasattr(raw, "columns"):
-    raw = raw.loc[:, ~raw.columns.duplicated()].copy()
+        # --- ensure no duplicate columns (TrackMan Normalized exports can contain duplicates) ---
+        if hasattr(raw, "columns"):
+            raw = raw.loc[:, ~raw.columns.duplicated()].copy()
 
-stat = summarize_trackman(raw, shaft_id, include_std=True)
+        stat = summarize_trackman(raw, shaft_id, include_std=True)
 
-
-        # Require at least one key metric so we know parsing worked
         required_any = any(
             k in stat for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
         )
@@ -140,6 +138,7 @@ stat = summarize_trackman(raw, shaft_id, include_std=True)
             return None, None
 
         return raw, stat
+
     except Exception:
         return None, None
 
