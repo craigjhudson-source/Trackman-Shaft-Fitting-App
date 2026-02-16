@@ -437,8 +437,13 @@ else:
         c_up, c_res = st.columns([1, 2])
 
         with c_up:
+                        # Build shaft ID -> label mapping from live Google Sheet
+            shaft_map = _shaft_label_map(all_data["Shafts"])
+
+            # Default assignment (used when file has no Tags)
             test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
-            selected_s = st.selectbox("Assign Data to:", test_list)
+            selected_s = st.selectbox("Default Assign (if no Tags in file):", test_list)
+
 
             tm_file = st.file_uploader(
                 "Upload Trackman CSV/Excel/PDF",
@@ -472,6 +477,29 @@ else:
                                     st.dataframe(prev, use_container_width=True)
                     else:
                         render_trackman_session(raw_preview)
+                    # --- Tags-based shaft selection (preferred) ---
+                    tag_ids = _extract_tag_ids(raw_preview)
+
+                    if tag_ids:
+                        st.markdown("### Shaft selection from TrackMan Tags")
+                        st.caption("Tags in the TrackMan file map to Shafts.ID in your database.")
+
+                        # Display options only for tags found in this file
+                        tag_options = []
+                        for tid in tag_ids:
+                            tag_options.append(shaft_map.get(tid, f"Unknown Shaft (ID {tid})"))
+
+                        selected_labels = st.multiselect(
+                            "Select which shafts were hit in this upload (from Tags):",
+                            options=tag_options,
+                            default=tag_options,
+                        )
+
+                        # Store selected IDs in session for the Add button
+                        label_to_id = {shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid for tid in tag_ids}
+                        st.session_state["selected_tag_ids"] = [label_to_id[x] for x in selected_labels if x in label_to_id]
+                    else:
+                        st.session_state["selected_tag_ids"] = []
 
             can_log = tm_file is not None and controls_complete()
 
@@ -483,31 +511,59 @@ else:
                         "PDF uploads are accepted, but **not parsed**. "
                         "Please export TrackMan as **CSV or XLSX** for analysis."
                     )
-                else:
-                    _, stat = process_trackman_file(tm_file, selected_s)
+                                else:
+                    raw, _ = process_trackman_file(tm_file, selected_s)
 
-                    if not stat:
-                        st.error("Could not parse TrackMan file (no required metrics found). Showing debug below.")
-                        with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
-                            dbg = debug_trackman(tm_file)
-                            if not dbg.get("ok"):
-                                st.error(f"Debug failed: {dbg.get('error')}")
-                            else:
-                                st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
-                                st.write("Detected columns (first 200):")
-                                st.code("\n".join(dbg.get("columns", [])))
-                                prev = dbg.get("head_preview")
-                                if isinstance(prev, pd.DataFrame):
-                                    prev = prev.copy()
-                                    prev.columns = [str(c) for c in prev.columns]
-                                    st.dataframe(prev, use_container_width=True)
+                    if raw is None or raw.empty:
+                        st.error("Could not parse TrackMan file (no required metrics found).")
                     else:
-                        stat["Shaft ID"] = selected_s
-                        stat["Controlled"] = "Yes"
-                        stat["Environment"] = st.session_state.environment
-                        stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        st.session_state.tm_lab_data.append(stat)
-                        st.rerun()
+                        # If Tags exist and user selected shafts, log one row per shaft by filtering shots
+                        selected_tag_ids = st.session_state.get("selected_tag_ids", [])
+
+                        if "Tags" in raw.columns and selected_tag_ids:
+                            logged_any = False
+                            for sid in selected_tag_ids:
+                                # Filter shots for this shaft id
+                                s = raw["Tags"].astype(str).str.strip()
+
+                                # Tags might be stored as 25 or 25.0; normalize comparison
+                                def _norm(x):
+                                    try:
+                                        fx = float(str(x))
+                                        return str(int(fx)) if fx.is_integer() else str(x)
+                                    except Exception:
+                                        return str(x)
+
+                                mask = s.apply(_norm) == str(sid)
+                                sub = raw.loc[mask].copy()
+
+                                if len(sub) < 1:
+                                    continue
+
+                                stat = summarize_trackman(sub, sid, include_std=True)
+                                stat["Shaft ID"] = sid
+                                stat["Shaft Label"] = shaft_map.get(str(sid), f"Unknown (ID {sid})")
+                                stat["Controlled"] = "Yes"
+                                stat["Environment"] = st.session_state.environment
+                                stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                st.session_state.tm_lab_data.append(stat)
+                                logged_any = True
+
+                            if not logged_any:
+                                st.error("No shots matched the selected Tag IDs. Check that Tags are present and correct.")
+                            else:
+                                st.rerun()
+
+                        else:
+                            # Fallback: no Tags -> log whole session to selected_s
+                            stat = summarize_trackman(raw, selected_s, include_std=True)
+                            stat["Shaft ID"] = selected_s
+                            stat["Controlled"] = "Yes"
+                            stat["Environment"] = st.session_state.environment
+                            stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            st.session_state.tm_lab_data.append(stat)
+                            st.rerun()
+
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
