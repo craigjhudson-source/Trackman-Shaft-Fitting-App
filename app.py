@@ -503,7 +503,7 @@ else:
 
             can_log = tm_file is not None and controls_complete()
 
-            if st.button("➕ Add") and can_log:
+                        if st.button("➕ Add") and can_log:
                 name = getattr(tm_file, "name", "") or ""
 
                 if name.lower().endswith(".pdf"):
@@ -511,32 +511,33 @@ else:
                         "PDF uploads are accepted, but **not parsed**. "
                         "Please export TrackMan as **CSV or XLSX** for analysis."
                     )
-                                else:
+                else:
                     raw, _ = process_trackman_file(tm_file, selected_s)
 
                     if raw is None or raw.empty:
                         st.error("Could not parse TrackMan file (no required metrics found).")
                     else:
-                        # If Tags exist and user selected shafts, log one row per shaft by filtering shots
+                        # If Tags exist and user selected shafts, log one row per shaft
                         selected_tag_ids = st.session_state.get("selected_tag_ids", [])
 
                         if "Tags" in raw.columns and selected_tag_ids:
+                            shaft_map = _shaft_label_map(all_data["Shafts"])
                             logged_any = False
+
+                            s = raw["Tags"].astype(str).str.strip()
+
+                            def _norm(x):
+                                try:
+                                    fx = float(str(x))
+                                    return str(int(fx)) if fx.is_integer() else str(x)
+                                except Exception:
+                                    return str(x)
+
+                            s_norm = s.apply(_norm)
+
                             for sid in selected_tag_ids:
-                                # Filter shots for this shaft id
-                                s = raw["Tags"].astype(str).str.strip()
-
-                                # Tags might be stored as 25 or 25.0; normalize comparison
-                                def _norm(x):
-                                    try:
-                                        fx = float(str(x))
-                                        return str(int(fx)) if fx.is_integer() else str(x)
-                                    except Exception:
-                                        return str(x)
-
-                                mask = s.apply(_norm) == str(sid)
+                                mask = s_norm == str(sid)
                                 sub = raw.loc[mask].copy()
-
                                 if len(sub) < 1:
                                     continue
 
@@ -550,12 +551,12 @@ else:
                                 logged_any = True
 
                             if not logged_any:
-                                st.error("No shots matched the selected Tag IDs. Check that Tags are present and correct.")
+                                st.error("No shots matched the selected Tag IDs.")
                             else:
                                 st.rerun()
 
                         else:
-                            # Fallback: no Tags -> log whole session to selected_s
+                            # Fallback: no Tags -> log entire session
                             stat = summarize_trackman(raw, selected_s, include_std=True)
                             stat["Shaft ID"] = selected_s
                             stat["Controlled"] = "Yes"
