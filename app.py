@@ -589,6 +589,41 @@ else:
                             st.session_state["selected_tag_ids"] = [
                                 label_to_id[x] for x in selected_labels if x in label_to_id
                             ]
+                            # ---- Baseline for comparison (drives deltas + confidence) ----
+                            selected_tag_ids = st.session_state.get("selected_tag_ids", [])
+
+                            # baseline_id comes from interview mapping (gamer shaft), may be None
+                            # baseline_id = find_baseline_shaft_id_from_answers(ans, all_data["Shafts"])
+                            # shaft_map = _shaft_label_map(all_data["Shafts"])  # already built above
+
+                            baseline_default_id = None
+                        if baseline_id and str(baseline_id) in selected_tag_ids:
+                            baseline_default_id = str(baseline_id)
+                        elif selected_tag_ids:
+                            baseline_default_id = str(selected_tag_ids[0])
+
+                        if selected_tag_ids:
+                           baseline_options = [shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})") for tid in selected_tag_ids]
+                           label_to_id_selected = {
+                           shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})"): str(tid) for tid in selected_tag_ids
+                        }
+
+                           default_label = shaft_map.get(str(baseline_default_id), baseline_options[0])
+
+                           st.markdown("### Baseline for comparison")
+                           st.caption("Used for deltas, confidence scoring, and optimizer comparisons.")
+
+                           picked_label = st.selectbox(
+                           "Select the baseline shaft (usually the gamer):",
+                           options=baseline_options,
+                           index=baseline_options.index(default_label) if default_label in baseline_options else 0,
+                           key="baseline_tag_label",
+                        )
+
+                           st.session_state["baseline_tag_id"] = label_to_id_selected.get(picked_label, baseline_default_id)
+                        else:
+                           st.session_state["baseline_tag_id"] = None
+
                         else:
                             st.session_state["selected_tag_ids"] = []
 
