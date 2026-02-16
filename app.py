@@ -9,7 +9,18 @@ from core.trackman import load_trackman, summarize_trackman, debug_trackman
 from core.trackman_display import render_trackman_session
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
-from core.efficiency_optimizer import EfficiencyConfig, build_comparison_table, pick_efficiency_winner
+
+
+# --- Optional Intelligence Layer import (prevents app crash if file missing) ---
+EFF_AVAILABLE = True
+try:
+    from core.efficiency_optimizer import (
+        EfficiencyConfig,
+        build_comparison_table,
+        pick_efficiency_winner,
+    )
+except Exception:
+    EFF_AVAILABLE = False
 
 
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
@@ -148,7 +159,6 @@ def _extract_tag_ids(raw_df: pd.DataFrame):
             cleaned.append(str(int(fv)) if fv.is_integer() else str(v))
         except Exception:
             cleaned.append(str(v))
-    # stable unique sort
     cleaned = list(dict.fromkeys(cleaned))
     return sorted(cleaned)
 
@@ -203,7 +213,7 @@ def find_baseline_shaft_id_from_answers(ans: dict, shafts_df: pd.DataFrame):
     """
     Attempts to match the interview's 'current/gamer shaft' answers to Shafts sheet.
     Assumes:
-      Q10 = Brand, Q11 = Flex, Q12 = Model (your current interview layout)
+      Q10 = Brand, Q11 = Flex, Q12 = Model
     Returns Shafts.ID as string, or None.
     """
     if shafts_df is None or shafts_df.empty:
@@ -342,9 +352,7 @@ if not st.session_state.interview_complete:
                             all_data["Shafts"][
                                 (all_data["Shafts"]["Brand"] == s_brand)
                                 & (all_data["Shafts"]["Flex"] == s_flex)
-                            ]["Model"]
-                            .unique()
-                            .tolist()
+                            ]["Model"].unique().tolist()
                         )
                     else:
                         opts += ["Select Brand/Flex First"]
@@ -356,8 +364,7 @@ if not st.session_state.interview_complete:
 
             else:
                 opts += (
-                    all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"]
-                    .tolist()
+                    all_data["Responses"][all_data["Responses"]["QuestionID"] == qid]["ResponseOption"].tolist()
                 )
 
             opts = list(dict.fromkeys([str(x) for x in opts if x]))
@@ -573,10 +580,8 @@ else:
                                     prev.columns = [str(c) for c in prev.columns]
                                     st.dataframe(prev, use_container_width=True)
                     else:
-                        # Full session preview
                         render_trackman_session(raw_preview)
 
-                        # Tags mapping + selection
                         tag_ids = _extract_tag_ids(raw_preview)
 
                         if tag_ids:
@@ -633,7 +638,6 @@ else:
                             else:
                                 st.session_state["baseline_tag_id"] = None
 
-                            # -------- Split session by shaft (Tags) --------
                             st.markdown("## Split session by shaft (Tags)")
                             for sid in selected_tag_ids:
                                 sub = _filter_by_tag(raw_preview, sid)
@@ -665,7 +669,6 @@ else:
                     else:
                         selected_tag_ids = st.session_state.get("selected_tag_ids", [])
 
-                        # If tags exist AND user selected tags, log one row per shaft tag group
                         if "Tags" in raw.columns and selected_tag_ids:
                             logged_any = False
                             for sid in selected_tag_ids:
@@ -689,7 +692,6 @@ else:
                                 st.rerun()
 
                         else:
-                            # No tags → log whole session as baseline/default assignment
                             stat = summarize_trackman(raw, selected_s, include_std=True)
                             stat["Shaft ID"] = selected_s
                             stat["Controlled"] = "Yes"
@@ -722,63 +724,75 @@ else:
                 ]
                 st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
+                st.divider()
+
                 # ------------------ Intelligence Layer: Efficiency + Confidence ------------------
-baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
+                if not EFF_AVAILABLE:
+                    st.error(
+                        "Efficiency Optimizer module not found.\n\n"
+                        "To enable the Baseline Comparison Table, you must add:\n"
+                        "- core/efficiency_optimizer.py\n"
+                        "- (recommended) core/__init__.py\n\n"
+                        "After committing those files, Streamlit Cloud will redeploy and this section will activate."
+                    )
+                else:
+                    baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
 
-eff_cfg = EfficiencyConfig(
-    MIN_SHOTS=int(MIN_SHOTS),
-    WARN_FACE_TO_PATH_SD=float(WARN_FACE_TO_PATH_SD),
-    WARN_CARRY_SD=float(WARN_CARRY_SD),
-    WARN_SMASH_SD=float(WARN_SMASH_SD),
-)
+                    eff_cfg = EfficiencyConfig(
+                        MIN_SHOTS=int(MIN_SHOTS),
+                        WARN_FACE_TO_PATH_SD=float(WARN_FACE_TO_PATH_SD),
+                        WARN_CARRY_SD=float(WARN_CARRY_SD),
+                        WARN_SMASH_SD=float(WARN_SMASH_SD),
+                    )
 
-comparison_df = build_comparison_table(
-    lab_df,
-    baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
-    cfg=eff_cfg,
-)
+                    comparison_df = build_comparison_table(
+                        lab_df,
+                        baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
+                        cfg=eff_cfg,
+                    )
 
-st.subheader("📊 Baseline Comparison Table")
-display_cols = ["Shaft", "Carry Δ", "Launch Δ", "Spin Δ", "Smash", "Dispersion", "Efficiency", "Confidence"]
-st.dataframe(comparison_df[display_cols], use_container_width=True, hide_index=True, height=320)
+                    st.subheader("📊 Baseline Comparison Table")
+                    display_cols = ["Shaft", "Carry Δ", "Launch Δ", "Spin Δ", "Smash", "Dispersion", "Efficiency", "Confidence"]
+                    if not comparison_df.empty:
+                        st.dataframe(comparison_df[display_cols], use_container_width=True, hide_index=True, height=320)
+                    else:
+                        st.info("No comparison rows yet. Add at least one logged shaft set.")
 
-winner = pick_efficiency_winner(comparison_df)
-if winner is None:
-    st.warning("No efficiency winner could be computed yet.")
-else:
-    st.success(
-        f"🏆 **Efficiency Winner:** {winner['Shaft']} "
-        f"(Efficiency {winner['Efficiency']} | Confidence {winner['Confidence']})"
-    )
+                    winner = pick_efficiency_winner(comparison_df)
+                    if winner is None:
+                        st.warning("No efficiency winner could be computed yet.")
+                    else:
+                        st.success(
+                            f"🏆 **Efficiency Winner:** {winner['Shaft']} "
+                            f"(Efficiency {winner['Efficiency']} | Confidence {winner['Confidence']})"
+                        )
 
-    # Show soft-filter flags (do not delete shots)
-    flags = winner.get("_flags") or {}
-    if flags.get("low_shots"):
-        st.warning(f"⚠️ Low shot count (MIN_SHOTS={int(MIN_SHOTS)}). Confidence reduced.")
-    if flags.get("high_face_to_path_sd"):
-        st.warning(f"⚠️ Face-to-Path SD high (> {float(WARN_FACE_TO_PATH_SD):.2f}). Confidence reduced.")
-    if flags.get("high_carry_sd"):
-        st.warning(f"⚠️ Carry SD high (> {float(WARN_CARRY_SD):.1f}). Confidence reduced.")
-    if flags.get("high_smash_sd"):
-        st.warning(f"⚠️ Smash SD high (> {float(WARN_SMASH_SD):.3f}). Confidence reduced.")
+                        flags = winner.get("_flags") or {}
+                        if flags.get("low_shots"):
+                            st.warning(f"⚠️ Low shot count (MIN_SHOTS={int(MIN_SHOTS)}). Confidence reduced.")
+                        if flags.get("high_face_to_path_sd"):
+                            st.warning(f"⚠️ Face-to-Path SD high (> {float(WARN_FACE_TO_PATH_SD):.2f}). Confidence reduced.")
+                        if flags.get("high_carry_sd"):
+                            st.warning(f"⚠️ Carry SD high (> {float(WARN_CARRY_SD):.1f}). Confidence reduced.")
+                        if flags.get("high_smash_sd"):
+                            st.warning(f"⚠️ Smash SD high (> {float(WARN_SMASH_SD):.3f}). Confidence reduced.")
 
-    st.subheader("Phase 6 Optimization Suggestions")
-    # We pass the winner row from lab_df (not the comparison row)
-    # Map back using Shaft ID
-    w_id = str(winner.get("Shaft ID"))
-    w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id]
-    winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
+                        st.subheader("Phase 6 Optimization Suggestions")
 
-    recs = phase6_recommendations(
-        winner_row,
-        baseline_row=None,
-        club="6i",
-        environment=st.session_state.environment,
-    )
-    st.session_state.phase6_recs = recs
-    for r in recs:
-        css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
-        st.markdown(
-            f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
-            unsafe_allow_html=True,
-        )
+                        w_id = str(winner.get("Shaft ID"))
+                        w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id]
+                        winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
+
+                        recs = phase6_recommendations(
+                            winner_row,
+                            baseline_row=None,
+                            club="6i",
+                            environment=st.session_state.environment,
+                        )
+                        st.session_state.phase6_recs = recs
+                        for r in recs:
+                            css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
+                            st.markdown(
+                                f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
+                                unsafe_allow_html=True,
+                            )
