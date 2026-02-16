@@ -382,7 +382,7 @@ else:
                 else:
                     st.error(f"Email failed: {ok}")
 
-    # -------- TrackMan Lab Tab --------
+       # -------- TrackMan Lab Tab --------
     with tab_lab:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
@@ -429,7 +429,7 @@ else:
             else:
                 st.warning("Complete all controls before logging data (prevents bad correlation).")
 
-               c_up, c_res = st.columns([1, 2])
+        c_up, c_res = st.columns([1, 2])
 
         with c_up:
             test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
@@ -443,9 +443,29 @@ else:
             # --- Preview parsed TrackMan session (readable) ---
             if tm_file is not None:
                 name = getattr(tm_file, "name", "") or ""
-                if not name.lower().endswith(".pdf"):
-                    raw_preview, stat_preview = process_trackman_file(tm_file, selected_s)
-                    if raw_preview is not None:
+                if name.lower().endswith(".pdf"):
+                    st.info(
+                        "PDF uploaded. PDF is accepted but not parsed. "
+                        "Export TrackMan as CSV or XLSX for analysis."
+                    )
+                else:
+                    raw_preview, _ = process_trackman_file(tm_file, selected_s)
+                    if raw_preview is None:
+                        st.error("Could not parse TrackMan file for preview. Showing debug below.")
+                        with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
+                            dbg = debug_trackman(tm_file)
+                            if not dbg.get("ok"):
+                                st.error(f"Debug failed: {dbg.get('error')}")
+                            else:
+                                st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
+                                st.write("Detected columns (first 200):")
+                                st.code("\n".join(dbg.get("columns", [])))
+                                prev = dbg.get("head_preview")
+                                if isinstance(prev, pd.DataFrame):
+                                    prev = prev.copy()
+                                    prev.columns = [str(c) for c in prev.columns]
+                                    st.dataframe(prev, use_container_width=True)
+                    else:
                         render_trackman_session(raw_preview)
 
             can_log = tm_file is not None and controls_complete()
@@ -459,9 +479,24 @@ else:
                         "Please export TrackMan as **CSV or XLSX** for analysis."
                     )
                 else:
-                    raw, stat = process_trackman_file(tm_file, selected_s)
+                    _, stat = process_trackman_file(tm_file, selected_s)
 
-                    if stat:
+                    if not stat:
+                        st.error("Could not parse TrackMan file (no required metrics found). Showing debug below.")
+                        with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
+                            dbg = debug_trackman(tm_file)
+                            if not dbg.get("ok"):
+                                st.error(f"Debug failed: {dbg.get('error')}")
+                            else:
+                                st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
+                                st.write("Detected columns (first 200):")
+                                st.code("\n".join(dbg.get("columns", [])))
+                                prev = dbg.get("head_preview")
+                                if isinstance(prev, pd.DataFrame):
+                                    prev = prev.copy()
+                                    prev.columns = [str(c) for c in prev.columns]
+                                    st.dataframe(prev, use_container_width=True)
+                    else:
                         stat["Shaft ID"] = selected_s
                         stat["Controlled"] = "Yes"
                         stat["Environment"] = st.session_state.environment
@@ -471,7 +506,6 @@ else:
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
-
 
         with c_res:
             if not st.session_state.tm_lab_data:
@@ -490,8 +524,8 @@ else:
                 show_cols = [c for c in preferred_cols if c in lab_df.columns] + [
                     c for c in lab_df.columns if c not in preferred_cols
                 ]
-                st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
+                st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
                 baseline_row = None
                 if (lab_df["Shaft ID"] == "Current Baseline").any():
