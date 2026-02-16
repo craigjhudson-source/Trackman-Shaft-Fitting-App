@@ -10,6 +10,7 @@ from core.trackman_display import render_trackman_session
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
+
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
 st.markdown(
@@ -143,10 +144,6 @@ def process_trackman_file(uploaded_file, shaft_id):
 
 
 def _extract_tag_ids(raw_df: pd.DataFrame):
-    """
-    Returns sorted unique Tag IDs (as strings) found in the TrackMan file.
-    Tags correspond to Shafts.ID in your live Google Sheet.
-    """
     if raw_df is None or raw_df.empty or "Tags" not in raw_df.columns:
         return []
     s = raw_df["Tags"].astype(str).str.strip()
@@ -165,10 +162,6 @@ def _extract_tag_ids(raw_df: pd.DataFrame):
 
 
 def _shaft_label_map(shafts_df: pd.DataFrame):
-    """
-    Builds mapping:
-      id_str -> 'Brand | Model | Flex | Weightg (ID x)'
-    """
     out = {}
     if shafts_df is None or shafts_df.empty:
         return out
@@ -181,12 +174,28 @@ def _shaft_label_map(shafts_df: pd.DataFrame):
         model = str(r.get("Model", "")).strip()
         flex = str(r.get("Flex", "")).strip()
         wt = str(r.get("Weight (g)", "")).strip() or str(r.get("Weight", "")).strip()
-
         label = " | ".join([x for x in [brand, model, flex] if x])
         if wt:
             label = f"{label} | {wt}g"
         out[sid] = f"{label} (ID {sid})"
     return out
+
+
+def _filter_by_tag(raw_df: pd.DataFrame, tag_id: str) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty or "Tags" not in raw_df.columns:
+        return pd.DataFrame()
+
+    s = raw_df["Tags"].astype(str).str.strip()
+
+    def _norm(x):
+        try:
+            fx = float(str(x))
+            return str(int(fx)) if fx.is_integer() else str(x)
+        except Exception:
+            return str(x)
+
+    s_norm = s.apply(_norm)
+    return raw_df.loc[s_norm == str(tag_id)].copy()
 
 
 # ------------------ Session ------------------
@@ -202,9 +211,10 @@ if "tm_lab_data" not in st.session_state:
     st.session_state.tm_lab_data = []
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
-
 if "environment" not in st.session_state:
     st.session_state.environment = "Indoors (Mat)"
+if "selected_tag_ids" not in st.session_state:
+    st.session_state.selected_tag_ids = []
 
 if "lab_controls" not in st.session_state:
     st.session_state.lab_controls = {
@@ -345,15 +355,11 @@ if not st.session_state.interview_complete:
     else:
         if c2.button("🔥 Calculate"):
             sync_all()
-
-            # Sync environment from Q22 if present
             if st.session_state.answers.get("Q22"):
                 st.session_state.environment = st.session_state.answers["Q22"]
-
             save_to_fittings(st.session_state.answers)
             st.session_state.interview_complete = True
             st.rerun()
-
 
 # ------------------ Results / Dashboard ------------------
 else:
@@ -376,7 +382,7 @@ else:
     st.divider()
     tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
-    # -------- Phase 1 Predictor --------
+    # -------- Predictor --------
     try:
         carry_6i = float(ans.get("Q15", 150))
     except Exception:
@@ -497,6 +503,7 @@ else:
 
             can_log = tm_file is not None and controls_complete()
 
+            raw_preview = None
             if tm_file is not None:
                 name = getattr(tm_file, "name", "") or ""
                 if name.lower().endswith(".pdf"):
@@ -519,11 +526,13 @@ else:
                                     prev.columns = [str(c) for c in prev.columns]
                                     st.dataframe(prev, use_container_width=True)
                     else:
+                        # Full session preview
                         render_trackman_session(raw_preview)
 
+                        # Tags-based selection
                         tag_ids = _extract_tag_ids(raw_preview)
                         if tag_ids:
-                            st.markdown("### Shaft selection from TrackMan Tags")
+                            st.markdown("## Shaft selection from TrackMan Tags")
                             tag_options = [shaft_map.get(tid, f"Unknown Shaft (ID {tid})") for tid in tag_ids]
 
                             selected_labels = st.multiselect(
@@ -540,6 +549,22 @@ else:
                             ]
                         else:
                             st.session_state["selected_tag_ids"] = []
+
+                        # Split preview per shaft
+                        selected_tag_ids = st.session_state.get("selected_tag_ids", [])
+                        if selected_tag_ids:
+                            st.markdown("## Split session by shaft (Tags)")
+
+                            for sid in selected_tag_ids:
+                                sub = _filter_by_tag(raw_preview, sid)
+                                label = shaft_map.get(str(sid), f"Unknown Shaft (ID {sid})")
+
+                                with st.expander(f"{label}", expanded=True):
+                                    if sub is None or sub.empty:
+                                        st.warning("No shots found for this Tag in the uploaded file.")
+                                    else:
+                                        render_trackman_session(sub)
+                                        st.caption(f"Shots in this group: {len(sub)}")
 
             if st.button("➕ Add") and can_log:
                 name = getattr(tm_file, "name", "") or ""
@@ -559,22 +584,9 @@ else:
 
                         if "Tags" in raw.columns and selected_tag_ids:
                             logged_any = False
-
-                            s = raw["Tags"].astype(str).str.strip()
-
-                            def _norm(x):
-                                try:
-                                    fx = float(str(x))
-                                    return str(int(fx)) if fx.is_integer() else str(x)
-                                except Exception:
-                                    return str(x)
-
-                            s_norm = s.apply(_norm)
-
                             for sid in selected_tag_ids:
-                                mask = s_norm == str(sid)
-                                sub = raw.loc[mask].copy()
-                                if len(sub) < 1:
+                                sub = _filter_by_tag(raw, sid)
+                                if sub is None or sub.empty:
                                     continue
 
                                 stat = summarize_trackman(sub, sid, include_std=True)
@@ -620,7 +632,6 @@ else:
                 show_cols = [c for c in preferred_cols if c in lab_df.columns] + [
                     c for c in lab_df.columns if c not in preferred_cols
                 ]
-
                 st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
                 baseline_row = None
@@ -643,7 +654,6 @@ else:
                         f"(Smash {winner_row.get('Smash Factor','')})"
                     )
 
-                    # Non-enforced quality warnings
                     try:
                         ftp_sd = float(winner_row.get("Face To Path SD", 0) or 0)
                         carry_sd = float(winner_row.get("Carry SD", 0) or 0)
