@@ -10,8 +10,6 @@ from core.trackman_display import render_trackman_session
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
-
-
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
 st.markdown(
@@ -125,12 +123,13 @@ def process_trackman_file(uploaded_file, shaft_id):
 
         raw = load_trackman(uploaded_file)
 
-        # --- ensure no duplicate columns (TrackMan Normalized exports can contain duplicates) ---
+        # Ensure no duplicate columns (TrackMan Normalized exports can contain duplicates)
         if hasattr(raw, "columns"):
             raw = raw.loc[:, ~raw.columns.duplicated()].copy()
 
         stat = summarize_trackman(raw, shaft_id, include_std=True)
 
+        # Require at least one key metric so we know parsing worked
         required_any = any(
             k in stat for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
         )
@@ -142,6 +141,52 @@ def process_trackman_file(uploaded_file, shaft_id):
     except Exception:
         return None, None
 
+
+def _extract_tag_ids(raw_df: pd.DataFrame):
+    """
+    Returns sorted unique Tag IDs (as strings) found in the TrackMan file.
+    Tags correspond to Shafts.ID in your live Google Sheet.
+    """
+    if raw_df is None or raw_df.empty or "Tags" not in raw_df.columns:
+        return []
+    s = raw_df["Tags"].astype(str).str.strip()
+    s = s[s != ""]
+    cleaned = []
+    for v in s.unique().tolist():
+        try:
+            fv = float(v)
+            if fv.is_integer():
+                cleaned.append(str(int(fv)))
+            else:
+                cleaned.append(str(v))
+        except Exception:
+            cleaned.append(str(v))
+    return sorted(list(dict.fromkeys(cleaned)))
+
+
+def _shaft_label_map(shafts_df: pd.DataFrame):
+    """
+    Builds mapping:
+      id_str -> 'Brand | Model | Flex | Weightg (ID x)'
+    """
+    out = {}
+    if shafts_df is None or shafts_df.empty:
+        return out
+
+    for _, r in shafts_df.iterrows():
+        sid = str(r.get("ID", "")).strip()
+        if not sid:
+            continue
+        brand = str(r.get("Brand", "")).strip()
+        model = str(r.get("Model", "")).strip()
+        flex = str(r.get("Flex", "")).strip()
+        wt = str(r.get("Weight (g)", "")).strip() or str(r.get("Weight", "")).strip()
+
+        label = " | ".join([x for x in [brand, model, flex] if x])
+        if wt:
+            label = f"{label} | {wt}g"
+        out[sid] = f"{label} (ID {sid})"
+    return out
 
 
 # ------------------ Session ------------------
@@ -368,7 +413,10 @@ else:
             with col1 if i < 2 else col2:
                 st.subheader(c_name)
                 st.table(all_winners[cat])
-                st.markdown(f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>",
+                    unsafe_allow_html=True
+                )
 
         if not st.session_state.email_sent and p_email:
             with st.spinner("Dispatching PDF..."):
@@ -387,7 +435,7 @@ else:
                 else:
                     st.error(f"Email failed: {ok}")
 
-       # -------- TrackMan Lab Tab --------
+    # -------- TrackMan Lab Tab --------
     with tab_lab:
         st.header("🧪 Trackman Lab (Controlled Testing)")
 
@@ -436,7 +484,7 @@ else:
 
         c_up, c_res = st.columns([1, 2])
 
-                with c_up:
+        with c_up:
             shaft_map = _shaft_label_map(all_data["Shafts"])
 
             test_list = ["Current Baseline"] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
@@ -450,36 +498,48 @@ else:
             can_log = tm_file is not None and controls_complete()
 
             if tm_file is not None:
-                raw_preview, _ = process_trackman_file(tm_file, selected_s)
-                if raw_preview is not None:
-                    render_trackman_session(raw_preview)
-
-                    tag_ids = _extract_tag_ids(raw_preview)
-
-                    if tag_ids:
-                        st.markdown("### Shaft selection from TrackMan Tags")
-
-                        tag_options = [
-                            shaft_map.get(tid, f"Unknown Shaft (ID {tid})")
-                            for tid in tag_ids
-                        ]
-
-                        selected_labels = st.multiselect(
-                            "Select which shafts were hit in this upload:",
-                            options=tag_options,
-                            default=tag_options,
-                        )
-
-                        label_to_id = {
-                            shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid
-                            for tid in tag_ids
-                        }
-
-                        st.session_state["selected_tag_ids"] = [
-                            label_to_id[x] for x in selected_labels if x in label_to_id
-                        ]
+                name = getattr(tm_file, "name", "") or ""
+                if name.lower().endswith(".pdf"):
+                    st.info("PDF uploaded (accepted but not parsed). Export as CSV/XLSX for analysis.")
+                else:
+                    raw_preview, _ = process_trackman_file(tm_file, selected_s)
+                    if raw_preview is None:
+                        st.error("Could not parse TrackMan file for preview. Showing debug below.")
+                        with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
+                            dbg = debug_trackman(tm_file)
+                            if not dbg.get("ok"):
+                                st.error(f"Debug failed: {dbg.get('error')}")
+                            else:
+                                st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
+                                st.write("Detected columns (first 200):")
+                                st.code("\n".join(dbg.get("columns", [])))
+                                prev = dbg.get("head_preview")
+                                if isinstance(prev, pd.DataFrame):
+                                    prev = prev.copy()
+                                    prev.columns = [str(c) for c in prev.columns]
+                                    st.dataframe(prev, use_container_width=True)
                     else:
-                        st.session_state["selected_tag_ids"] = []
+                        render_trackman_session(raw_preview)
+
+                        tag_ids = _extract_tag_ids(raw_preview)
+                        if tag_ids:
+                            st.markdown("### Shaft selection from TrackMan Tags")
+                            tag_options = [shaft_map.get(tid, f"Unknown Shaft (ID {tid})") for tid in tag_ids]
+
+                            selected_labels = st.multiselect(
+                                "Select which shafts were hit in this upload:",
+                                options=tag_options,
+                                default=tag_options,
+                            )
+
+                            label_to_id = {
+                                shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid for tid in tag_ids
+                            }
+                            st.session_state["selected_tag_ids"] = [
+                                label_to_id[x] for x in selected_labels if x in label_to_id
+                            ]
+                        else:
+                            st.session_state["selected_tag_ids"] = []
 
             if st.button("➕ Add") and can_log:
                 name = getattr(tm_file, "name", "") or ""
@@ -487,13 +547,13 @@ else:
                 if name.lower().endswith(".pdf"):
                     st.warning(
                         "PDF uploads are accepted, but **not parsed**. "
-                        "Please export TrackMan as CSV or XLSX."
+                        "Please export TrackMan as **CSV or XLSX** for analysis."
                     )
                 else:
                     raw, _ = process_trackman_file(tm_file, selected_s)
 
                     if raw is None or raw.empty:
-                        st.error("Could not parse TrackMan file.")
+                        st.error("Could not parse TrackMan file (no required metrics found).")
                     else:
                         selected_tag_ids = st.session_state.get("selected_tag_ids", [])
 
@@ -519,16 +579,18 @@ else:
 
                                 stat = summarize_trackman(sub, sid, include_std=True)
                                 stat["Shaft ID"] = sid
+                                stat["Shaft Label"] = shaft_map.get(str(sid), f"Unknown (ID {sid})")
                                 stat["Controlled"] = "Yes"
                                 stat["Environment"] = st.session_state.environment
                                 stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 st.session_state.tm_lab_data.append(stat)
                                 logged_any = True
 
-                            if logged_any:
-                                st.rerun()
+                            if not logged_any:
+                                st.error("No shots matched the selected Tag IDs.")
                             else:
-                                st.error("No shots matched selected Tags.")
+                                st.rerun()
+
                         else:
                             stat = summarize_trackman(raw, selected_s, include_std=True)
                             stat["Shaft ID"] = selected_s
@@ -541,7 +603,6 @@ else:
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
 
-
         with c_res:
             if not st.session_state.tm_lab_data:
                 st.info("Upload files to begin correlation.")
@@ -549,7 +610,7 @@ else:
                 lab_df = pd.DataFrame(st.session_state.tm_lab_data)
 
                 preferred_cols = [
-                    "Timestamp", "Shaft ID", "Controlled", "Environment", "Shot Count",
+                    "Timestamp", "Shaft ID", "Shaft Label", "Controlled", "Environment", "Shot Count",
                     "Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate",
                     "Launch Angle", "Landing Angle", "Face To Path", "Dynamic Lie",
                     "Carry Side", "Total Side",
@@ -575,7 +636,7 @@ else:
                 else:
                     top_idx = cand["Smash Factor"].astype(float).idxmax()
                     winner_row = cand.loc[top_idx]
-                    winner_name = winner_row.get("Shaft ID", "Winner")
+                    winner_name = winner_row.get("Shaft Label") or winner_row.get("Shaft ID", "Winner")
 
                     st.success(
                         f"🏆 **Efficiency Winner:** {winner_name} "
@@ -605,7 +666,7 @@ else:
 
                     if "Face To Path SD" in cand.columns:
                         try:
-                            most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft ID"]
+                            most_stable = cand.loc[cand["Face To Path SD"].astype(float).idxmin()]["Shaft Label"]
                             st.info(f"🛡️ **Most Stable (Face-to-Path SD):** {most_stable}")
                         except Exception:
                             pass
