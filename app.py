@@ -1,4 +1,3 @@
-from core.trackman_display import render_trackman_session
 import datetime
 import pandas as pd
 import streamlit as st
@@ -7,8 +6,10 @@ from google.oauth2.service_account import Credentials
 
 from utils import create_pdf_bytes, send_email_with_pdf
 from core.trackman import load_trackman, summarize_trackman, debug_trackman
+from core.trackman_display import render_trackman_session
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
+
 
 
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
@@ -114,13 +115,13 @@ def save_to_fittings(answers):
 def process_trackman_file(uploaded_file, shaft_id):
     """
     Returns:
-      - stat dict on success (even if Shot Count is small)
-      - None on parse failure or unsupported file
+      - (raw_df, stat_dict) on success
+      - (None, None) on parse failure or unsupported file
     """
     try:
         name = getattr(uploaded_file, "name", "") or ""
         if name.lower().endswith(".pdf"):
-            return None
+            return None, None
 
         raw = load_trackman(uploaded_file)
         stat = summarize_trackman(raw, shaft_id, include_std=True)
@@ -130,11 +131,12 @@ def process_trackman_file(uploaded_file, shaft_id):
             k in stat for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
         )
         if not required_any:
-            return None
+            return None, None
 
-        return stat
+        return raw, stat
     except Exception:
-        return None
+        return None, None
+
 
 
 # ------------------ Session ------------------
@@ -437,6 +439,31 @@ else:
                 "Upload Trackman CSV/Excel/PDF",
                 type=["csv", "xlsx", "pdf"],
             )
+        # --- Preview parsed TrackMan session (readable) ---
+        if tm_file is not None:
+            name = getattr(tm_file, "name", "") or ""
+            if name.lower().endswith(".pdf"):
+                st.info("PDF uploaded. PDF is accepted but not parsed. Export TrackMan as CSV or XLSX for analysis.")
+            else:
+                raw_preview, stat_preview = process_trackman_file(tm_file, selected_s)
+                if raw_preview is None:
+                    st.error("Could not parse TrackMan file for preview. Showing debug below.")
+                    with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
+                        dbg = debug_trackman(tm_file)
+                        if not dbg.get("ok"):
+                            st.error(f"Debug failed: {dbg.get('error')}")
+                        else:
+                            st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
+                            st.write("Detected columns (first 200):")
+                            st.code("\n".join(dbg.get("columns", [])))
+                            prev = dbg.get("head_preview")
+                            if isinstance(prev, pd.DataFrame):
+                                prev = prev.copy()
+                                prev.columns = [str(c) for c in prev.columns]
+                                st.dataframe(prev, use_container_width=True)
+                else:
+                    # This is the readable, player-friendly view
+                    render_trackman_session(raw_preview)
 
             can_log = tm_file is not None and controls_complete()
 
@@ -448,7 +475,7 @@ else:
                         "Please export TrackMan as **CSV or XLSX** for analysis."
                     )
                 else:
-                    stat = process_trackman_file(tm_file, selected_s)
+                                        raw, stat = process_trackman_file(tm_file, selected_s)
 
                     if not stat:
                         st.error("Could not parse TrackMan file (no required metrics found). Showing debug below.")
@@ -460,12 +487,11 @@ else:
                                 st.write(f"Rows after cleanup: {dbg.get('rows_after_cleanup')}")
                                 st.write("Detected columns (first 200):")
                                 st.code("\n".join(dbg.get("columns", [])))
-                                # Make preview Arrow-safe: stringify columns
                                 prev = dbg.get("head_preview")
                                 if isinstance(prev, pd.DataFrame):
                                     prev = prev.copy()
                                     prev.columns = [str(c) for c in prev.columns]
-                                    st.dataframe(prev)
+                                    st.dataframe(prev, use_container_width=True)
                     else:
                         stat["Shaft ID"] = selected_s
                         stat["Controlled"] = "Yes"
@@ -473,6 +499,7 @@ else:
                         stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         st.session_state.tm_lab_data.append(stat)
                         st.rerun()
+
 
             if tm_file is not None and not controls_complete():
                 st.info("Finish Lab Controls above to enable logging.")
@@ -494,7 +521,8 @@ else:
                 show_cols = [c for c in preferred_cols if c in lab_df.columns] + [
                     c for c in lab_df.columns if c not in preferred_cols
                 ]
-                st.table(lab_df[show_cols])
+                st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
+
 
                 baseline_row = None
                 if (lab_df["Shaft ID"] == "Current Baseline").any():
