@@ -155,24 +155,131 @@ def _filter_use_in_stat(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+import io
+import pandas as pd
+
+
+def _looks_like_units_row(row_values) -> bool:
+    """
+    Returns True if a row looks like TrackMan unit labels: [mph], [deg], [rpm], [yds], [].
+    """
+    hits = 0
+    total = 0
+    for v in row_values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s:
+            continue
+        total += 1
+        if (s.startswith("[") and s.endswith("]")) or s == "[]":
+            hits += 1
+    return total > 0 and (hits / total) >= 0.4
+
+
+def _build_columns_from_header_and_units(header_row, units_row=None):
+    cols = []
+    for i, name in enumerate(header_row):
+        n = "" if name is None else str(name).strip()
+        u = ""
+        if units_row is not None and i < len(units_row):
+            u = "" if units_row[i] is None else str(units_row[i]).strip()
+
+        if u and ((u.startswith("[") and u.endswith("]")) or u == "[]"):
+            col = f"{n} {u}".strip()
+        else:
+            col = n
+
+        cols.append(col if col else f"Col_{i}")
+    return cols
+
+
+def _read_excel_raw(uploaded_file) -> pd.DataFrame:
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    data = uploaded_file.read()
+    return pd.read_excel(io.BytesIO(data), sheet_name=0, header=None)
+
+
+def _read_csv_best_effort(uploaded_file) -> pd.DataFrame:
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    data = uploaded_file.read()
+    try:
+        return pd.read_csv(io.BytesIO(data))
+    except Exception:
+        return pd.read_csv(io.BytesIO(data), sep=None, engine="python")
+
 
 def load_trackman(uploaded_file) -> pd.DataFrame:
     """
-    Reads CSV/XLSX. (PDF handled in app.py with a message; we do not parse it here.)
+    Loads TrackMan CSV/XLSX exports into a cleaned dataframe with canonical
+    column names (including units).
+    Handles 'Normalized' Excel exports where headers are embedded as the first row
+    and units are on the second row (common symptoms: Unnamed: 1, and row contains 'TMD No').
     """
     name = getattr(uploaded_file, "name", "") or ""
-    if name.lower().endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+    lower = name.lower()
 
-    df = _maybe_cleanup_trackman_export(df)
-    df = _filter_use_in_stat(df)
+    if lower.endswith(".csv"):
+        df = _read_csv_best_effort(uploaded_file)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
 
-    # IMPORTANT: make columns unique for Streamlit/Arrow + stable matching
-    df = _dedupe_columns(df)
+    if not (lower.endswith(".xlsx") or lower.endswith(".xls")):
+        raise ValueError("Unsupported file type")
 
-    return df
+    raw = _read_excel_raw(uploaded_file)
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+
+    # Find the header row: TrackMan normalized exports often contain "TMD No" on the header row.
+    header_idx = None
+    for i in range(min(len(raw), 30)):  # scan first ~30 rows
+        row = raw.iloc[i].tolist()
+        row_str = [str(x).strip().lower() if x is not None else "" for x in row]
+        if "tmd no" in row_str:
+            header_idx = i
+            break
+
+    # If we didn't find it, fall back to row 0 as header.
+    if header_idx is None:
+        header_idx = 0
+
+    header_row = raw.iloc[header_idx].tolist()
+
+    # Units row is usually the next row if it looks like [mph], [deg], etc.
+    units_row = None
+    if header_idx + 1 < len(raw):
+        candidate_units = raw.iloc[header_idx + 1].tolist()
+        if _looks_like_units_row(candidate_units):
+            units_row = candidate_units
+
+    cols = _build_columns_from_header_and_units(header_row, units_row=units_row)
+
+    # Data starts after header row (+ units row if present)
+    data_start = header_idx + 1 + (1 if units_row is not None else 0)
+    out = raw.iloc[data_start:].copy()
+    out.columns = cols
+
+    # Drop completely empty columns
+    out = out.dropna(axis=1, how="all").reset_index(drop=True)
+
+    # Strip column names
+    out.columns = [str(c).strip() for c in out.columns]
+
+    # Coerce numeric columns where possible
+    for c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="ignore")
+
+    return out
+
 
 
 def summarize_trackman(
