@@ -1,4 +1,3 @@
-
 # core/efficiency_optimizer.py
 from __future__ import annotations
 
@@ -9,26 +8,21 @@ import numpy as np
 import pandas as pd
 
 
-# -----------------------------
-# Config + helpers
-# -----------------------------
 @dataclass(frozen=True)
 class EfficiencyConfig:
-    # “Optimal” windows (starter values; tune later)
+    # Targets / tolerances (starter values; tune later)
     LAUNCH_TARGET: float = 16.0
-    LAUNCH_TOL: float = 4.0          # +/- degrees where score degrades to 0
+    LAUNCH_TOL: float = 4.0
 
     SPIN_TARGET: float = 5800.0
-    SPIN_TOL: float = 1800.0         # +/- rpm where score degrades to 0
+    SPIN_TOL: float = 1800.0
 
-    # Smash normalization (starter; irons typically 1.30–1.40)
     SMASH_GOOD: float = 1.38
 
-    # Dispersion scaling (starter values)
-    FTP_SD_BAD: float = 4.0          # face-to-path SD beyond this is “bad”
-    CARRY_SD_BAD: float = 12.0       # carry SD beyond this is “bad”
+    FTP_SD_BAD: float = 4.0
+    CARRY_SD_BAD: float = 12.0
 
-    # Weighting (must sum to 1.0 ideally)
+    # Weights
     W_LAUNCH: float = 0.28
     W_SPIN: float = 0.28
     W_SMASH: float = 0.22
@@ -57,7 +51,6 @@ def _clamp01(x: float) -> float:
 
 
 def _window_score(value: Optional[float], target: float, tol: float) -> float:
-    """0..1 score, 1 at target, linearly decays to 0 at +/- tol."""
     if value is None or tol <= 0:
         return 0.0
     diff = abs(value - target)
@@ -65,28 +58,18 @@ def _window_score(value: Optional[float], target: float, tol: float) -> float:
 
 
 def _ratio_score(value: Optional[float], good: float) -> float:
-    """0..1 score based on ratio to 'good' value, capped at 1."""
     if value is None or good <= 0:
         return 0.0
     return _clamp01(value / good)
 
 
 def _inverse_score(value: Optional[float], bad: float) -> float:
-    """0..1 score where lower is better; 1 at 0 and 0 at >= bad."""
     if value is None or bad <= 0:
         return 0.0
     return _clamp01(1.0 - (value / bad))
 
 
-# -----------------------------
-# Public API
-# -----------------------------
 def compute_efficiency_row(row: pd.Series, cfg: EfficiencyConfig) -> Dict[str, float]:
-    """
-    Returns component scores (0..100) and overall efficiency_score (0..100).
-    Expects TrackMan-lab summary columns:
-      Launch Angle, Spin Rate, Smash Factor, Face To Path SD, Carry SD
-    """
     launch = _to_float(row.get("Launch Angle"))
     spin = _to_float(row.get("Spin Rate"))
     smash = _to_float(row.get("Smash Factor"))
@@ -97,7 +80,6 @@ def compute_efficiency_row(row: pd.Series, cfg: EfficiencyConfig) -> Dict[str, f
     spin_s = _window_score(spin, cfg.SPIN_TARGET, cfg.SPIN_TOL)
     smash_s = _ratio_score(smash, cfg.SMASH_GOOD)
 
-    # Dispersion stability: combine F2P SD and Carry SD
     ftp_s = _inverse_score(ftp_sd, cfg.FTP_SD_BAD)
     carry_s = _inverse_score(carry_sd, cfg.CARRY_SD_BAD)
     disp_s = (0.60 * ftp_s) + (0.40 * carry_s)
@@ -119,10 +101,6 @@ def compute_efficiency_row(row: pd.Series, cfg: EfficiencyConfig) -> Dict[str, f
 
 
 def compute_confidence_row(row: pd.Series, cfg: EfficiencyConfig) -> Tuple[float, Dict[str, bool]]:
-    """
-    Soft filter: does NOT delete shots. Produces confidence_score (0..100)
-    and flags to display warnings.
-    """
     shot_count = _to_float(row.get("Shot Count")) or 0.0
     ftp_sd = _to_float(row.get("Face To Path SD")) or 0.0
     carry_sd = _to_float(row.get("Carry SD")) or 0.0
@@ -135,10 +113,8 @@ def compute_confidence_row(row: pd.Series, cfg: EfficiencyConfig) -> Tuple[float
         "high_smash_sd": smash_sd > float(cfg.WARN_SMASH_SD),
     }
 
-    # Start at 100 and subtract penalties
     conf = 100.0
     if flags["low_shots"]:
-        # scale penalty by how far below min shots we are (cap at 30)
         missing = max(0.0, float(cfg.MIN_SHOTS) - shot_count)
         conf -= min(30.0, 6.0 * missing)
 
@@ -159,18 +135,11 @@ def build_comparison_table(
     baseline_shaft_id: Optional[str],
     cfg: EfficiencyConfig,
 ) -> pd.DataFrame:
-    """
-    Builds the fitter's primary decision table:
-      Shaft | Carry Δ | Launch Δ | Spin Δ | Smash | Dispersion | Efficiency | Confidence
-
-    baseline_shaft_id should be the Tag/Shaft ID string selected as baseline.
-    """
     if lab_df is None or lab_df.empty:
         return pd.DataFrame()
 
     df = lab_df.copy()
 
-    # Resolve baseline row (may be missing)
     baseline_row = None
     if baseline_shaft_id:
         m = df["Shaft ID"].astype(str) == str(baseline_shaft_id)
@@ -191,22 +160,34 @@ def build_comparison_table(
         eff_parts = compute_efficiency_row(r, cfg)
         conf, flags = compute_confidence_row(r, cfg)
 
-        carry = _to_float(r.get("Carry"))
-        launch = _to_float(r.get("Launch Angle"))
-        spin = _to_float(r.get("Spin Rate"))
         smash = _to_float(r.get("Smash Factor"))
-
         carry_sd = _to_float(r.get("Carry SD"))
         ftp_sd = _to_float(r.get("Face To Path SD"))
 
-        # Simple “Dispersion” display: favor F2P SD if present
-        dispersion_display = None
-        if ftp_sd is not None and ftp_sd != 0:
-            dispersion_display = ftp_sd
-        elif carry_sd is not None:
-            dispersion_display = carry_sd
+        dispersion_display = ftp_sd if ftp_sd not in (None, 0) else carry_sd
 
         rows.append(
             {
-                "Shaft": r.get(
-                     
+                "Shaft": r.get("Shaft Label") or r.get("Shaft ID"),
+                "Shaft ID": str(r.get("Shaft ID")),
+                "Carry Δ": delta("Carry", r),
+                "Launch Δ": delta("Launch Angle", r),
+                "Spin Δ": delta("Spin Rate", r),
+                "Smash": smash,
+                "Dispersion": dispersion_display,
+                "Efficiency": eff_parts["efficiency_score"],
+                "Confidence": conf,
+                "_flags": flags,
+                "_eff_parts": eff_parts,
+            }
+        )
+
+    out = pd.DataFrame(rows)
+    out = out.sort_values(["Efficiency", "Confidence"], ascending=[False, False]).reset_index(drop=True)
+    return out
+
+
+def pick_efficiency_winner(table_df: pd.DataFrame) -> Optional[pd.Series]:
+    if table_df is None or table_df.empty:
+        return None
+    return table_df.iloc[0]
