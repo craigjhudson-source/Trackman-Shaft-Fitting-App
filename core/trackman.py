@@ -336,24 +336,80 @@ def summarize_trackman(
     return out
 
 
-def debug_trackman(uploaded_file) -> Dict[str, Any]:
+import io
+import pandas as pd
+
+
+def debug_trackman(uploaded_file):
     """
-    Returns a debug bundle to help you see exactly what the parser read.
-    Safe for Streamlit display (preview df will be deduped).
+    Safe debug helper for TrackMan uploads.
+    Returns:
+      {
+        "ok": bool,
+        "error": str (if not ok),
+        "rows_after_cleanup": int,
+        "columns": list[str],
+        "head_preview": pd.DataFrame
+      }
+    Never throws.
     """
     try:
-        df = load_trackman(uploaded_file)
-        cols = [str(c) for c in df.columns]
+        name = getattr(uploaded_file, "name", "") or ""
 
-        preview = df.head(12).copy()
-        # Extra-safe: ensure no dupes for arrow conversion
-        preview = _dedupe_columns(preview)
+        # Make sure we can read from the start
+        try:
+            uploaded_file.seek(0)
+        except Exception:
+            pass
 
-        return {
-            "ok": True,
-            "rows_after_cleanup": int(len(df)),
-            "columns": cols[:200],
-            "head_preview": preview,
-        }
+        data = uploaded_file.read()
+        if not data:
+            return {"ok": False, "error": "Empty upload stream (no bytes read)."}
+
+        # Wrap bytes in a fresh file-like object so downstream reads are reliable
+        buf = io.BytesIO(data)
+        try:
+            buf.name = name
+        except Exception:
+            pass
+
+        # Try your main loader first
+        try:
+            df = load_trackman(buf)
+            cols = [str(c) for c in getattr(df, "columns", [])]
+            head = df.head(15).copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+            return {
+                "ok": True,
+                "rows_after_cleanup": int(len(df)) if isinstance(df, pd.DataFrame) else 0,
+                "columns": cols[:200],
+                "head_preview": head,
+            }
+        except Exception as e_load:
+            # Fallback: raw read to at least show what the sheet looks like
+            try:
+                buf2 = io.BytesIO(data)
+                try:
+                    buf2.name = name
+                except Exception:
+                    pass
+
+                if name.lower().endswith(".csv"):
+                    df_raw = pd.read_csv(buf2, header=None)
+                else:
+                    df_raw = pd.read_excel(buf2, sheet_name=0, header=None)
+
+                head = df_raw.head(15).copy()
+                cols = [f"Col_{i}" for i in range(df_raw.shape[1])] if df_raw is not None else []
+                return {
+                    "ok": False,
+                    "error": f"load_trackman failed: {e_load}",
+                    "rows_after_cleanup": int(len(df_raw)) if isinstance(df_raw, pd.DataFrame) else 0,
+                    "columns": cols[:200],
+                    "head_preview": head,
+                }
+            except Exception as e_fallback:
+                return {"ok": False, "error": f"Debug fallback failed: {e_fallback}"}
+
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
