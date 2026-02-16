@@ -9,6 +9,7 @@ from core.trackman import load_trackman, summarize_trackman, debug_trackman
 from core.trackman_display import render_trackman_session
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
+from core.efficiency_optimizer import EfficiencyConfig, build_comparison_table, pick_efficiency_winner
 
 
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
@@ -721,54 +722,63 @@ else:
                 ]
                 st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
-                # Winner selection (temporary): best Smash Factor among candidates
-                cand = lab_df.copy()
-                if "Smash Factor" not in cand.columns or cand["Smash Factor"].isna().all():
-                    st.warning("Smash Factor missing from TrackMan export — cannot pick a winner.")
-                else:
-                    try:
-                        top_idx = cand["Smash Factor"].astype(float).idxmax()
-                        winner_row = cand.loc[top_idx]
-                        winner_name = winner_row.get("Shaft Label") or winner_row.get("Shaft ID", "Winner")
+                # ------------------ Intelligence Layer: Efficiency + Confidence ------------------
+baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
 
-                        st.success(
-                            f"🏆 **Efficiency Winner (temporary):** {winner_name} "
-                            f"(Smash {winner_row.get('Smash Factor','')})"
-                        )
+eff_cfg = EfficiencyConfig(
+    MIN_SHOTS=int(MIN_SHOTS),
+    WARN_FACE_TO_PATH_SD=float(WARN_FACE_TO_PATH_SD),
+    WARN_CARRY_SD=float(WARN_CARRY_SD),
+    WARN_SMASH_SD=float(WARN_SMASH_SD),
+)
 
-                        # Quality warnings (not enforced)
-                        ftp_sd = float(winner_row.get("Face To Path SD", 0) or 0)
-                        carry_sd = float(winner_row.get("Carry SD", 0) or 0)
-                        smash_sd = float(winner_row.get("Smash Factor SD", 0) or 0)
+comparison_df = build_comparison_table(
+    lab_df,
+    baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
+    cfg=eff_cfg,
+)
 
-                        if ftp_sd and ftp_sd > WARN_FACE_TO_PATH_SD:
-                            st.warning(
-                                f"⚠️ Face-to-Path variance is high (SD {ftp_sd:.2f} > {WARN_FACE_TO_PATH_SD:.2f})."
-                            )
-                        if carry_sd and carry_sd > WARN_CARRY_SD:
-                            st.warning(
-                                f"⚠️ Carry variance is high (SD {carry_sd:.1f} > {WARN_CARRY_SD:.1f})."
-                            )
-                        if smash_sd and smash_sd > WARN_SMASH_SD:
-                            st.warning(
-                                f"⚠️ Smash variance is high (SD {smash_sd:.3f} > {WARN_SMASH_SD:.3f})."
-                            )
+st.subheader("📊 Baseline Comparison Table")
+display_cols = ["Shaft", "Carry Δ", "Launch Δ", "Spin Δ", "Smash", "Dispersion", "Efficiency", "Confidence"]
+st.dataframe(comparison_df[display_cols], use_container_width=True, hide_index=True, height=320)
 
-                        st.subheader("Phase 6 Optimization Suggestions")
+winner = pick_efficiency_winner(comparison_df)
+if winner is None:
+    st.warning("No efficiency winner could be computed yet.")
+else:
+    st.success(
+        f"🏆 **Efficiency Winner:** {winner['Shaft']} "
+        f"(Efficiency {winner['Efficiency']} | Confidence {winner['Confidence']})"
+    )
 
-                        recs = phase6_recommendations(
-                            winner_row,
-                            baseline_row=None,
-                            club="6i",
-                            environment=st.session_state.environment,
-                        )
-                        st.session_state.phase6_recs = recs
+    # Show soft-filter flags (do not delete shots)
+    flags = winner.get("_flags") or {}
+    if flags.get("low_shots"):
+        st.warning(f"⚠️ Low shot count (MIN_SHOTS={int(MIN_SHOTS)}). Confidence reduced.")
+    if flags.get("high_face_to_path_sd"):
+        st.warning(f"⚠️ Face-to-Path SD high (> {float(WARN_FACE_TO_PATH_SD):.2f}). Confidence reduced.")
+    if flags.get("high_carry_sd"):
+        st.warning(f"⚠️ Carry SD high (> {float(WARN_CARRY_SD):.1f}). Confidence reduced.")
+    if flags.get("high_smash_sd"):
+        st.warning(f"⚠️ Smash SD high (> {float(WARN_SMASH_SD):.3f}). Confidence reduced.")
 
-                        for r in recs:
-                            css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
-                            st.markdown(
-                                f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
-                                unsafe_allow_html=True,
-                            )
-                    except Exception:
-                        st.warning("Could not compute winner from current lab table.")
+    st.subheader("Phase 6 Optimization Suggestions")
+    # We pass the winner row from lab_df (not the comparison row)
+    # Map back using Shaft ID
+    w_id = str(winner.get("Shaft ID"))
+    w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id]
+    winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
+
+    recs = phase6_recommendations(
+        winner_row,
+        baseline_row=None,
+        club="6i",
+        environment=st.session_state.environment,
+    )
+    st.session_state.phase6_recs = recs
+    for r in recs:
+        css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
+        st.markdown(
+            f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
+            unsafe_allow_html=True,
+        )
