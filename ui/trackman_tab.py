@@ -41,6 +41,16 @@ def _ensure_lab_controls() -> None:
             st.session_state.lab_controls.setdefault(k, v)
 
 
+def _ensure_preview_persistence_defaults() -> None:
+    """
+    Streamlit reruns can clear file_uploader objects on tab changes.
+    Persist the last successful preview so it doesn't 'disappear'.
+    """
+    st.session_state.setdefault("tm_last_preview_df", None)
+    st.session_state.setdefault("tm_last_preview_name", None)
+    st.session_state.setdefault("tm_last_preview_time", None)
+
+
 def _bump_tm_refresh() -> None:
     """
     Signals that Trackman lab data changed so other tabs can refresh.
@@ -255,6 +265,12 @@ def render_trackman_tab(
     WARN_SMASH_SD: float,
 ) -> None:
     _ensure_lab_controls()
+    _ensure_preview_persistence_defaults()
+
+    # Defensive: environment used for radio index
+    st.session_state.setdefault("environment", "Indoors (Mat)")
+    st.session_state.setdefault("answers", {})
+    st.session_state.setdefault("tm_lab_data", [])
 
     st.header("🧪 Trackman Lab (Controlled Testing)")
 
@@ -330,6 +346,22 @@ def render_trackman_tab(
                 st.info("PDF uploaded (accepted but not parsed). Export as CSV/XLSX for analysis.")
             else:
                 raw_preview, _ = _process_trackman_file(tm_file, selected_s)
+
+                # Persist preview ONLY on successful parse
+                if raw_preview is not None and not raw_preview.empty:
+                    st.session_state.tm_last_preview_df = raw_preview
+                    st.session_state.tm_last_preview_name = name
+                    st.session_state.tm_last_preview_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # If uploader is empty (tab switch), show persisted preview
+        if tm_file is None and st.session_state.tm_last_preview_df is not None:
+            st.subheader("Last Preview (Persisted)")
+            st.caption(
+                f"{st.session_state.tm_last_preview_name or 'Previous Upload'} "
+                f"• {st.session_state.tm_last_preview_time or ''}"
+            )
+            render_trackman_session(st.session_state.tm_last_preview_df)
+            st.info("Upload the file again to log it to the lab. (Preview persists for reference.)")
 
         if tm_file is not None and raw_preview is None:
             st.error("Could not parse TrackMan file for preview. Showing debug below.")
