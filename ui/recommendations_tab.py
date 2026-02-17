@@ -53,6 +53,22 @@ def _get_goal_rankings() -> Optional[Dict[str, Any]]:
     return gr if isinstance(gr, dict) else None
 
 
+def _get_goal_recs() -> Optional[Dict[str, Any]]:
+    """
+    Fallback payload produced by Trackman tab until full goal scoring leaderboard is activated.
+    Expected shape (minimum):
+      {
+        "source": "...",
+        "winner_summary": {...},
+        "baseline_tag_id": ...,
+        "environment": ...,
+        "generated_at": ...
+      }
+    """
+    gr = st.session_state.get("goal_recs", None)
+    return gr if isinstance(gr, dict) else None
+
+
 def _result_to_row(r: Any) -> Dict[str, Any]:
     if r is None:
         return {}
@@ -134,6 +150,72 @@ def _refresh_controls() -> None:
             st.session_state.recs_seen_tm_version = current_v
 
 
+def _render_goal_based_from_goal_rankings(gr: Dict[str, Any]) -> None:
+    st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
+
+    baseline_id = gr.get("baseline_shaft_id", None)
+    results = gr.get("results", [])
+    top = results[0] if results else None
+
+    if top is not None:
+        row = _result_to_row(top)
+        st.success(f"**Best for your goals:** {row.get('Shaft','')}  (ID {row.get('Shaft ID','')})")
+        why = row.get("Why", "")
+        if why:
+            st.caption(why)
+
+    top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
+    if top_by_goal:
+        st.markdown("#### Best shaft by goal")
+        gcols = st.columns(2)
+        items = list(top_by_goal.items())
+        for i, (goal_name, best) in enumerate(items):
+            with gcols[0] if i % 2 == 0 else gcols[1]:
+                _goal_best_to_card(best, goal_name, baseline_id)
+
+    st.markdown("#### Goal Scorecard Leaderboard")
+    rows = [_result_to_row(r) for r in results[:8]]
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+
+def _render_goal_based_from_goal_recs(goal_recs: Dict[str, Any]) -> None:
+    """
+    Fallback rendering: show at least the Trackman winner and context.
+    """
+    ws = goal_recs.get("winner_summary", None)
+    baseline_tag_id = goal_recs.get("baseline_tag_id", None)
+    env = goal_recs.get("environment", None)
+    ts = goal_recs.get("generated_at", None)
+
+    st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
+    st.caption("Fallback mode (goal scoring leaderboard not yet activated).")
+
+    meta_bits: List[str] = []
+    if baseline_tag_id is not None and str(baseline_tag_id).strip():
+        meta_bits.append(f"Baseline: {baseline_tag_id}")
+    if env:
+        meta_bits.append(f"Env: {env}")
+    if ts:
+        meta_bits.append(f"Updated: {ts}")
+    if meta_bits:
+        st.caption(" • ".join(meta_bits))
+
+    if isinstance(ws, dict):
+        headline = ws.get("headline") or "Best pick"
+        shaft_label = ws.get("shaft_label") or "Winner selected"
+        explain = ws.get("explain") or ""
+        st.success(f"**{headline}:** {shaft_label}")
+        if explain:
+            st.caption(explain)
+    else:
+        st.info("Trackman winner is available but winner_summary payload is missing.")
+
+    st.divider()
+
+
 def render_recommendations_tab(
     *,
     p_name: str,
@@ -184,35 +266,12 @@ def render_recommendations_tab(
 
     # ---------------- Goal-based Trackman Recommendations ----------------
     gr = _get_goal_rankings()
+    goal_recs = _get_goal_recs()
+
     if gr and gr.get("results"):
-        st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
-
-        baseline_id = gr.get("baseline_shaft_id", None)
-        results = gr.get("results", [])
-        top = results[0] if results else None
-
-        if top is not None:
-            row = _result_to_row(top)
-            st.success(f"**Best for your goals:** {row.get('Shaft','')}  (ID {row.get('Shaft ID','')})")
-            why = row.get("Why", "")
-            if why:
-                st.caption(why)
-
-        top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
-        if top_by_goal:
-            st.markdown("#### Best shaft by goal")
-            gcols = st.columns(2)
-            items = list(top_by_goal.items())
-            for i, (goal_name, best) in enumerate(items):
-                with gcols[0] if i % 2 == 0 else gcols[1]:
-                    _goal_best_to_card(best, goal_name, baseline_id)
-
-        st.markdown("#### Goal Scorecard Leaderboard")
-        rows = [_result_to_row(r) for r in results[:8]]
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-        st.divider()
+        _render_goal_based_from_goal_rankings(gr)
+    elif goal_recs and isinstance(goal_recs.get("winner_summary", None), dict):
+        _render_goal_based_from_goal_recs(goal_recs)
     else:
         st.info(
             "Goal-based recommendations will appear here after you upload Trackman data in **🧪 Trackman Lab** "
@@ -220,7 +279,7 @@ def render_recommendations_tab(
         )
         st.divider()
 
-    # Winner summary
+    # Winner summary (still shown separately for now)
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
