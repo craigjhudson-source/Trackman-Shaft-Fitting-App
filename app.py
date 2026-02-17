@@ -1,4 +1,9 @@
+# app.py
+from __future__ import annotations
+
 import datetime
+from typing import Dict, Any, Optional, List
+
 import pandas as pd
 import streamlit as st
 import gspread
@@ -10,11 +15,15 @@ from core.trackman_display import render_trackman_session
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
-# --- Tour Proven UI (new) ---
-# (Safe: file must exist)
-from ui.tour_proven_matrix import render_tour_proven_matrix
+# Modular UI blocks
+# (If these files don't exist yet, the app will still run because we guard the imports.)
+UI_INTEL_AVAILABLE = True
+try:
+    from ui.intelligence import render_intelligence_block
+except Exception:
+    UI_INTEL_AVAILABLE = False
 
-# --- Optional Intelligence Layer imports (prevents app crash if module missing) ---
+# --- Optional Efficiency Layer import (prevents app crash if file missing) ---
 EFF_AVAILABLE = True
 try:
     from core.efficiency_optimizer import (
@@ -25,14 +34,8 @@ try:
 except Exception:
     EFF_AVAILABLE = False
 
-# --- Optional modular intelligence block (preferred) ---
-INTELLIGENCE_UI_AVAILABLE = True
-try:
-    from ui.intelligence import render_intelligence_block
-except Exception:
-    INTELLIGENCE_UI_AVAILABLE = False
 
-
+# ------------------ Page setup ------------------
 st.set_page_config(page_title="Tour Proven Shaft Fitting", layout="wide", page_icon="⛳")
 
 st.markdown(
@@ -41,19 +44,18 @@ st.markdown(
 [data-testid="stTable"] { font-size: 12px !important; }
 .profile-bar { background-color: #142850; color: white; padding: 20px; border-radius: 10px; margin-bottom: 25px; }
 .profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-.verdict-text { font-style: italic; color: #444; margin-bottom: 25px; font-size: 13px; border-left: 3px solid #b40000; padding-left: 10px; }
+.verdict-text { font-style: italic; color: #bfbfbf; margin-bottom: 25px; font-size: 13px; border-left: 3px solid #b40000; padding-left: 10px; }
 .rec-warn { border-left: 4px solid #b40000; padding-left: 10px; margin: 6px 0; }
 .rec-info { border-left: 4px solid #2c6bed; padding-left: 10px; margin: 6px 0; }
+.smallcap { color: #9aa0a6; font-size: 12px; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
+
 # ------------------ DB ------------------
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
-
-
-def get_google_creds(scopes):
+def get_google_creds(scopes: List[str]) -> Credentials:
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
@@ -65,6 +67,7 @@ def get_google_creds(scopes):
     except Exception as e:
         st.error(f"🔐 Security Error: {e}")
         st.stop()
+        raise
 
 
 def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
@@ -78,7 +81,7 @@ def cfg_float(cfg_df: pd.DataFrame, key: str, default: float) -> float:
 
 
 @st.cache_data(ttl=600)
-def get_data_from_gsheet():
+def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -86,20 +89,24 @@ def get_data_from_gsheet():
         ]
         creds = get_google_creds(scopes)
         gc = gspread.authorize(creds)
-        sh = gc.open_by_url(SHEET_URL)
+
+        sh = gc.open_by_url(
+            "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
+        )
 
         def get_clean_df(ws_name: str) -> pd.DataFrame:
             rows = sh.worksheet(ws_name).get_all_values()
             if not rows or len(rows) < 2:
                 return pd.DataFrame()
-            df = pd.DataFrame(
-                rows[1:],
-                columns=[
-                    h.strip() if str(h).strip() else f"Col_{i}"
-                    for i, h in enumerate(rows[0])
-                ],
-            )
-            return df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+            headers = [
+                (h.strip() if str(h).strip() else f"Col_{i}") for i, h in enumerate(rows[0])
+            ]
+            df = pd.DataFrame(rows[1:], columns=headers)
+            # strip strings
+            for c in df.columns:
+                if df[c].dtype == "object":
+                    df[c] = df[c].astype(str).str.strip()
+            return df
 
         return {
             k: get_clean_df(k)
@@ -110,7 +117,7 @@ def get_data_from_gsheet():
         return None
 
 
-def save_to_fittings(answers: dict):
+def save_to_fittings(answers: Dict[str, Any]) -> None:
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -118,7 +125,10 @@ def save_to_fittings(answers: dict):
         ]
         creds = get_google_creds(scopes)
         gc = gspread.authorize(creds)
-        sh = gc.open_by_url(SHEET_URL)
+
+        sh = gc.open_by_url(
+            "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
+        )
         worksheet = sh.worksheet("Fittings")
 
         row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [
@@ -147,8 +157,7 @@ def process_trackman_file(uploaded_file, shaft_id):
         stat = summarize_trackman(raw, shaft_id, include_std=True)
 
         required_any = any(
-            k in stat
-            for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
+            k in stat for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
         )
         if not required_any:
             return None, None
@@ -158,12 +167,12 @@ def process_trackman_file(uploaded_file, shaft_id):
         return None, None
 
 
-def _extract_tag_ids(raw_df: pd.DataFrame):
+def _extract_tag_ids(raw_df: pd.DataFrame) -> List[str]:
     if raw_df is None or raw_df.empty or "Tags" not in raw_df.columns:
         return []
     s = raw_df["Tags"].astype(str).str.strip()
     s = s[s != ""]
-    cleaned = []
+    cleaned: List[str] = []
     for v in s.unique().tolist():
         try:
             fv = float(v)
@@ -174,8 +183,8 @@ def _extract_tag_ids(raw_df: pd.DataFrame):
     return sorted(cleaned)
 
 
-def _shaft_label_map(shafts_df: pd.DataFrame):
-    out = {}
+def _shaft_label_map(shafts_df: pd.DataFrame) -> Dict[str, str]:
+    out: Dict[str, str] = {}
     if shafts_df is None or shafts_df.empty:
         return out
 
@@ -220,7 +229,7 @@ def _filter_by_tag(raw_df: pd.DataFrame, tag_id: str) -> pd.DataFrame:
     return raw_df.loc[s_norm == str(tag_id)].copy()
 
 
-def find_baseline_shaft_id_from_answers(ans: dict, shafts_df: pd.DataFrame):
+def find_baseline_shaft_id_from_answers(ans: Dict[str, Any], shafts_df: pd.DataFrame) -> Optional[str]:
     """
     Attempts to match the interview's current/gamer shaft answers to Shafts sheet.
     Assumes:
@@ -242,9 +251,10 @@ def find_baseline_shaft_id_from_answers(ans: dict, shafts_df: pd.DataFrame):
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
-    m = (df["Brand"].str.lower() == current_brand.lower()) & (
-        df["Model"].str.lower() == current_model.lower()
-    )
+    if "Brand" not in df.columns or "Model" not in df.columns or "ID" not in df.columns:
+        return None
+
+    m = (df["Brand"].str.lower() == current_brand.lower()) & (df["Model"].str.lower() == current_model.lower())
     if current_flex and "Flex" in df.columns:
         m = m & (df["Flex"].str.lower() == current_flex.lower())
 
@@ -252,9 +262,7 @@ def find_baseline_shaft_id_from_answers(ans: dict, shafts_df: pd.DataFrame):
     if len(hit) >= 1:
         return str(hit.iloc[0]["ID"]).strip()
 
-    m2 = (df["Brand"].str.lower() == current_brand.lower()) & (
-        df["Model"].str.lower() == current_model.lower()
-    )
+    m2 = (df["Brand"].str.lower() == current_brand.lower()) & (df["Model"].str.lower() == current_model.lower())
     hit2 = df[m2]
     if len(hit2) >= 1:
         return str(hit2.iloc[0]["ID"]).strip()
@@ -262,7 +270,7 @@ def find_baseline_shaft_id_from_answers(ans: dict, shafts_df: pd.DataFrame):
     return None
 
 
-# ------------------ Session ------------------
+# ------------------ Session defaults ------------------
 if "form_step" not in st.session_state:
     st.session_state.form_step = 0
 if "interview_complete" not in st.session_state:
@@ -291,7 +299,7 @@ if "lab_controls" not in st.session_state:
     }
 
 
-def sync_all():
+def sync_all() -> None:
     for key in list(st.session_state.keys()):
         if key.startswith("widget_"):
             st.session_state.answers[key.replace("widget_", "")] = st.session_state[key]
@@ -301,7 +309,7 @@ def controls_complete() -> bool:
     return all(bool(v) for v in st.session_state.lab_controls.values())
 
 
-def should_show_question(qid: str, answers: dict) -> bool:
+def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
     """
     Decision-tree visibility for sub-questions.
     Hides follow-ups unless satisfaction is answered and is not Yes.
@@ -330,34 +338,44 @@ cfg = all_data["Config"]
 
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 3.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
-WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.1)
+WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.10)
 MIN_SHOTS = int(cfg_float(cfg, "MIN_SHOTS", 8))
 
 q_master = all_data["Questions"]
-categories = list(dict.fromkeys(q_master["Category"].tolist()))
+if q_master is None or q_master.empty or "Category" not in q_master.columns:
+    st.error("Questions sheet is missing or invalid.")
+    st.stop()
+
+categories = list(dict.fromkeys(q_master["Category"].astype(str).tolist()))
+
 
 # ------------------ Interview ------------------
 if not st.session_state.interview_complete:
     st.title("⛳ Tour Proven Fitting Interview")
+
     current_cat = categories[st.session_state.form_step]
-    q_df = q_master[q_master["Category"] == current_cat]
+    q_df = q_master[q_master["Category"].astype(str) == str(current_cat)]
 
     for _, row in q_df.iterrows():
-        qid = str(row["QuestionID"]).strip()
+        qid = str(row.get("QuestionID", "")).strip()
+        if not qid:
+            continue
 
         if not should_show_question(qid, st.session_state.answers):
             continue
 
-        qtext = str(row["QuestionText"])
-        qtype = str(row["InputType"])
+        qtext = str(row.get("QuestionText", "")).strip()
+        qtype = str(row.get("InputType", "")).strip()
         qopts = str(row.get("Options", "")).strip()
         ans_val = st.session_state.answers.get(qid, "")
 
         if qtype == "Dropdown":
-            opts = [""]
+            opts: List[str] = [""]
 
+            # Heads dynamic dropdowns
             if "Heads" in qopts:
                 brand_val = st.session_state.answers.get("Q08", "")
+
                 if "Brand" in qtext:
                     if "Manufacturer" in all_data["Heads"].columns:
                         opts += sorted(all_data["Heads"]["Manufacturer"].dropna().unique().tolist())
@@ -365,53 +383,78 @@ if not st.session_state.interview_complete:
                         opts += sorted(all_data["Heads"].iloc[:, 0].dropna().unique().tolist())
                 else:
                     if "Manufacturer" in all_data["Heads"].columns and "Model" in all_data["Heads"].columns:
-                        opts += (
-                            sorted(
+                        if brand_val:
+                            opts += sorted(
                                 all_data["Heads"][all_data["Heads"]["Manufacturer"] == brand_val]["Model"]
                                 .dropna()
                                 .unique()
                                 .tolist()
                             )
-                            if brand_val
-                            else ["Select Brand First"]
-                        )
+                        else:
+                            opts += ["Select Brand First"]
                     else:
                         opts += ["Select Brand First"]
 
+            # Shafts dynamic dropdowns
             elif "Shafts" in qopts:
                 s_brand = st.session_state.answers.get("Q10", "")
                 s_flex = st.session_state.answers.get("Q11", "")
 
                 if "Brand" in qtext:
-                    opts += sorted(all_data["Shafts"]["Brand"].dropna().unique().tolist())
+                    if "Brand" in all_data["Shafts"].columns:
+                        opts += sorted(all_data["Shafts"]["Brand"].dropna().unique().tolist())
 
                 elif "Flex" in qtext:
-                    opts += (
-                        sorted(all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"].dropna().unique().tolist())
-                        if s_brand
-                        else ["Select Brand First"]
-                    )
+                    if s_brand and "Flex" in all_data["Shafts"].columns and "Brand" in all_data["Shafts"].columns:
+                        opts += sorted(
+                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
+                            .dropna()
+                            .unique()
+                            .tolist()
+                        )
+                    else:
+                        opts += ["Select Brand First"]
 
                 elif "Model" in qtext:
-                    if s_brand and s_flex:
+                    if (
+                        s_brand
+                        and s_flex
+                        and "Brand" in all_data["Shafts"].columns
+                        and "Flex" in all_data["Shafts"].columns
+                        and "Model" in all_data["Shafts"].columns
+                    ):
                         opts += sorted(
                             all_data["Shafts"][
-                                (all_data["Shafts"]["Brand"] == s_brand)
-                                & (all_data["Shafts"]["Flex"] == s_flex)
-                            ]["Model"].dropna().unique().tolist()
+                                (all_data["Shafts"]["Brand"] == s_brand) & (all_data["Shafts"]["Flex"] == s_flex)
+                            ]["Model"]
+                            .dropna()
+                            .unique()
+                            .tolist()
                         )
                     else:
                         opts += ["Select Brand/Flex First"]
 
-            elif "Config:" in qopts:
+            # Config-driven dropdowns
+            elif qopts.lower().startswith("config:"):
+                # Example: "Config: Fitting Goal" OR "Config: Fitting Environment"
                 col = qopts.split(":", 1)[1].strip()
                 if col in all_data["Config"].columns:
                     opts += [str(x).strip() for x in all_data["Config"][col].dropna().tolist() if str(x).strip()]
 
+            # Responses sheet fallback
             else:
                 resp_df = all_data.get("Responses", pd.DataFrame())
-                if not resp_df.empty and "QuestionID" in resp_df.columns and "ResponseOption" in resp_df.columns:
-                    opts += resp_df[resp_df["QuestionID"].astype(str).str.strip() == qid]["ResponseOption"].tolist()
+                if (
+                    resp_df is not None
+                    and not resp_df.empty
+                    and "QuestionID" in resp_df.columns
+                    and "ResponseOption" in resp_df.columns
+                ):
+                    opts += (
+                        resp_df[resp_df["QuestionID"].astype(str).str.strip() == qid]["ResponseOption"]
+                        .astype(str)
+                        .tolist()
+                    )
 
             opts = list(dict.fromkeys([str(x) for x in opts if str(x).strip() != ""]))
 
@@ -447,17 +490,19 @@ if not st.session_state.interview_complete:
     else:
         if c2.button("🔥 Calculate"):
             sync_all()
+            # Environment question (Q22) optional; still store if present
             if st.session_state.answers.get("Q22"):
-                st.session_state.environment = st.session_state.answers["Q22"]
+                st.session_state.environment = str(st.session_state.answers["Q22"]).strip()
             save_to_fittings(st.session_state.answers)
             st.session_state.interview_complete = True
             st.rerun()
+
 
 # ------------------ Results / Dashboard ------------------
 else:
     ans = st.session_state.answers
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
-    st.session_state.environment = ans.get("Q22") or st.session_state.environment or "Indoors (Mat)"
+    st.session_state.environment = (ans.get("Q22") or st.session_state.environment or "Indoors (Mat)").strip()
 
     st.title(f"⛳ Results: {p_name}")
 
@@ -466,6 +511,7 @@ else:
         st.session_state.interview_complete = False
         st.session_state.email_sent = False
         st.rerun()
+
     if c_nav2.button("🆕 New Fitting"):
         st.session_state.clear()
         st.rerun()
@@ -479,12 +525,23 @@ else:
     except Exception:
         carry_6i = 150.0
 
+    # predict_shaft_winners exists in your repo; this keeps compatibility
     all_winners = predict_shaft_winners(all_data["Shafts"], carry_6i)
-    desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
-    verdicts = {
-        f"{k}: {all_winners[k].iloc[0]['Model']}": desc_map.get(all_winners[k].iloc[0]["Model"], "Optimized.")
-        for k in all_winners
-    }
+
+    # Verdict blurbs
+    if "Model" in all_data["Descriptions"].columns and "Blurb" in all_data["Descriptions"].columns:
+        desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
+    else:
+        desc_map = {}
+
+    verdicts = {}
+    for k in all_winners:
+        try:
+            verdicts[f"{k}: {all_winners[k].iloc[0]['Model']}"] = desc_map.get(
+                all_winners[k].iloc[0]["Model"], "Optimized."
+            )
+        except Exception:
+            verdicts[f"{k}:"] = "Optimized."
 
     # -------- Report Tab --------
     with tab_report:
@@ -502,21 +559,22 @@ else:
 
         v_items = list(verdicts.items())
         col1, col2 = st.columns(2)
-        for i, (cat, c_name) in enumerate(
-            [
-                ("Balanced", "⚖️ Balanced"),
-                ("Maximum Stability", "🛡️ Stability"),
-                ("Launch & Height", "🚀 Launch"),
-                ("Feel & Smoothness", "☁️ Feel"),
-            ]
-        ):
-            with (col1 if i < 2 else col2):
+        cats = [
+            ("Balanced", "⚖️ Balanced"),
+            ("Maximum Stability", "🛡️ Stability"),
+            ("Launch & Height", "🚀 Launch"),
+            ("Feel & Smoothness", "☁️ Feel"),
+        ]
+        for i, (cat, c_name) in enumerate(cats):
+            with col1 if i < 2 else col2:
                 st.subheader(c_name)
-                st.table(all_winners[cat])
-                st.markdown(
-                    f"<div class='verdict-text'><b>Verdict:</b> {v_items[i][1]}</div>",
-                    unsafe_allow_html=True,
-                )
+                if cat in all_winners:
+                    st.table(all_winners[cat])
+                    blurb = v_items[i][1] if i < len(v_items) else "Optimized."
+                    st.markdown(
+                        f"<div class='verdict-text'><b>Verdict:</b> {blurb}</div>",
+                        unsafe_allow_html=True,
+                    )
 
         if not st.session_state.email_sent and p_email:
             with st.spinner("Dispatching PDF..."):
@@ -528,7 +586,9 @@ else:
                     phase6_recs=st.session_state.get("phase6_recs", None),
                     environment=st.session_state.environment,
                 )
-                ok = send_email_with_pdf(p_email, p_name, pdf_bytes, environment=st.session_state.environment)
+                ok = send_email_with_pdf(
+                    p_email, p_name, pdf_bytes, environment=st.session_state.environment
+                )
                 if ok is True:
                     st.success(f"📬 Sent to {p_email}!")
                     st.session_state.email_sent = True
@@ -589,12 +649,15 @@ else:
         with c_up:
             shaft_map = _shaft_label_map(all_data["Shafts"])
             baseline_id = find_baseline_shaft_id_from_answers(ans, all_data["Shafts"])
-
             baseline_label = shaft_map.get(str(baseline_id), "Current Baseline") if baseline_id else "Current Baseline"
-            test_list = [baseline_label] + [all_winners[k].iloc[0]["Model"] for k in all_winners]
+
+            test_list = [baseline_label] + [all_winners[k].iloc[0]["Model"] for k in all_winners if not all_winners[k].empty]
             selected_s = st.selectbox("Default Assign (if no Tags in file):", test_list, index=0)
 
-            tm_file = st.file_uploader("Upload Trackman CSV/Excel/PDF", type=["csv", "xlsx", "pdf"])
+            tm_file = st.file_uploader(
+                "Upload Trackman CSV/Excel/PDF",
+                type=["csv", "xlsx", "pdf"],
+            )
 
             can_log = tm_file is not None and controls_complete()
             raw_preview = None
@@ -606,7 +669,7 @@ else:
                 else:
                     raw_preview, _ = process_trackman_file(tm_file, selected_s)
 
-            if raw_preview is None and tm_file is not None:
+            if tm_file is not None and raw_preview is None:
                 st.error("Could not parse TrackMan file for preview. Showing debug below.")
                 with st.expander("🔎 TrackMan Debug (columns + preview)", expanded=True):
                     dbg = debug_trackman(tm_file)
@@ -624,76 +687,71 @@ else:
             elif raw_preview is not None:
                 render_trackman_session(raw_preview)
 
-            # Tags mapping + selection
-            tag_ids = _extract_tag_ids(raw_preview)
+                # Tags mapping + selection
+                tag_ids = _extract_tag_ids(raw_preview)
+                if tag_ids:
+                    st.markdown("## Shaft selection from TrackMan Tags")
+                    tag_options = [shaft_map.get(tid, f"Unknown Shaft (ID {tid})") for tid in tag_ids]
 
-            if tag_ids:
-                st.markdown("## Shaft selection from TrackMan Tags")
-                tag_options = [shaft_map.get(tid, f"Unknown Shaft (ID {tid})") for tid in tag_ids]
-
-                selected_labels = st.multiselect(
-                    "Select which shafts were hit in this upload:",
-                    options=tag_options,
-                    default=tag_options,
-                    key="tag_selected_labels",
-                )
-
-                label_to_id = {shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid for tid in tag_ids}
-
-                st.session_state["selected_tag_ids"] = [label_to_id[x] for x in selected_labels if x in label_to_id]
-
-                selected_tag_ids = st.session_state.get("selected_tag_ids", [])
-
-                # Baseline default
-                baseline_default_id = None
-                if baseline_id and str(baseline_id) in selected_tag_ids:
-                    baseline_default_id = str(baseline_id)
-                elif selected_tag_ids:
-                    baseline_default_id = str(selected_tag_ids[0])
-
-                if selected_tag_ids:
-                    baseline_options = [shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})") for tid in selected_tag_ids]
-                    label_to_id_selected = {
-                        shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})"): str(tid) for tid in selected_tag_ids
-                    }
-                    default_label = shaft_map.get(str(baseline_default_id), baseline_options[0])
-
-                    st.markdown("### Baseline for comparison")
-                    st.caption("Used for deltas, confidence scoring, and optimizer comparisons.")
-
-                    picked_label = st.selectbox(
-                        "Select the baseline shaft (usually the gamer):",
-                        options=baseline_options,
-                        index=baseline_options.index(default_label) if default_label in baseline_options else 0,
-                        key="baseline_tag_label",
+                    selected_labels = st.multiselect(
+                        "Select which shafts were hit in this upload:",
+                        options=tag_options,
+                        default=tag_options,
+                        key="tag_selected_labels",
                     )
-                    st.session_state["baseline_tag_id"] = label_to_id_selected.get(picked_label, baseline_default_id)
+
+                    label_to_id = {shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid for tid in tag_ids}
+                    st.session_state["selected_tag_ids"] = [
+                        label_to_id[x] for x in selected_labels if x in label_to_id
+                    ]
+
+                    # Baseline selection dropdown
+                    selected_tag_ids = st.session_state.get("selected_tag_ids", [])
+                    baseline_default_id = None
+                    if baseline_id and str(baseline_id) in selected_tag_ids:
+                        baseline_default_id = str(baseline_id)
+                    elif selected_tag_ids:
+                        baseline_default_id = str(selected_tag_ids[0])
+
+                    if selected_tag_ids:
+                        baseline_options = [shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})") for tid in selected_tag_ids]
+                        label_to_id_selected = {shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})"): str(tid) for tid in selected_tag_ids}
+                        default_label = shaft_map.get(str(baseline_default_id), baseline_options[0])
+
+                        st.markdown("### Baseline for comparison")
+                        st.caption("Used for deltas, confidence scoring, and optimizer comparisons.")
+
+                        picked_label = st.selectbox(
+                            "Select the baseline shaft (usually the gamer):",
+                            options=baseline_options,
+                            index=baseline_options.index(default_label) if default_label in baseline_options else 0,
+                            key="baseline_tag_label",
+                        )
+                        st.session_state["baseline_tag_id"] = label_to_id_selected.get(picked_label, baseline_default_id)
+                    else:
+                        st.session_state["baseline_tag_id"] = None
+
+                    # Split session by shaft
+                    st.markdown("## Split session by shaft (Tags)")
+                    for sid in selected_tag_ids:
+                        sub = _filter_by_tag(raw_preview, sid)
+                        label = shaft_map.get(str(sid), f"Unknown Shaft (ID {sid})")
+                        with st.expander(label, expanded=False):
+                            if sub is None or sub.empty:
+                                st.warning("No shots found for this Tag.")
+                            else:
+                                render_trackman_session(sub)
+                                st.caption(f"Shots in this group: {len(sub)}")
                 else:
+                    st.session_state["selected_tag_ids"] = []
                     st.session_state["baseline_tag_id"] = None
-
-                # Split by tags
-                st.markdown("## Split session by shaft (Tags)")
-                for sid in selected_tag_ids:
-                    sub = _filter_by_tag(raw_preview, sid)
-                    label = shaft_map.get(str(sid), f"Unknown Shaft (ID {sid})")
-                    with st.expander(label, expanded=False):
-                        if sub is None or sub.empty:
-                            st.warning("No shots found for this Tag.")
-                        else:
-                            render_trackman_session(sub)
-                            st.caption(f"Shots in this group: {len(sub)}")
-
-            else:
-                st.session_state["selected_tag_ids"] = []
-                st.session_state["baseline_tag_id"] = None
 
             if st.button("➕ Add") and can_log:
                 name = getattr(tm_file, "name", "") or ""
-
                 if name.lower().endswith(".pdf"):
                     st.warning(
-                        "PDF uploads are accepted, but not parsed. "
-                        "Please export TrackMan as CSV or XLSX for analysis."
+                        "PDF uploads are accepted, but **not parsed**.\n\n"
+                        "Please export TrackMan as **CSV or XLSX** for analysis."
                     )
                 else:
                     raw, _ = process_trackman_file(tm_file, selected_s)
@@ -701,7 +759,7 @@ else:
                         st.error("Could not parse TrackMan file (no required metrics found).")
                     else:
                         selected_tag_ids = st.session_state.get("selected_tag_ids", [])
-
+                        # If tags exist AND user selected tags, log one row per tag group
                         if "Tags" in raw.columns and selected_tag_ids:
                             logged_any = False
                             for sid in selected_tag_ids:
@@ -716,6 +774,7 @@ else:
                                 stat["Environment"] = st.session_state.environment
                                 stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 stat["Baseline Tag"] = st.session_state.get("baseline_tag_id", None)
+
                                 st.session_state.tm_lab_data.append(stat)
                                 logged_any = True
 
@@ -724,8 +783,9 @@ else:
                             else:
                                 st.rerun()
                         else:
+                            # No tags → log entire session
                             stat = summarize_trackman(raw, selected_s, include_std=True)
-                            stat["Shaft ID"] = selected_s
+                            stat["Shaft ID"] = str(selected_s)
                             stat["Shaft Label"] = str(selected_s)
                             stat["Controlled"] = "Yes"
                             stat["Environment"] = st.session_state.environment
@@ -741,116 +801,132 @@ else:
         with c_res:
             if not st.session_state.tm_lab_data:
                 st.info("Upload files to begin correlation.")
-                lab_df = pd.DataFrame()
             else:
                 lab_df = pd.DataFrame(st.session_state.tm_lab_data)
 
                 preferred_cols = [
-                    "Timestamp", "Shaft ID", "Shaft Label", "Baseline Tag", "Controlled", "Environment", "Shot Count",
-                    "Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate",
-                    "Launch Angle", "Landing Angle", "Face To Path", "Dynamic Lie",
-                    "Carry Side", "Total Side",
-                    "Club Speed SD", "Ball Speed SD", "Smash Factor SD", "Carry SD", "Spin Rate SD",
-                    "Face To Path SD", "Dynamic Lie SD",
+                    "Timestamp",
+                    "Shaft ID",
+                    "Shaft Label",
+                    "Baseline Tag",
+                    "Controlled",
+                    "Environment",
+                    "Shot Count",
+                    "Club Speed",
+                    "Ball Speed",
+                    "Smash Factor",
+                    "Carry",
+                    "Spin Rate",
+                    "Launch Angle",
+                    "Landing Angle",
+                    "Face To Path",
+                    "Dynamic Lie",
+                    "Carry Side",
+                    "Total Side",
+                    "Club Speed SD",
+                    "Ball Speed SD",
+                    "Smash Factor SD",
+                    "Carry SD",
+                    "Spin Rate SD",
+                    "Face To Path SD",
+                    "Dynamic Lie SD",
                 ]
                 show_cols = [c for c in preferred_cols if c in lab_df.columns] + [
                     c for c in lab_df.columns if c not in preferred_cols
                 ]
                 st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
-            st.divider()
+                st.divider()
 
-            # ------------------ Intelligence Layer: Efficiency + Confidence ------------------
-            if not EFF_AVAILABLE:
-                st.error(
-                    "Efficiency Optimizer module not found.\n\n"
-                    "To enable the Baseline Comparison Table, you must add:\n"
-                    "- core/efficiency_optimizer.py\n"
-                    "- (recommended) core/__init__.py\n\n"
-                    "After committing those files, Streamlit Cloud will redeploy and this section will activate."
-                )
-            else:
+                # ------------------ Intelligence Layer ------------------
                 baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
 
-                # Preferred: use modular file ui/intelligence.py if present
-                if INTELLIGENCE_UI_AVAILABLE:
-                    render_intelligence_block(
+                # Preferred path: modular intelligence block (includes matrix + phase6)
+                if UI_INTEL_AVAILABLE:
+                    intel = render_intelligence_block(
                         lab_df=lab_df,
-                        baseline_shaft_id=baseline_shaft_id,
-                        answers=st.session_state.get("answers", {}),
+                        baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
+                        answers=st.session_state.answers,
                         environment=st.session_state.environment,
                         MIN_SHOTS=MIN_SHOTS,
                         WARN_FACE_TO_PATH_SD=WARN_FACE_TO_PATH_SD,
                         WARN_CARRY_SD=WARN_CARRY_SD,
                         WARN_SMASH_SD=WARN_SMASH_SD,
                     )
-                else:
-                    # Fallback: inline original logic (kept so you always have a working build)
-                    eff_cfg = EfficiencyConfig(
-                        MIN_SHOTS=int(MIN_SHOTS),
-                        WARN_FACE_TO_PATH_SD=float(WARN_FACE_TO_PATH_SD),
-                        WARN_CARRY_SD=float(WARN_CARRY_SD),
-                        WARN_SMASH_SD=float(WARN_SMASH_SD),
-                    )
 
-                    comparison_df = build_comparison_table(
-                        lab_df,
-                        baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
-                        cfg=eff_cfg,
-                    )
-
-                    # Tour Proven Matrix preview (inline)
-                    render_tour_proven_matrix(
-                        comparison_df,
-                        baseline_shaft_id=baseline_shaft_id,
-                        answers=st.session_state.get("answers", {}),
-                    )
-
-                    st.subheader("📊 Baseline Comparison Table")
-                    display_cols = ["Shaft", "Carry Δ", "Launch Δ", "Spin Δ", "Smash", "Dispersion", "Efficiency", "Confidence"]
-                    if comparison_df is not None and not comparison_df.empty:
-                        st.dataframe(comparison_df[display_cols], use_container_width=True, hide_index=True, height=320)
-                    else:
-                        st.info("No comparison rows yet. Add at least one logged shaft set.")
-
-                    winner = pick_efficiency_winner(comparison_df)
-                    if winner is None:
-                        st.warning("No efficiency winner could be computed yet.")
-                    else:
-                        st.success(
-                            f"🏆 **Efficiency Winner:** {winner.get('Shaft','')} "
-                            f"(Efficiency {winner.get('Efficiency','')} | Confidence {winner.get('Confidence','')})"
-                        )
-
-                        flags = winner.get("_flags") or {}
-                        if flags.get("low_shots"):
-                            st.warning(f"⚠️ Low shot count (MIN_SHOTS={int(MIN_SHOTS)}). Confidence reduced.")
-                        if flags.get("high_face_to_path_sd"):
-                            st.warning(f"⚠️ Face-to-Path SD high (> {float(WARN_FACE_TO_PATH_SD):.2f}). Confidence reduced.")
-                        if flags.get("high_carry_sd"):
-                            st.warning(f"⚠️ Carry SD high (> {float(WARN_CARRY_SD):.1f}). Confidence reduced.")
-                        if flags.get("high_smash_sd"):
-                            st.warning(f"⚠️ Smash SD high (> {float(WARN_SMASH_SD):.3f}). Confidence reduced.")
-
-                        st.subheader("Phase 6 Optimization Suggestions")
-
-                        w_id = str(winner.get("Shaft ID", ""))
-                        if w_id and "Shaft ID" in lab_df.columns:
-                            w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id]
-                            winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
-                        else:
-                            winner_row = lab_df.iloc[0]
-
-                        recs = phase6_recommendations(
-                            winner_row,
-                            baseline_row=None,
-                            club="6i",
-                            environment=st.session_state.environment,
-                        )
-                        st.session_state.phase6_recs = recs
-                        for r in recs:
+                    # show Phase 6 recs (this is what your screenshot is missing)
+                    if intel and intel.get("phase6_recs"):
+                        st.session_state.phase6_recs = intel["phase6_recs"]
+                        for r in intel["phase6_recs"]:
                             css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
                             st.markdown(
                                 f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
                                 unsafe_allow_html=True,
                             )
+                else:
+                    # Fallback: classic efficiency table only (older mode)
+                    if not EFF_AVAILABLE:
+                        st.error(
+                            "Efficiency Optimizer module not found.\n\n"
+                            "To enable the Baseline Comparison Table, you must add:\n"
+                            "- core/efficiency_optimizer.py\n"
+                            "- (recommended) core/__init__.py\n\n"
+                            "After committing those files, Streamlit Cloud will redeploy and this section will activate."
+                        )
+                    else:
+                        eff_cfg = EfficiencyConfig(
+                            MIN_SHOTS=int(MIN_SHOTS),
+                            WARN_FACE_TO_PATH_SD=float(WARN_FACE_TO_PATH_SD),
+                            WARN_CARRY_SD=float(WARN_CARRY_SD),
+                            WARN_SMASH_SD=float(WARN_SMASH_SD),
+                        )
+                        comparison_df = build_comparison_table(
+                            lab_df,
+                            baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
+                            cfg=eff_cfg,
+                        )
+                        st.subheader("📊 Baseline Comparison Table")
+                        display_cols = [
+                            "Shaft",
+                            "Carry Δ",
+                            "Launch Δ",
+                            "Spin Δ",
+                            "Smash",
+                            "Dispersion",
+                            "Efficiency",
+                            "Confidence",
+                        ]
+                        if comparison_df is not None and not comparison_df.empty:
+                            st.dataframe(
+                                comparison_df[[c for c in display_cols if c in comparison_df.columns]],
+                                use_container_width=True,
+                                hide_index=True,
+                                height=320,
+                            )
+                        else:
+                            st.info("No comparison rows yet. Add at least one logged shaft set.")
+                            st.stop()
+
+                        winner = pick_efficiency_winner(comparison_df)
+                        if winner is not None:
+                            st.success(
+                                f"🏆 **Efficiency Winner:** {winner['Shaft']} "
+                                f"(Efficiency {winner['Efficiency']} | Confidence {winner['Confidence']})"
+                            )
+                            st.subheader("Phase 6 Optimization Suggestions")
+                            w_id = str(winner.get("Shaft ID"))
+                            w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id] if "Shaft ID" in lab_df.columns else pd.DataFrame()
+                            winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
+                            recs = phase6_recommendations(
+                                winner_row,
+                                baseline_row=None,
+                                club="6i",
+                                environment=st.session_state.environment,
+                            )
+                            st.session_state.phase6_recs = recs
+                            for r in recs:
+                                css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
+                                st.markdown(
+                                    f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
+                                    unsafe_allow_html=True,
+                                )
