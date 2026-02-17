@@ -11,6 +11,7 @@ from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 from core.decision_engine import build_tour_proven_matrix
 from ui.tour_proven_matrix import render_tour_proven_matrix
+from ui.intelligence import render_intelligence_section
 
 # --- Optional Intelligence Layer import (prevents app crash if file missing) ---
 EFF_AVAILABLE = True
