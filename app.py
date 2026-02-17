@@ -10,6 +10,7 @@ from google.oauth2.service_account import Credentials
 
 from core.shaft_predictor import predict_shaft_winners
 from core.sheet_validation import validate_sheet_data, render_report_streamlit
+from core.fittings_writer import build_questiontext_to_qid, build_fittings_row, FittingMeta
 
 from ui.interview import render_interview
 from ui.trackman_tab import render_trackman_tab
@@ -87,14 +88,13 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
     return out
 
 
-def _norm_header(s: Any) -> str:
-    txt = "" if s is None else str(s)
-    txt = txt.replace("\u00A0", " ")
-    txt = " ".join(txt.strip().split())
-    return txt.lower()
-
-
 def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame]) -> None:
+    """
+    Sheet-driven write:
+      - Read Fittings headers from row 1
+      - Build QuestionText->QuestionID mapping from Questions tab
+      - Fill row aligned to headers (meta + answers)
+    """
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -107,47 +107,30 @@ def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame])
     )
     ws_fit = sh.worksheet("Fittings")
 
-    fit_headers = ws_fit.row_values(1)
-    fit_headers = [h for h in fit_headers if str(h).strip()]
+    # Keep only non-empty headers (prevents append_row width mismatch)
+    fit_headers = [h for h in ws_fit.row_values(1) if str(h).strip()]
 
-    # Build QuestionText -> QuestionID map (normalized)
     q_df = all_data.get("Questions", pd.DataFrame())
-    textnorm_to_qid: Dict[str, str] = {}
-    if q_df is not None and not q_df.empty and "QuestionID" in q_df.columns and "QuestionText" in q_df.columns:
-        for _, r in q_df.iterrows():
-            qid = str(r.get("QuestionID", "")).strip().replace(".", "_")
-            qtext = str(r.get("QuestionText", "")).strip()
-            if qid and qtext:
-                textnorm_to_qid[_norm_header(qtext)] = qid
+    q_rows: List[Dict[str, Any]] = []
+    if q_df is not None and not q_df.empty:
+        q_rows = q_df.to_dict(orient="records")
 
-    # Special mappings for the fields you care about
-    special = {
-        _norm_header("Flight Satisfaction"): "Q16_1",
-        _norm_header("Flight Change"): "Q16_2",
-        _norm_header("Feel Satisfaction"): "Q19_1",
-        _norm_header("Target Shaft Feel"): "Q19_2",
-    }
+    questiontext_to_qid = build_questiontext_to_qid(q_rows)
 
     now_ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-    row_out: List[Any] = []
+    meta = FittingMeta(
+        timestamp=now_ts,
+        name=str(answers.get("Q01", "")).strip(),
+        email=str(answers.get("Q02", "")).strip(),
+        phone=str(answers.get("Q03", "")).strip(),  # ok if blank/not used
+    )
 
-    for h in fit_headers:
-        hn = _norm_header(h)
-        if hn == "timestamp":
-            row_out.append(now_ts)
-            continue
-
-        qid = None
-        if hn in special:
-            qid = special[hn]
-        else:
-            # if header is a QID itself
-            if str(h).strip().upper().startswith("Q"):
-                qid = str(h).strip().upper().replace(".", "_")
-            else:
-                qid = textnorm_to_qid.get(hn)
-
-        row_out.append(answers.get(qid, "") if qid else "")
+    row_out = build_fittings_row(
+        fittings_headers=fit_headers,
+        questiontext_to_qid=questiontext_to_qid,
+        answers=answers,
+        meta=meta,
+    )
 
     ws_fit.append_row(row_out, value_input_option="USER_ENTERED")
 
