@@ -35,11 +35,17 @@ def _get_metric(row: pd.Series, key: str) -> Optional[float]:
     return _to_float(row.get(key))
 
 
-def _delta(lab: pd.DataFrame, sid: str, baseline_sid: str, metric: str) -> Optional[float]:
+def _first_row(lab: pd.DataFrame, shaft_id: str) -> Optional[pd.Series]:
     try:
-        r = lab.loc[lab["Shaft ID"].astype(str) == str(sid)].iloc[0]
-        b = lab.loc[lab["Shaft ID"].astype(str) == str(baseline_sid)].iloc[0]
+        return lab.loc[lab["Shaft ID"].astype(str) == str(shaft_id)].iloc[0]
     except Exception:
+        return None
+
+
+def _delta(lab: pd.DataFrame, sid: str, baseline_sid: str, metric: str) -> Optional[float]:
+    r = _first_row(lab, sid)
+    b = _first_row(lab, baseline_sid)
+    if r is None or b is None:
         return None
     rv = _get_metric(r, metric)
     bv = _get_metric(b, metric)
@@ -48,35 +54,125 @@ def _delta(lab: pd.DataFrame, sid: str, baseline_sid: str, metric: str) -> Optio
     return rv - bv
 
 
-def _sd(lab: pd.DataFrame, sid: str, metric_sd: str) -> Optional[float]:
-    try:
-        r = lab.loc[lab["Shaft ID"].astype(str) == str(sid)].iloc[0]
-    except Exception:
+def _sd_delta(lab: pd.DataFrame, sid: str, baseline_sid: str, metric_sd: str) -> Optional[float]:
+    r = _first_row(lab, sid)
+    b = _first_row(lab, baseline_sid)
+    if r is None or b is None:
         return None
-    return _get_metric(r, metric_sd)
+    rv = _get_metric(r, metric_sd)
+    bv = _get_metric(b, metric_sd)
+    if rv is None or bv is None:
+        return None
+    # SD delta: negative is better (more consistent)
+    return rv - bv
 
 
-def _z(delta: Optional[float], denom: Optional[float], eps: float = 1e-6) -> float:
+def _z(delta: Optional[float], denom: float, eps: float = 1e-6) -> float:
     if delta is None:
         return 0.0
-    d = denom if denom is not None else 0.0
+    d = float(denom)
     if abs(d) < eps:
-        d = 1.0  # avoid blowups; treat as 1 unit scale
-    return float(delta) / float(d)
+        d = 1.0
+    return float(delta) / d
 
 
-def _env_weights(environment: str) -> Dict[str, float]:
+def _env_scale(environment: str) -> Dict[str, float]:
     env = (environment or "").lower()
     indoors = "indoor" in env or "mat" in env
-    # Indoors tends to have tighter launch/spin; outdoors can have more variance.
     return {
         "launch": 1.0 if indoors else 0.9,
         "spin": 0.9 if indoors else 1.0,
         "landing": 1.0,
-        "dispersion": 1.0,
-        "consistency": 1.0,
+        "disp": 1.0,
+        "cons": 1.0,
         "speed": 0.8,
     }
+
+
+def _primary_goal_weights(primary_key: str, env_scale: Dict[str, float]) -> Dict[str, float]:
+    """
+    Primary goal weights driven by Q23 (main decider).
+    Positive weight means 'more is better' vs baseline.
+    Negative means 'less is better' vs baseline.
+    """
+    e = env_scale
+
+    if primary_key == "HOLD_GREENS":
+        return {
+            "Landing Angle": 1.25 * e["landing"],
+            "Spin Rate": 0.95 * e["spin"],
+            # Optional: if Peak Height exists later you can add it here.
+        }
+
+    if primary_key == "STABILITY":
+        return {
+            "Total Side": -1.10 * e["disp"],
+            "Carry Side": -0.90 * e["disp"],
+            "Face To Path": -0.70 * e["disp"],
+            "Face To Path SD": -0.70 * e["cons"],
+            "Carry SD": -0.55 * e["cons"],
+        }
+
+    if primary_key == "ANTI_LEFT":
+        # Similar to stability but slightly more emphasis on left miss controls
+        return {
+            "Total Side": -1.20 * e["disp"],
+            "Carry Side": -1.00 * e["disp"],
+            "Face To Path": -0.90 * e["disp"],
+            "Face To Path SD": -0.75 * e["cons"],
+        }
+
+    if primary_key == "FLIGHT_HIGHER":
+        return {
+            "Launch Angle": 1.10 * e["launch"],
+            "Landing Angle": 0.75 * e["landing"],
+            "Spin Rate": 0.35 * e["spin"],
+        }
+
+    if primary_key == "FLIGHT_LOWER":
+        return {
+            "Launch Angle": -1.10 * e["launch"],
+            "Landing Angle": -0.75 * e["landing"],
+            "Spin Rate": -0.25 * e["spin"],
+        }
+
+    if primary_key == "DISTANCE":
+        return {
+            "Carry": 1.10,
+            "Ball Speed": 0.85 * e["speed"],
+            "Smash Factor": 0.65,
+            # Small penalty if dispersion blows up (still goal-driven)
+            "Total Side": -0.35 * e["disp"],
+        }
+
+    # BALANCED default
+    return {
+        "Carry": 0.55,
+        "Ball Speed": 0.45 * e["speed"],
+        "Smash Factor": 0.35,
+        "Landing Angle": 0.35 * e["landing"],
+        "Total Side": -0.35 * e["disp"],
+        "Carry SD": -0.25 * e["cons"],
+    }
+
+
+def _flight_modifier_weights(profile: GoalProfile, env_scale: Dict[str, float]) -> Dict[str, float]:
+    """
+    Secondary modifier driven by Q16 (only if player wants a flight change).
+    Much smaller magnitude than primary goal.
+    """
+    if not profile.wants_flight_change:
+        return {}
+
+    e = env_scale
+    t = (profile.flight_target or "").lower()
+
+    if "high" in t:
+        return {"Launch Angle": 0.45 * e["launch"], "Landing Angle": 0.25 * e["landing"], "Spin Rate": 0.15 * e["spin"]}
+    if "low" in t:
+        return {"Launch Angle": -0.45 * e["launch"], "Landing Angle": -0.25 * e["landing"], "Spin Rate": -0.10 * e["spin"]}
+
+    return {}
 
 
 def score_goalcard(
@@ -84,13 +180,6 @@ def score_goalcard(
     baseline_shaft_id: Optional[str],
     profile: GoalProfile,
 ) -> Dict[str, Any]:
-    """
-    Returns a dict with:
-      - baseline_shaft_id
-      - results: List[GoalScoreResult] sorted best->worst
-      - top_by_goal: dict goal->GoalScoreResult
-      - goals_used: list[str]
-    """
     if lab_df is None or lab_df.empty:
         return {"baseline_shaft_id": baseline_shaft_id, "results": [], "top_by_goal": {}, "goals_used": []}
 
@@ -102,91 +191,42 @@ def score_goalcard(
     if "Shaft ID" not in lab.columns:
         return {"baseline_shaft_id": baseline_shaft_id, "results": [], "top_by_goal": {}, "goals_used": []}
 
-    # Choose baseline if not provided: first row
     if not baseline_shaft_id:
         baseline_shaft_id = str(lab.iloc[0]["Shaft ID"]).strip()
 
-    # Build goals and weights
-    ew = _env_weights(profile.environment)
+    env_scale = _env_scale(profile.environment)
 
+    primary_w = _primary_goal_weights(profile.primary_goal_key, env_scale)
+    flight_mod_w = _flight_modifier_weights(profile, env_scale)
+
+    # Always-on guardrails so we don't recommend "wins the goal but loses the session"
+    do_no_harm = {"Carry": 0.35, "Ball Speed": 0.25 * env_scale["speed"], "Smash Factor": 0.25}
+
+    # Assemble goals (primary dominates)
     goals: Dict[str, Dict[str, float]] = {}
+    primary_name = f"Primary (Q23): {profile.primary_goal_raw or profile.primary_goal_key}"
+    goals[primary_name] = primary_w
 
-    # Flight change (Higher/Lower): use Launch + (optional) Peak + Landing
-    if profile.wants_flight_change:
-        ft = (profile.flight_target or "").lower()
-        if "high" in ft:
-            goals["Flight Higher"] = {
-                "Launch Angle": 1.0 * ew["launch"],
-                "Landing Angle": 0.7 * ew["landing"],
-                "Spin Rate": 0.3 * ew["spin"],
-            }
-        elif "low" in ft:
-            goals["Flight Lower"] = {
-                "Launch Angle": -1.0 * ew["launch"],
-                "Landing Angle": -0.7 * ew["landing"],
-                "Spin Rate": -0.2 * ew["spin"],
-            }
+    if flight_mod_w:
+        goals["Secondary (Q16): Flight Change"] = flight_mod_w
 
-    # Hold greens (locked): Landing primary + Spin + Peak (if available)
-    if profile.wants_hold_greens:
-        goals["Hold Greens"] = {
-            "Landing Angle": 1.2 * ew["landing"],
-            "Spin Rate": 0.8 * ew["spin"],
-        }
-
-    # Anti-left / stability: minimize left dispersion + face-to-path + SDs
-    if profile.wants_anti_left:
-        goals["Anti-Left / Stability"] = {
-            "Total Side": -1.0 * ew["dispersion"],
-            "Carry Side": -0.8 * ew["dispersion"],
-            "Face To Path": -0.7 * ew["dispersion"],
-            "Face To Path SD": -0.6 * ew["consistency"],
-        }
-
-    # Feel: use “consistency” proxies (lower SDs) + smash stability
-    if profile.wants_feel_change:
-        ft = (profile.feel_target or "").lower()
-        smoother = any(x in ft for x in ["smooth", "smoother", "softer"])
-        firmer = any(x in ft for x in ["firm", "stiff", "tighter"])
-        # Both map to consistency, but we can bias slightly:
-        if smoother or firmer:
-            goals["Feel / Consistency"] = {
-                "Club Speed SD": -0.7 * ew["consistency"],
-                "Ball Speed SD": -0.7 * ew["consistency"],
-                "Smash Factor SD": -0.8 * ew["consistency"],
-                "Carry SD": -0.7 * ew["consistency"],
-            }
-
-    # Always include a “Baseline-neutral performance” safety goal (optional)
-    # This prevents the system from recommending something that tanks speed.
-    goals["Do No Harm"] = {
-        "Carry": 0.4,
-        "Ball Speed": 0.3,
-        "Smash Factor": 0.3,
-    }
+    goals["Guardrail: Do No Harm"] = do_no_harm
 
     goals_used = list(goals.keys())
 
-    # Precompute baseline SD denominators per metric (or fallback)
-    # For SD-weighted metrics, denom uses baseline SD if present, else 1
-    baseline_row = None
-    try:
-        baseline_row = lab.loc[lab["Shaft ID"].astype(str) == str(baseline_shaft_id)].iloc[0]
-    except Exception:
-        baseline_row = None
+    # Denominator for z-scoring (use baseline SD if available)
+    baseline_row = _first_row(lab, str(baseline_shaft_id))
 
     def denom_for(metric: str) -> float:
-        # If metric is an SD metric itself, denom=1
         if metric.endswith(" SD"):
             return 1.0
-        # Prefer baseline SD of that metric if present (e.g., Carry SD as denom for Carry delta)
         if baseline_row is not None:
             sd_col = f"{metric} SD"
             if sd_col in lab.columns:
                 bsd = _get_metric(baseline_row, sd_col)
                 if bsd is not None and bsd > 0:
                     return float(bsd)
-        # Fallback scale: metric-dependent
+        # fallback scale
         return 1.0
 
     results: List[GoalScoreResult] = []
@@ -198,16 +238,14 @@ def score_goalcard(
         label = str(row.get("Shaft Label", "")).strip() or f"ID {sid}"
 
         deltas: Dict[str, float] = {}
-        # Build deltas for any metrics used
+        # compute deltas for any metrics used
         for goal_name, weights in goals.items():
             for metric in weights.keys():
                 if metric.endswith(" SD"):
-                    # For SD metrics we want lower SD vs baseline SD
-                    base_sd = _sd(lab, baseline_shaft_id, metric)
-                    this_sd = _sd(lab, sid, metric)
-                    if base_sd is None or this_sd is None:
+                    d = _sd_delta(lab, sid, baseline_shaft_id, metric)
+                    if d is None:
                         continue
-                    deltas[metric] = float(this_sd - base_sd)
+                    deltas[metric] = float(d)
                 else:
                     d = _delta(lab, sid, baseline_shaft_id, metric)
                     if d is None:
@@ -215,9 +253,9 @@ def score_goalcard(
                     deltas[metric] = float(d)
 
         goal_scores: Dict[str, float] = {}
-        reasons: List[str] = []
-
         overall = 0.0
+
+        # weighting between goals: primary heavy, secondary medium, guardrail light
         for goal_name, weights in goals.items():
             g = 0.0
             for metric, w in weights.items():
@@ -225,28 +263,33 @@ def score_goalcard(
                 if d is None:
                     continue
                 denom = 1.0 if metric.endswith(" SD") else denom_for(metric)
+                # For SD deltas, negative is better. Our weights for SD are negative.
                 g += float(w) * _z(d, denom)
 
             goal_scores[goal_name] = float(g)
 
-            # Overall: sum all goals equally, with “Do No Harm” smaller
-            if goal_name == "Do No Harm":
-                overall += 0.4 * g
+            if goal_name.startswith("Primary"):
+                overall += 1.00 * g
+            elif goal_name.startswith("Secondary"):
+                overall += 0.55 * g
             else:
-                overall += 1.0 * g
+                overall += 0.35 * g
 
-        # Simple reason bullets for the top 2 contributing metrics (non SD) + top SD improvement
-        # (Keep this explainable but not overly verbose.)
+        # Reasons: top 3 biggest absolute deltas used by primary + secondary
+        reason_metrics = list(primary_w.keys()) + list(flight_mod_w.keys())
         contribs: List[Tuple[float, str]] = []
-        for metric, d in deltas.items():
+        for metric in reason_metrics:
+            if metric not in deltas:
+                continue
+            d = deltas[metric]
             if metric.endswith(" SD"):
-                # Lower is better if negative delta; capture improvements
-                contribs.append(((-d), f"{metric} {'↓' if d < 0 else '↑'} {abs(d):.2f}"))
+                # improvement is negative delta
+                contribs.append((abs(d), f"{metric} {'↓' if d < 0 else '↑'} {abs(d):.2f}"))
             else:
                 contribs.append((abs(d), f"{metric} {'+' if d >= 0 else ''}{d:.2f}"))
 
         contribs = sorted(contribs, key=lambda x: x[0], reverse=True)[:3]
-        reasons = [c[1] for c in contribs if c[0] > 0]
+        reasons = [c[1] for c in contribs]
 
         results.append(
             GoalScoreResult(
@@ -261,10 +304,10 @@ def score_goalcard(
 
     results = sorted(results, key=lambda r: r.overall_score, reverse=True)
 
+    # For UI: best per goal (excluding guardrail)
     top_by_goal: Dict[str, Any] = {}
     for goal in goals_used:
-        # Pick top by that goal score (excluding Do No Harm as a display goal)
-        if goal == "Do No Harm":
+        if goal.startswith("Guardrail"):
             continue
         best = max(results, key=lambda r: r.goal_scores.get(goal, -1e9), default=None)
         if best:
