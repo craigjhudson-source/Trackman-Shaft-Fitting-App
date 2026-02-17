@@ -9,15 +9,12 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 
-from utils import create_pdf_bytes, send_email_with_pdf
 from core.shaft_predictor import predict_shaft_winners
-
-# Sheet validation (non-crashing warnings)
 from core.sheet_validation import validate_sheet_data, render_report_streamlit
 
-# Modular UI blocks
 from ui.trackman_tab import render_trackman_tab
 from ui.interview import render_interview
+from ui.recommendations_tab import render_recommendations_tab
 
 
 # ------------------ Page setup ------------------
@@ -90,7 +87,6 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
                     df[c] = df[c].astype(str).str.strip()
             return df
 
-        # Tabs to load (Admin tab is optional but recommended)
         tabs = ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions", "Fittings", "Admin"]
         out: Dict[str, pd.DataFrame] = {}
         for k in tabs:
@@ -129,11 +125,6 @@ def save_to_fittings(answers: Dict[str, Any]) -> None:
 
 # ------------------ Admin gating ------------------
 def is_admin_email(email: str, admin_df: pd.DataFrame) -> bool:
-    """
-    Admin sheet expected columns:
-      - Email (required)
-      - Active (optional) accepts: TRUE/FALSE, Yes/No, 1/0
-    """
     e = str(email or "").strip().lower()
     if not e:
         return False
@@ -145,7 +136,6 @@ def is_admin_email(email: str, admin_df: pd.DataFrame) -> bool:
     df = admin_df.copy()
     df["Email"] = df["Email"].astype(str).str.strip().str.lower()
 
-    # If Active column exists, filter to active
     if "Active" in df.columns:
 
         def _is_active(v: Any) -> bool:
@@ -196,11 +186,9 @@ if not all_data:
 cfg = all_data.get("Config", pd.DataFrame())
 admin_df = all_data.get("Admin", pd.DataFrame())
 
-# Determine admin status:
 admin_email = str(st.session_state.answers.get("Q02", "")).strip()
 is_admin = is_admin_email(admin_email, admin_df)
 
-# Always validate; only show details to admins (or show generic stop message)
 report = validate_sheet_data(all_data)
 
 if is_admin:
@@ -211,7 +199,6 @@ if is_admin:
     if st.session_state.show_sheet_validation:
         render_report_streamlit(report, title="Sheet Validation", show_info=True)
 
-# If fatal errors exist, stop app regardless
 if report.errors:
     if is_admin:
         st.error("Sheet has fatal errors. Fix the Google Sheet and reload.")
@@ -219,7 +206,6 @@ if report.errors:
         st.error("Configuration issue. Please contact your fitter/administrator.")
     st.stop()
 
-# Config values
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 3.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.10)
@@ -249,7 +235,6 @@ else:
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
     st.session_state.environment = (ans.get("Q22") or st.session_state.environment or "Indoors (Mat)").strip()
 
-    # Recompute admin status now that email exists
     is_admin = is_admin_email(p_email, admin_df)
 
     st.title(f"⛳ Results: {p_name}")
@@ -267,7 +252,6 @@ else:
     st.divider()
     tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
-    # -------- Predictor --------
     try:
         carry_6i = float(ans.get("Q15", 150))
     except Exception:
@@ -275,7 +259,6 @@ else:
 
     all_winners = predict_shaft_winners(all_data["Shafts"], carry_6i)
 
-    # Verdict blurbs
     if "Model" in all_data["Descriptions"].columns and "Blurb" in all_data["Descriptions"].columns:
         desc_map = dict(zip(all_data["Descriptions"]["Model"], all_data["Descriptions"]["Blurb"]))
     else:
@@ -290,59 +273,16 @@ else:
         except Exception:
             verdicts[f"{k}:"] = "Optimized."
 
-    # -------- Report Tab --------
     with tab_report:
-        st.markdown(
-            f"""<div class="profile-bar"><div class="profile-grid">
-<div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
-<div><b>HEAD:</b> {ans.get('Q08','')} {ans.get('Q09','')}</div>
-<div><b>CURRENT:</b> {ans.get('Q12','')} ({ans.get('Q11','')})</div>
-<div><b>SPECS:</b> {ans.get('Q13','')} L / {ans.get('Q14','')} SW</div>
-<div><b>GRIP/BALL:</b> {ans.get('Q06','')}/{ans.get('Q07','')}</div>
-<div><b>ENVIRONMENT:</b> {st.session_state.environment}</div>
-</div></div>""",
-            unsafe_allow_html=True,
+        render_recommendations_tab(
+            p_name=p_name,
+            p_email=p_email,
+            ans=ans,
+            all_winners=all_winners,
+            verdicts=verdicts,
+            environment=st.session_state.environment,
         )
 
-        v_items = list(verdicts.items())
-        col1, col2 = st.columns(2)
-        cats = [
-            ("Balanced", "⚖️ Balanced"),
-            ("Maximum Stability", "🛡️ Stability"),
-            ("Launch & Height", "🚀 Launch"),
-            ("Feel & Smoothness", "☁️ Feel"),
-        ]
-        for i, (cat, c_name) in enumerate(cats):
-            with col1 if i < 2 else col2:
-                st.subheader(c_name)
-                if cat in all_winners:
-                    st.table(all_winners[cat])
-                    blurb = v_items[i][1] if i < len(v_items) else "Optimized."
-                    st.markdown(
-                        f"<div class='verdict-text'><b>Verdict:</b> {blurb}</div>",
-                        unsafe_allow_html=True,
-                    )
-
-        if not st.session_state.email_sent and p_email:
-            with st.spinner("Dispatching PDF..."):
-                pdf_bytes = create_pdf_bytes(
-                    p_name,
-                    all_winners,
-                    ans,
-                    verdicts,
-                    phase6_recs=st.session_state.get("phase6_recs", None),
-                    environment=st.session_state.environment,
-                )
-                ok = send_email_with_pdf(
-                    p_email, p_name, pdf_bytes, environment=st.session_state.environment
-                )
-                if ok is True:
-                    st.success(f"📬 Sent to {p_email}!")
-                    st.session_state.email_sent = True
-                else:
-                    st.error(f"Email failed: {ok}")
-
-    # -------- TrackMan Lab Tab --------
     with tab_lab:
         if is_admin:
             show = st.toggle("Admin: Show sheet validation (Lab)", value=False)
