@@ -532,7 +532,7 @@ def build_tour_proven_matrix(
             if base_id is not None and str(overall_w.get("Shaft ID")) == base_id
             else None
         ),
-        "no_upgrade_msg": no_upgrade_msg,
+        "no_upgrade_msg",
     }
 
     return {
