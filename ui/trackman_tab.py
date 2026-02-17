@@ -9,8 +9,9 @@ import streamlit as st
 
 from core.trackman import load_trackman, summarize_trackman, debug_trackman
 from core.trackman_display import render_trackman_session
+from core.goal_profile import build_goal_profile
+from core.goal_scoring import score_goalcard
 
-# Intelligence block is optional but expected in your repo
 UI_INTEL_AVAILABLE = True
 try:
     from ui.intelligence import render_intelligence_block
@@ -19,14 +20,7 @@ except Exception:
 
 
 def _controls_complete() -> bool:
-    """
-    Controls are 'complete' only when every required checkbox is True.
-    If lab_controls is missing, treat as incomplete (never crash).
-    """
-    lc = st.session_state.get("lab_controls", None)
-    if not isinstance(lc, dict) or not lc:
-        return False
-    return all(bool(v) for v in lc.values())
+    return all(bool(v) for v in st.session_state.lab_controls.values())
 
 
 def _extract_tag_ids(raw_df: pd.DataFrame) -> List[str]:
@@ -159,36 +153,9 @@ def _find_baseline_shaft_id_from_answers(ans: Dict[str, Any], shafts_df: pd.Data
     return None
 
 
-def _value_is_present(v: Any) -> bool:
-    """
-    Safe truthiness check that won't crash on pandas objects.
-    """
-    if v is None:
-        return False
-
-    # Pandas objects (DataFrame / Series / Index) can't be used in boolean context
-    if isinstance(v, (pd.DataFrame, pd.Series, pd.Index)):
-        return not v.empty
-
-    if isinstance(v, str):
-        return bool(v.strip())
-
-    if isinstance(v, (list, tuple, set, dict)):
-        return len(v) > 0
-
-    # Fallback for simple scalars
-    try:
-        return bool(v)
-    except Exception:
-        return False
-
-
 def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
     """
-    Try to standardize winner info out of whatever the intelligence layer returns,
-    without assuming a single fixed key.
-
-    IMPORTANT: intel may contain pandas objects; never evaluate them directly as bool.
+    Avoid pandas truthiness errors; accept dict only.
     """
     if not isinstance(intel, dict):
         return None
@@ -205,14 +172,16 @@ def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
 
     raw = None
     for k in candidates:
-        if k not in intel:
-            continue
-        v = intel.get(k, None)
-        if _value_is_present(v):
-            raw = v
-            break
+        if k in intel:
+            v = intel.get(k)
+            # pandas objects explode on truthiness; only accept dict/str
+            if isinstance(v, dict) and v:
+                raw = v
+                break
+            if isinstance(v, str) and v.strip():
+                raw = v.strip()
+                break
 
-    # Already in standardized dict form
     if isinstance(raw, dict):
         return {
             "shaft_id": raw.get("shaft_id") or raw.get("Shaft ID") or raw.get("id"),
@@ -222,7 +191,6 @@ def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
             "raw": raw,
         }
 
-    # If it’s just a string, wrap it
     if isinstance(raw, str) and raw.strip():
         return {
             "shaft_id": None,
@@ -230,16 +198,6 @@ def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
             "headline": "Winner selected",
             "explain": raw.strip(),
             "raw": raw,
-        }
-
-    # If it’s a pandas object, preserve a small note instead of crashing
-    if isinstance(raw, (pd.DataFrame, pd.Series)) and not raw.empty:
-        return {
-            "shaft_id": None,
-            "shaft_label": None,
-            "headline": "Winner selected",
-            "explain": "Winner object returned (table).",
-            "raw": None,
         }
 
     return None
@@ -257,6 +215,16 @@ def render_trackman_tab(
 ) -> None:
     st.header("🧪 Trackman Lab (Controlled Testing)")
 
+    # ---- Ensure session defaults for lab controls ----
+    if "lab_controls" not in st.session_state or not isinstance(st.session_state.get("lab_controls"), dict):
+        st.session_state.lab_controls = {
+            "length_matched": False,
+            "swing_weight_matched": False,
+            "grip_matched": False,
+            "same_head": False,
+            "same_ball": False,
+        }
+
     st.caption(
         f"Quality signals (not enforced): "
         f"MIN_SHOTS={MIN_SHOTS} | "
@@ -264,13 +232,6 @@ def render_trackman_tab(
         f"WARN_CARRY_SD={WARN_CARRY_SD} | "
         f"WARN_SMASH_SD={WARN_SMASH_SD}"
     )
-
-    # ✅ HOTFIX: initialize lab_controls dict + required keys (prevents all KeyErrors)
-    if "lab_controls" not in st.session_state or not isinstance(st.session_state.get("lab_controls"), dict):
-        st.session_state.lab_controls = {}
-
-    for k in ["length_matched", "swing_weight_matched", "grip_matched", "same_head", "same_ball"]:
-        st.session_state.lab_controls.setdefault(k, False)
 
     env_choice = st.radio(
         "Testing environment",
@@ -461,7 +422,6 @@ def render_trackman_tab(
         if tm_file is not None and not _controls_complete():
             st.info("Finish Lab Controls above to enable logging.")
 
-    # ---------- Results / Intelligence ----------
     with c_res:
         if not st.session_state.tm_lab_data:
             st.info("Upload files to begin correlation.")
@@ -503,6 +463,20 @@ def render_trackman_tab(
 
         baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
 
+        # ---- NEW: Goal Profile + Scorecard Rankings ----
+        try:
+            gp = build_goal_profile(st.session_state.answers, environment=st.session_state.environment)
+            st.session_state.goal_profile = gp
+            st.session_state.goal_rankings = score_goalcard(
+                lab_df=lab_df,
+                baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
+                profile=gp,
+            )
+        except Exception:
+            # Never crash Trackman tab if scoring fails
+            st.session_state.goal_profile = None
+            st.session_state.goal_rankings = None
+
         if not UI_INTEL_AVAILABLE:
             st.error("Intelligence module not available (ui/intelligence.py import failed).")
             return
@@ -518,7 +492,6 @@ def render_trackman_tab(
             WARN_SMASH_SD=WARN_SMASH_SD,
         )
 
-        # Store Phase 6 and Winner Summary for downstream UI
         if isinstance(intel, dict):
             if intel.get("phase6_recs"):
                 st.session_state.phase6_recs = intel["phase6_recs"]
@@ -527,5 +500,4 @@ def render_trackman_tab(
             if ws:
                 st.session_state.winner_summary = ws
             else:
-                # Keep prior winner_summary if it exists; don't wipe it
                 st.session_state.setdefault("winner_summary", None)
