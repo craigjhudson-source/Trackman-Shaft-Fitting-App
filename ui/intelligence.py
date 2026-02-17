@@ -55,8 +55,8 @@ def render_intelligence_block(
     # --- Tour Proven Matrix (new) ---
     render_tour_proven_matrix(
         comparison_df,
-        baseline_shaft_id=baseline_shaft_id,
-        answers=answers,
+        baseline_shaft_id,
+        answers,
     )
 
     # --- Baseline table ---
