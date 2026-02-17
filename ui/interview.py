@@ -10,14 +10,16 @@ import streamlit as st
 def _norm_qid(qid: Any) -> str:
     """
     Normalize QuestionID so we never lose answers due to Q16.1 vs Q16_1.
-    We store everything as underscore form: Q16_1, Q19_2, etc.
+    Store everything as underscore form: Q16_1, Q19_2, etc.
     """
     s = "" if qid is None else str(qid).strip()
     return s.replace(".", "_")
 
 
 def _sync_all() -> None:
-    # Persist all widget_* values into the single source of truth answers dict.
+    """
+    Persist all widget_* values into the single source-of-truth answers dict.
+    """
     for key in list(st.session_state.keys()):
         if key.startswith("widget_"):
             qid = key.replace("widget_", "")
@@ -27,20 +29,18 @@ def _sync_all() -> None:
 def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
     """
     Visibility logic for follow-ups.
-    Uses normalized IDs only (underscore form).
-
     Correct sheet-driven rules:
+      - Q16_2 ALWAYS shows (no gating)
       - Q16_3 shows only when Q16_2 is No/Unsure
+      - Q19_2 ALWAYS shows (no gating)
       - Q19_3 shows only when Q19_2 is No/Unsure
     """
     qid = _norm_qid(qid)
 
-    # Flight: "If not, do you want it higher or lower?" depends on "Are you happy...?"
     if qid == "Q16_3":
         a = str(answers.get("Q16_2", "")).strip().lower()
         return a in {"no", "unsure"}
 
-    # Feel: "If not, what do you want it to feel like?" depends on "Are you happy...?"
     if qid == "Q19_3":
         a = str(answers.get("Q19_2", "")).strip().lower()
         return a in {"no", "unsure"}
@@ -57,7 +57,6 @@ def render_interview(
 ) -> None:
     st.title("⛳ Tour Proven Fitting Interview")
 
-    # Current category step
     current_cat = categories[st.session_state.form_step]
     q_df = q_master[q_master["Category"].astype(str) == str(current_cat)]
 
@@ -67,7 +66,7 @@ def render_interview(
         if not qid:
             continue
 
-        # Ensure session answers dict always uses normalized keys
+        # Ensure answers dict uses normalized keys
         if qid not in st.session_state.answers:
             st.session_state.answers[qid] = st.session_state.answers.get(str(qid_raw).strip(), "")
 

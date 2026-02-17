@@ -18,14 +18,55 @@ def _winner_ready() -> bool:
     return isinstance(phase6, list) and len(phase6) > 0
 
 
-def _fmt_pref_line(primary: str, followup: str) -> str:
-    p = (primary or "").strip()
-    f = (followup or "").strip()
-    if not p and not f:
+def _fmt_flight_line(ans: Dict[str, Any]) -> str:
+    """
+    Sheet truth:
+      Q16_1 = Current Flight
+      Q16_2 = Are you happy with your current flight? (Yes/No/Unsure)
+      Q16_3 = If not, do you want it higher or lower?
+    """
+    cur = str(ans.get("Q16_1", "")).strip()
+    happy = str(ans.get("Q16_2", "")).strip()
+    change = str(ans.get("Q16_3", "")).strip()
+
+    if not cur and not happy and not change:
         return ""
-    if f:
-        return f"{p} → {f}" if p else f
-    return p
+
+    # If they are unhappy (No/Unsure), show desired change
+    if happy.lower() in {"no", "unsure"} and change:
+        # ex: "Mid (No) → Higher"
+        if cur:
+            return f"{cur} ({happy}) → {change}"
+        return f"{happy} → {change}"
+
+    # Otherwise just show current + happy
+    if cur and happy:
+        return f"{cur} ({happy})"
+    return cur or happy
+
+
+def _fmt_feel_line(ans: Dict[str, Any]) -> str:
+    """
+    Sheet truth:
+      Q19_1 = Current Shaft Feel
+      Q19_2 = Are you happy with your current feel? (Yes/No/Unsure)
+      Q19_3 = If not, what do you want it to feel like?
+    """
+    cur = str(ans.get("Q19_1", "")).strip()
+    happy = str(ans.get("Q19_2", "")).strip()
+    target = str(ans.get("Q19_3", "")).strip()
+
+    if not cur and not happy and not target:
+        return ""
+
+    if happy.lower() in {"no", "unsure"} and target:
+        if cur:
+            return f"{cur} ({happy}) → {target}"
+        return f"{happy} → {target}"
+
+    if cur and happy:
+        return f"{cur} ({happy})"
+    return cur or happy
 
 
 def render_recommendations_tab(
@@ -37,16 +78,10 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],
     environment: str,
 ) -> None:
-    # Pull flight/feel answers
-    flight_sat = str(ans.get("Q16_1", "")).strip()
-    flight_change = str(ans.get("Q16_2", "")).strip()
-    feel_sat = str(ans.get("Q19_1", "")).strip()
-    feel_change = str(ans.get("Q19_2", "")).strip()
+    flight_line = _fmt_flight_line(ans)
+    feel_line = _fmt_feel_line(ans)
 
-    flight_line = _fmt_pref_line(flight_sat, flight_change)
-    feel_line = _fmt_pref_line(feel_sat, feel_change)
-
-    # Header bar (now includes flight/feel)
+    # Header bar
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -95,25 +130,46 @@ def render_recommendations_tab(
 
     st.divider()
 
-    st.subheader("📄 Send PDF Report")
+    # ---------------- PDF controls ----------------
+    st.subheader("📄 PDF Report")
 
+    if not _winner_ready():
+        st.warning(
+            "PDF is available **after** you pick a winner in **🧪 Trackman Lab** "
+            "(or Phase 6 notes exist)."
+        )
+        return
+
+    # Generate PDF (always allowed once winner exists)
+    if st.button("Generate PDF", type="primary"):
+        with st.spinner("Generating PDF..."):
+            pdf_bytes = create_pdf_bytes(
+                p_name,
+                all_winners,
+                ans,
+                verdicts,
+                phase6_recs=st.session_state.get("phase6_recs", None),
+                environment=environment,
+            )
+        st.download_button(
+            label="Download PDF",
+            data=pdf_bytes,
+            file_name=f"Report_{p_name}.pdf",
+            mime="application/pdf",
+        )
+
+    st.divider()
+
+    # Send PDF (only if email provided)
     if not p_email:
-        st.info("Add the player's email in the interview to enable PDF sending.")
+        st.info("Add the player's email in the interview to enable **Send PDF**.")
         return
 
     if st.session_state.get("email_sent", False):
         st.success(f"📬 PDF already sent to {p_email}.")
         return
 
-    if not _winner_ready():
-        st.warning(
-            "PDF sending is enabled **after** you choose a winner in **🧪 Trackman Lab**.\n\n"
-            "Log swings and let the Intelligence block generate the winner. Then return here to send the PDF."
-        )
-        return
-
-    want_send = st.checkbox(f"Yes — send the PDF to {p_email}", value=False)
-    if st.button("Generate & Send PDF", disabled=not want_send):
+    if st.button(f"Send PDF to {p_email}"):
         with st.spinner("Generating PDF and sending email..."):
             pdf_bytes = create_pdf_bytes(
                 p_name,
