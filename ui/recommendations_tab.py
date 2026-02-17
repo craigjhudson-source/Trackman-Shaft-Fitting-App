@@ -6,7 +6,8 @@ from typing import Any, Dict
 import pandas as pd
 import streamlit as st
 
-from utils import create_pdf_bytes, send_email_with_pdf
+from utils_pdf import create_pdf_bytes
+from utils import send_email_with_pdf
 
 
 def _winner_ready() -> bool:
@@ -82,7 +83,6 @@ def render_recommendations_tab(
 
     st.divider()
 
-    # --- PDF sending flow (explicit) ---
     st.subheader("📄 Send PDF Report")
 
     if not p_email:
@@ -101,9 +101,7 @@ def render_recommendations_tab(
         return
 
     want_send = st.checkbox(f"Yes — send the PDF to {p_email}", value=False)
-    can_send = bool(want_send)
-
-    if st.button("Generate & Send PDF", disabled=not can_send):
+    if st.button("Generate & Send PDF", disabled=not want_send):
         with st.spinner("Generating PDF and sending email..."):
             pdf_bytes = create_pdf_bytes(
                 p_name,
