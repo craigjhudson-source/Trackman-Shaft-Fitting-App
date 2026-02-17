@@ -15,8 +15,9 @@ from core.shaft_predictor import predict_shaft_winners
 # Sheet validation (non-crashing warnings)
 from core.sheet_validation import validate_sheet_data, render_report_streamlit
 
-# TrackMan tab extracted
+# Modular UI blocks
 from ui.trackman_tab import render_trackman_tab
+from ui.interview import render_interview
 
 
 # ------------------ Page setup ------------------
@@ -146,9 +147,11 @@ def is_admin_email(email: str, admin_df: pd.DataFrame) -> bool:
 
     # If Active column exists, filter to active
     if "Active" in df.columns:
+
         def _is_active(v: Any) -> bool:
             s = str(v).strip().lower()
             return s in {"true", "yes", "1", "y", "active"}
+
         df = df[df["Active"].apply(_is_active)]
 
     return e in set(df["Email"].tolist())
@@ -185,26 +188,6 @@ if "show_sheet_validation" not in st.session_state:
     st.session_state.show_sheet_validation = False
 
 
-def sync_all() -> None:
-    for key in list(st.session_state.keys()):
-        if key.startswith("widget_"):
-            st.session_state.answers[key.replace("widget_", "")] = st.session_state[key]
-
-
-def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
-    qid = str(qid).strip()
-
-    if qid == "Q16_2":
-        a = str(answers.get("Q16_1", "")).strip().lower()
-        return a in {"no", "unsure"}
-
-    if qid == "Q19_2":
-        a = str(answers.get("Q19_1", "")).strip().lower()
-        return a in {"no", "unsure"}
-
-    return True
-
-
 # ------------------ App Flow ------------------
 all_data = get_data_from_gsheet()
 if not all_data:
@@ -214,8 +197,6 @@ cfg = all_data.get("Config", pd.DataFrame())
 admin_df = all_data.get("Admin", pd.DataFrame())
 
 # Determine admin status:
-# - Prefer the interview email (Q02) once available
-# - Otherwise, not admin until they enter email
 admin_email = str(st.session_state.answers.get("Q02", "")).strip()
 is_admin = is_admin_email(admin_email, admin_df)
 
@@ -223,7 +204,6 @@ is_admin = is_admin_email(admin_email, admin_df)
 report = validate_sheet_data(all_data)
 
 if is_admin:
-    # Admins get a toggle to see/hide validation
     st.session_state.show_sheet_validation = st.toggle(
         "Admin: Show sheet validation",
         value=bool(st.session_state.show_sheet_validation),
@@ -255,149 +235,12 @@ categories = list(dict.fromkeys(q_master["Category"].astype(str).tolist()))
 
 # ------------------ Interview ------------------
 if not st.session_state.interview_complete:
-    st.title("⛳ Tour Proven Fitting Interview")
-
-    current_cat = categories[st.session_state.form_step]
-    q_df = q_master[q_master["Category"].astype(str) == str(current_cat)]
-
-    for _, row in q_df.iterrows():
-        qid = str(row.get("QuestionID", "")).strip()
-        if not qid:
-            continue
-
-        if not should_show_question(qid, st.session_state.answers):
-            continue
-
-        qtext = str(row.get("QuestionText", "")).strip()
-        qtype = str(row.get("InputType", "")).strip()
-        qopts = str(row.get("Options", "")).strip()
-        ans_val = st.session_state.answers.get(qid, "")
-
-        if qtype == "Dropdown":
-            opts: List[str] = [""]
-
-            # Heads dynamic dropdowns
-            if "Heads" in qopts:
-                brand_val = st.session_state.answers.get("Q08", "")
-
-                if "Brand" in qtext:
-                    if "Manufacturer" in all_data["Heads"].columns:
-                        opts += sorted(all_data["Heads"]["Manufacturer"].dropna().unique().tolist())
-                    else:
-                        opts += sorted(all_data["Heads"].iloc[:, 0].dropna().unique().tolist())
-                else:
-                    if "Manufacturer" in all_data["Heads"].columns and "Model" in all_data["Heads"].columns:
-                        if brand_val:
-                            opts += sorted(
-                                all_data["Heads"][all_data["Heads"]["Manufacturer"] == brand_val]["Model"]
-                                .dropna()
-                                .unique()
-                                .tolist()
-                            )
-                        else:
-                            opts += ["Select Brand First"]
-                    else:
-                        opts += ["Select Brand First"]
-
-            # Shafts dynamic dropdowns
-            elif "Shafts" in qopts:
-                s_brand = st.session_state.answers.get("Q10", "")
-                s_flex = st.session_state.answers.get("Q11", "")
-
-                if "Brand" in qtext:
-                    if "Brand" in all_data["Shafts"].columns:
-                        opts += sorted(all_data["Shafts"]["Brand"].dropna().unique().tolist())
-
-                elif "Flex" in qtext:
-                    if s_brand and "Flex" in all_data["Shafts"].columns and "Brand" in all_data["Shafts"].columns:
-                        opts += sorted(
-                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
-                            .dropna()
-                            .unique()
-                            .tolist()
-                        )
-                    else:
-                        opts += ["Select Brand First"]
-
-                elif "Model" in qtext:
-                    if (
-                        s_brand
-                        and s_flex
-                        and "Brand" in all_data["Shafts"].columns
-                        and "Flex" in all_data["Shafts"].columns
-                        and "Model" in all_data["Shafts"].columns
-                    ):
-                        opts += sorted(
-                            all_data["Shafts"][
-                                (all_data["Shafts"]["Brand"] == s_brand) & (all_data["Shafts"]["Flex"] == s_flex)
-                            ]["Model"]
-                            .dropna()
-                            .unique()
-                            .tolist()
-                        )
-                    else:
-                        opts += ["Select Brand/Flex First"]
-
-            # Config-driven dropdowns
-            elif qopts.lower().startswith("config:"):
-                col = qopts.split(":", 1)[1].strip()
-                if col in all_data["Config"].columns:
-                    opts += [str(x).strip() for x in all_data["Config"][col].dropna().tolist() if str(x).strip()]
-
-            # Responses sheet fallback (will be empty if you archived Responses)
-            else:
-                resp_df = all_data.get("Responses", pd.DataFrame())
-                if (
-                    resp_df is not None
-                    and not resp_df.empty
-                    and "QuestionID" in resp_df.columns
-                    and "ResponseOption" in resp_df.columns
-                ):
-                    opts += (
-                        resp_df[resp_df["QuestionID"].astype(str).str.strip() == qid]["ResponseOption"]
-                        .astype(str)
-                        .tolist()
-                    )
-
-            opts = list(dict.fromkeys([str(x) for x in opts if str(x).strip() != ""]))
-
-            st.selectbox(
-                qtext,
-                opts,
-                index=opts.index(str(ans_val)) if str(ans_val) in opts else 0,
-                key=f"widget_{qid}",
-                on_change=sync_all,
-            )
-
-        elif qtype == "Numeric":
-            try:
-                v = float(ans_val) if str(ans_val).strip() else 0.0
-            except Exception:
-                v = 0.0
-            st.number_input(qtext, value=v, key=f"widget_{qid}", on_change=sync_all)
-
-        else:
-            st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=sync_all)
-
-    c1, c2, _ = st.columns([1, 1, 4])
-    if c1.button("⬅️ Back") and st.session_state.form_step > 0:
-        sync_all()
-        st.session_state.form_step -= 1
-        st.rerun()
-
-    if st.session_state.form_step < len(categories) - 1:
-        if c2.button("Next ➡️"):
-            sync_all()
-            st.session_state.form_step += 1
-            st.rerun()
-    else:
-        if c2.button("🔥 Calculate"):
-            sync_all()
-            if st.session_state.answers.get("Q22"):
-                st.session_state.environment = str(st.session_state.answers["Q22"]).strip()
-            save_to_fittings(st.session_state.answers)
-            st.session_state.interview_complete = True
-            st.rerun()
+    render_interview(
+        all_data=all_data,
+        q_master=q_master,
+        categories=categories,
+        save_to_fittings_fn=save_to_fittings,
+    )
 
 
 # ------------------ Results / Dashboard ------------------
@@ -501,7 +344,6 @@ else:
 
     # -------- TrackMan Lab Tab --------
     with tab_lab:
-        # Optional admin-only validation toggle inside Trackman Lab too
         if is_admin:
             show = st.toggle("Admin: Show sheet validation (Lab)", value=False)
             if show:
