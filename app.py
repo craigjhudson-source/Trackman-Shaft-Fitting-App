@@ -15,6 +15,10 @@ from core.trackman_display import render_trackman_session
 from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
+# NEW: Sheet validation (non-crashing warnings)
+from core.sheet_validation import validate_sheet_data, render_report_streamlit
+
+
 # Modular UI blocks
 # (If these files don't exist yet, the app will still run because we guard the imports.)
 UI_INTEL_AVAILABLE = True
@@ -102,16 +106,22 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
                 (h.strip() if str(h).strip() else f"Col_{i}") for i, h in enumerate(rows[0])
             ]
             df = pd.DataFrame(rows[1:], columns=headers)
-            # strip strings
             for c in df.columns:
                 if df[c].dtype == "object":
                     df[c] = df[c].astype(str).str.strip()
             return df
 
-        return {
-            k: get_clean_df(k)
-            for k in ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions"]
-        }
+        # NOTE: We now include Fittings so we can validate schema issues like "Fitting Enviroment"
+        tabs = ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions", "Fittings"]
+        out: Dict[str, pd.DataFrame] = {}
+        for k in tabs:
+            try:
+                out[k] = get_clean_df(k)
+            except Exception:
+                # Missing optional tabs should not crash; validator will report.
+                out[k] = pd.DataFrame()
+        return out
+
     except Exception as e:
         st.error(f"📡 Database Error: {e}")
         return None
@@ -316,12 +326,10 @@ def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
     """
     qid = str(qid).strip()
 
-    # Flight follow-up only if NOT happy with flight
     if qid == "Q16_2":
         a = str(answers.get("Q16_1", "")).strip().lower()
         return a in {"no", "unsure"}
 
-    # Feel follow-up only if NOT happy with feel
     if qid == "Q19_2":
         a = str(answers.get("Q19_1", "")).strip().lower()
         return a in {"no", "unsure"}
@@ -332,6 +340,14 @@ def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
 # ------------------ App Flow ------------------
 all_data = get_data_from_gsheet()
 if not all_data:
+    st.stop()
+
+# NEW: Validate sheet structure + show friendly banners.
+report = validate_sheet_data(all_data)
+render_report_streamlit(report)
+
+# If fatal errors exist, stop after showing them (otherwise app will crash later anyway).
+if report.errors:
     st.stop()
 
 cfg = all_data["Config"]
@@ -436,7 +452,6 @@ if not st.session_state.interview_complete:
 
             # Config-driven dropdowns
             elif qopts.lower().startswith("config:"):
-                # Example: "Config: Fitting Goal" OR "Config: Fitting Environment"
                 col = qopts.split(":", 1)[1].strip()
                 if col in all_data["Config"].columns:
                     opts += [str(x).strip() for x in all_data["Config"][col].dropna().tolist() if str(x).strip()]
@@ -490,7 +505,6 @@ if not st.session_state.interview_complete:
     else:
         if c2.button("🔥 Calculate"):
             sync_all()
-            # Environment question (Q22) optional; still store if present
             if st.session_state.answers.get("Q22"):
                 st.session_state.environment = str(st.session_state.answers["Q22"]).strip()
             save_to_fittings(st.session_state.answers)
@@ -525,7 +539,6 @@ else:
     except Exception:
         carry_6i = 150.0
 
-    # predict_shaft_winners exists in your repo; this keeps compatibility
     all_winners = predict_shaft_winners(all_data["Shafts"], carry_6i)
 
     # Verdict blurbs
@@ -651,7 +664,9 @@ else:
             baseline_id = find_baseline_shaft_id_from_answers(ans, all_data["Shafts"])
             baseline_label = shaft_map.get(str(baseline_id), "Current Baseline") if baseline_id else "Current Baseline"
 
-            test_list = [baseline_label] + [all_winners[k].iloc[0]["Model"] for k in all_winners if not all_winners[k].empty]
+            test_list = [baseline_label] + [
+                all_winners[k].iloc[0]["Model"] for k in all_winners if not all_winners[k].empty
+            ]
             selected_s = st.selectbox("Default Assign (if no Tags in file):", test_list, index=0)
 
             tm_file = st.file_uploader(
@@ -715,7 +730,9 @@ else:
 
                     if selected_tag_ids:
                         baseline_options = [shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})") for tid in selected_tag_ids]
-                        label_to_id_selected = {shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})"): str(tid) for tid in selected_tag_ids}
+                        label_to_id_selected = {
+                            shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})"): str(tid) for tid in selected_tag_ids
+                        }
                         default_label = shaft_map.get(str(baseline_default_id), baseline_options[0])
 
                         st.markdown("### Baseline for comparison")
@@ -759,7 +776,6 @@ else:
                         st.error("Could not parse TrackMan file (no required metrics found).")
                     else:
                         selected_tag_ids = st.session_state.get("selected_tag_ids", [])
-                        # If tags exist AND user selected tags, log one row per tag group
                         if "Tags" in raw.columns and selected_tag_ids:
                             logged_any = False
                             for sid in selected_tag_ids:
@@ -783,7 +799,6 @@ else:
                             else:
                                 st.rerun()
                         else:
-                            # No tags → log entire session
                             stat = summarize_trackman(raw, selected_s, include_std=True)
                             stat["Shaft ID"] = str(selected_s)
                             stat["Shaft Label"] = str(selected_s)
@@ -838,10 +853,8 @@ else:
 
                 st.divider()
 
-                # ------------------ Intelligence Layer ------------------
                 baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
 
-                # Preferred path: modular intelligence block (includes matrix + phase6)
                 if UI_INTEL_AVAILABLE:
                     intel = render_intelligence_block(
                         lab_df=lab_df,
@@ -854,7 +867,6 @@ else:
                         WARN_SMASH_SD=WARN_SMASH_SD,
                     )
 
-                    # show Phase 6 recs (this is what your screenshot is missing)
                     if intel and intel.get("phase6_recs"):
                         st.session_state.phase6_recs = intel["phase6_recs"]
                         for r in intel["phase6_recs"]:
@@ -864,7 +876,6 @@ else:
                                 unsafe_allow_html=True,
                             )
                 else:
-                    # Fallback: classic efficiency table only (older mode)
                     if not EFF_AVAILABLE:
                         st.error(
                             "Efficiency Optimizer module not found.\n\n"
@@ -915,7 +926,11 @@ else:
                             )
                             st.subheader("Phase 6 Optimization Suggestions")
                             w_id = str(winner.get("Shaft ID"))
-                            w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id] if "Shaft ID" in lab_df.columns else pd.DataFrame()
+                            w_match = (
+                                lab_df[lab_df["Shaft ID"].astype(str) == w_id]
+                                if "Shaft ID" in lab_df.columns
+                                else pd.DataFrame()
+                            )
                             winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
                             recs = phase6_recommendations(
                                 winner_row,
