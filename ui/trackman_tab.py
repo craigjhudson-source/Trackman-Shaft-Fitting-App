@@ -271,6 +271,7 @@ def render_trackman_tab(
     st.session_state.setdefault("environment", "Indoors (Mat)")
     st.session_state.setdefault("answers", {})
     st.session_state.setdefault("tm_lab_data", [])
+    st.session_state.setdefault("goal_recs", None)
 
     st.header("🧪 Trackman Lab (Controlled Testing)")
 
@@ -552,8 +553,23 @@ def render_trackman_tab(
             if intel.get("phase6_recs"):
                 st.session_state.phase6_recs = intel["phase6_recs"]
 
+            # If intelligence already provides goal_recs, preserve it
+            if "goal_recs" in intel and intel.get("goal_recs") is not None:
+                st.session_state.goal_recs = intel.get("goal_recs")
+
             ws = _extract_winner_summary(intel)
             if ws:
                 st.session_state.winner_summary = ws
+
+                # Fallback bridge: Recommendations often gates on goal_recs existing
+                if st.session_state.get("goal_recs") is None:
+                    st.session_state.goal_recs = {
+                        "source": "trackman_intelligence",
+                        "winner_summary": ws,
+                        "baseline_tag_id": st.session_state.get("baseline_tag_id"),
+                        "environment": st.session_state.get("environment"),
+                        "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
             else:
                 st.session_state.setdefault("winner_summary", None)
+                st.session_state.setdefault("goal_recs", None)
