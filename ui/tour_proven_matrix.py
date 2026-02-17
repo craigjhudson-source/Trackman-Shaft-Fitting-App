@@ -34,7 +34,7 @@ def render_tour_proven_matrix(
         table_df,
         baseline_shaft_id=baseline_shaft_id,
         answers=answers,
-        environment=environment,
+        environment,
     )
 
     st.subheader("Tour Proven Recommendation")
