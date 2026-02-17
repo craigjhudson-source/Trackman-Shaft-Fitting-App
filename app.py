@@ -337,14 +337,16 @@ if not st.session_state.interview_complete:
     q_df = q_master[q_master["Category"] == current_cat]
 
     for _, row in q_df.iterrows():
-        qid = str(row["QuestionID"]).strip()
-        
-if not should_show_question(qid, st.session_state.answers):
-    continue        
-        qtext = row["QuestionText"]
-        qtype = row["InputType"]
-        qopts = str(row["Options"]).strip()
-        ans_val = st.session_state.answers.get(qid, "")
+    qid = str(row["QuestionID"]).strip()
+
+    if not should_show_question(qid, st.session_state.answers):
+        continue
+
+    qtext = row["QuestionText"]
+    qtype = row["InputType"]
+    qopts = str(row["Options"]).strip()
+    ans_val = st.session_state.answers.get(qid, "")
+
 
         if qtype == "Dropdown":
             opts = [""]
