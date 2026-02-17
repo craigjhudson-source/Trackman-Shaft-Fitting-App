@@ -1,27 +1,34 @@
 # ui/interview.py
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Callable
 
 import pandas as pd
 import streamlit as st
 
 
+def _norm_qid(qid: Any) -> str:
+    """
+    Normalize QuestionID so we never lose answers due to Q16.1 vs Q16_1.
+    We store everything as underscore form: Q16_1, Q19_2, etc.
+    """
+    s = "" if qid is None else str(qid).strip()
+    return s.replace(".", "_")
+
+
 def _sync_all() -> None:
-    """
-    Copy all widget_ answers into st.session_state.answers.
-    """
     for key in list(st.session_state.keys()):
         if key.startswith("widget_"):
-            st.session_state.answers[key.replace("widget_", "")] = st.session_state[key]
+            qid = key.replace("widget_", "")
+            st.session_state.answers[qid] = st.session_state[key]
 
 
-def _should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
+def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
     """
-    Decision-tree visibility for sub-questions.
-    Hides follow-ups unless satisfaction is answered and is not Yes.
+    Visibility logic for follow-ups.
+    Uses normalized IDs only (underscore form).
     """
-    qid = str(qid).strip()
+    qid = _norm_qid(qid)
 
     # Flight follow-up only if NOT happy with flight
     if qid == "Q16_2":
@@ -41,34 +48,25 @@ def render_interview(
     all_data: Dict[str, pd.DataFrame],
     q_master: pd.DataFrame,
     categories: List[str],
-    save_to_fittings_fn,
+    save_to_fittings_fn: Callable[[Dict[str, Any]], None],
 ) -> None:
-    """
-    Renders the multi-step interview UI and updates st.session_state:
-      - st.session_state.answers
-      - st.session_state.form_step
-      - st.session_state.environment (from Q22 if present)
-      - st.session_state.interview_complete
-    """
     st.title("⛳ Tour Proven Fitting Interview")
 
-    if not categories:
-        st.error("No Categories found in Questions tab.")
-        st.stop()
-
-    step = int(st.session_state.get("form_step", 0))
-    step = max(0, min(step, len(categories) - 1))
-    st.session_state.form_step = step
-
-    current_cat = categories[step]
-    q_df = q_master[q_master["Category"].astype(str) == str(current_cat)].copy()
+    # Current category step
+    current_cat = categories[st.session_state.form_step]
+    q_df = q_master[q_master["Category"].astype(str) == str(current_cat)]
 
     for _, row in q_df.iterrows():
-        qid = str(row.get("QuestionID", "")).strip()
+        qid_raw = row.get("QuestionID", "")
+        qid = _norm_qid(qid_raw)
         if not qid:
             continue
 
-        if not _should_show_question(qid, st.session_state.answers):
+        # Ensure session answers dict always uses normalized keys
+        if qid not in st.session_state.answers:
+            st.session_state.answers[qid] = st.session_state.answers.get(str(qid_raw).strip(), "")
+
+        if not should_show_question(qid, st.session_state.answers):
             continue
 
         qtext = str(row.get("QuestionText", "")).strip()
@@ -147,7 +145,7 @@ def render_interview(
                 if col in all_data["Config"].columns:
                     opts += [str(x).strip() for x in all_data["Config"][col].dropna().tolist() if str(x).strip()]
 
-            # Responses sheet fallback (if present)
+            # Responses fallback (if you still have it)
             else:
                 resp_df = all_data.get("Responses", pd.DataFrame())
                 if (
@@ -157,7 +155,7 @@ def render_interview(
                     and "ResponseOption" in resp_df.columns
                 ):
                     opts += (
-                        resp_df[resp_df["QuestionID"].astype(str).str.strip() == qid]["ResponseOption"]
+                        resp_df[resp_df["QuestionID"].astype(str).str.strip().apply(_norm_qid) == qid]["ResponseOption"]
                         .astype(str)
                         .tolist()
                     )
@@ -183,7 +181,6 @@ def render_interview(
             st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=_sync_all)
 
     c1, c2, _ = st.columns([1, 1, 4])
-
     if c1.button("⬅️ Back") and st.session_state.form_step > 0:
         _sync_all()
         st.session_state.form_step -= 1
@@ -198,12 +195,10 @@ def render_interview(
         if c2.button("🔥 Calculate"):
             _sync_all()
 
-            # Environment question (Q22) optional; still store if present
+            # Environment question optional
             if st.session_state.answers.get("Q22"):
                 st.session_state.environment = str(st.session_state.answers["Q22"]).strip()
 
-            # Persist the fitting row
             save_to_fittings_fn(st.session_state.answers)
-
             st.session_state.interview_complete = True
             st.rerun()
