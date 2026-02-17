@@ -340,8 +340,7 @@ if not st.session_state.interview_complete:
         qid = str(row["QuestionID"]).strip()
         
 if not should_show_question(qid, st.session_state.answers):
-    continue
-                    
+    continue        
         qtext = row["QuestionText"]
         qtype = row["InputType"]
         qopts = str(row["Options"]).strip()
