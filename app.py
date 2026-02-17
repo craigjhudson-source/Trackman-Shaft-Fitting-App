@@ -10,13 +10,12 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from utils import create_pdf_bytes, send_email_with_pdf
-from core.phase6_optimizer import phase6_recommendations
 from core.shaft_predictor import predict_shaft_winners
 
 # Sheet validation (non-crashing warnings)
 from core.sheet_validation import validate_sheet_data, render_report_streamlit
 
-# NEW: TrackMan tab extracted
+# TrackMan tab extracted
 from ui.trackman_tab import render_trackman_tab
 
 
@@ -90,8 +89,8 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
                     df[c] = df[c].astype(str).str.strip()
             return df
 
-        # We include Fittings for schema validation (and future writeback)
-        tabs = ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions", "Fittings"]
+        # Tabs to load (Admin tab is optional but recommended)
+        tabs = ["Heads", "Shafts", "Questions", "Responses", "Config", "Descriptions", "Fittings", "Admin"]
         out: Dict[str, pd.DataFrame] = {}
         for k in tabs:
             try:
@@ -127,6 +126,34 @@ def save_to_fittings(answers: Dict[str, Any]) -> None:
         st.error(f"Error saving: {e}")
 
 
+# ------------------ Admin gating ------------------
+def is_admin_email(email: str, admin_df: pd.DataFrame) -> bool:
+    """
+    Admin sheet expected columns:
+      - Email (required)
+      - Active (optional) accepts: TRUE/FALSE, Yes/No, 1/0
+    """
+    e = str(email or "").strip().lower()
+    if not e:
+        return False
+    if admin_df is None or admin_df.empty:
+        return False
+    if "Email" not in admin_df.columns:
+        return False
+
+    df = admin_df.copy()
+    df["Email"] = df["Email"].astype(str).str.strip().str.lower()
+
+    # If Active column exists, filter to active
+    if "Active" in df.columns:
+        def _is_active(v: Any) -> bool:
+            s = str(v).strip().lower()
+            return s in {"true", "yes", "1", "y", "active"}
+        df = df[df["Active"].apply(_is_active)]
+
+    return e in set(df["Email"].tolist())
+
+
 # ------------------ Session defaults ------------------
 if "form_step" not in st.session_state:
     st.session_state.form_step = 0
@@ -154,6 +181,8 @@ if "lab_controls" not in st.session_state:
         "same_head": False,
         "same_ball": False,
     }
+if "show_sheet_validation" not in st.session_state:
+    st.session_state.show_sheet_validation = False
 
 
 def sync_all() -> None:
@@ -163,18 +192,12 @@ def sync_all() -> None:
 
 
 def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
-    """
-    Decision-tree visibility for sub-questions.
-    Hides follow-ups unless satisfaction is answered and is not Yes.
-    """
     qid = str(qid).strip()
 
-    # Flight follow-up only if NOT happy with flight
     if qid == "Q16_2":
         a = str(answers.get("Q16_1", "")).strip().lower()
         return a in {"no", "unsure"}
 
-    # Feel follow-up only if NOT happy with feel
     if qid == "Q19_2":
         a = str(answers.get("Q19_1", "")).strip().lower()
         return a in {"no", "unsure"}
@@ -187,14 +210,36 @@ all_data = get_data_from_gsheet()
 if not all_data:
     st.stop()
 
-# Validate sheet structure + show friendly banners.
+cfg = all_data.get("Config", pd.DataFrame())
+admin_df = all_data.get("Admin", pd.DataFrame())
+
+# Determine admin status:
+# - Prefer the interview email (Q02) once available
+# - Otherwise, not admin until they enter email
+admin_email = str(st.session_state.answers.get("Q02", "")).strip()
+is_admin = is_admin_email(admin_email, admin_df)
+
+# Always validate; only show details to admins (or show generic stop message)
 report = validate_sheet_data(all_data)
-render_report_streamlit(report)
+
+if is_admin:
+    # Admins get a toggle to see/hide validation
+    st.session_state.show_sheet_validation = st.toggle(
+        "Admin: Show sheet validation",
+        value=bool(st.session_state.show_sheet_validation),
+    )
+    if st.session_state.show_sheet_validation:
+        render_report_streamlit(report, title="Sheet Validation", show_info=True)
+
+# If fatal errors exist, stop app regardless
 if report.errors:
+    if is_admin:
+        st.error("Sheet has fatal errors. Fix the Google Sheet and reload.")
+    else:
+        st.error("Configuration issue. Please contact your fitter/administrator.")
     st.stop()
 
-cfg = all_data["Config"]
-
+# Config values
 WARN_FACE_TO_PATH_SD = cfg_float(cfg, "WARN_FACE_TO_PATH_SD", 3.0)
 WARN_CARRY_SD = cfg_float(cfg, "WARN_CARRY_SD", 10.0)
 WARN_SMASH_SD = cfg_float(cfg, "WARN_SMASH_SD", 0.10)
@@ -361,6 +406,9 @@ else:
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
     st.session_state.environment = (ans.get("Q22") or st.session_state.environment or "Indoors (Mat)").strip()
 
+    # Recompute admin status now that email exists
+    is_admin = is_admin_email(p_email, admin_df)
+
     st.title(f"⛳ Results: {p_name}")
 
     c_nav1, c_nav2, _ = st.columns([1, 1, 4])
@@ -453,6 +501,12 @@ else:
 
     # -------- TrackMan Lab Tab --------
     with tab_lab:
+        # Optional admin-only validation toggle inside Trackman Lab too
+        if is_admin:
+            show = st.toggle("Admin: Show sheet validation (Lab)", value=False)
+            if show:
+                render_report_streamlit(report, title="Sheet Validation", show_info=True)
+
         render_trackman_tab(
             all_data=all_data,
             answers=st.session_state.answers,
