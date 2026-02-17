@@ -17,6 +17,7 @@ def _norm_qid(qid: Any) -> str:
 
 
 def _sync_all() -> None:
+    # Persist all widget_* values into the single source of truth answers dict.
     for key in list(st.session_state.keys()):
         if key.startswith("widget_"):
             qid = key.replace("widget_", "")
@@ -27,17 +28,21 @@ def should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
     """
     Visibility logic for follow-ups.
     Uses normalized IDs only (underscore form).
+
+    Correct sheet-driven rules:
+      - Q16_3 shows only when Q16_2 is No/Unsure
+      - Q19_3 shows only when Q19_2 is No/Unsure
     """
     qid = _norm_qid(qid)
 
-    # Flight follow-up only if NOT happy with flight
-    if qid == "Q16_2":
-        a = str(answers.get("Q16_1", "")).strip().lower()
+    # Flight: "If not, do you want it higher or lower?" depends on "Are you happy...?"
+    if qid == "Q16_3":
+        a = str(answers.get("Q16_2", "")).strip().lower()
         return a in {"no", "unsure"}
 
-    # Feel follow-up only if NOT happy with feel
-    if qid == "Q19_2":
-        a = str(answers.get("Q19_1", "")).strip().lower()
+    # Feel: "If not, what do you want it to feel like?" depends on "Are you happy...?"
+    if qid == "Q19_3":
+        a = str(answers.get("Q19_2", "")).strip().lower()
         return a in {"no", "unsure"}
 
     return True
