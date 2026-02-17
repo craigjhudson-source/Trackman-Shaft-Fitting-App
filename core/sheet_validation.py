@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 
 import pandas as pd
 
@@ -48,29 +48,34 @@ class ValidationReport:
 # -----------------------------
 # Helpers
 # -----------------------------
-def _has_tab(data: Dict[str, pd.DataFrame], tab: str) -> bool:
-    return tab in data and isinstance(data.get(tab), pd.DataFrame)
-
-
 def _norm_col(c: str) -> str:
     return str(c).strip()
 
 
 def _cols(df: pd.DataFrame) -> List[str]:
-    return [_norm_col(c) for c in list(df.columns)]
+    return [_norm_col(c) for c in list(df.columns)] if isinstance(df, pd.DataFrame) else []
+
+
+def _nonempty(df: pd.DataFrame) -> bool:
+    return isinstance(df, pd.DataFrame) and (not df.empty) and (len(df.columns) > 0)
+
+
+def _has_tab(data: Dict[str, pd.DataFrame], tab: str) -> bool:
+    return tab in data and isinstance(data.get(tab), pd.DataFrame)
 
 
 def _get_cfg_value(cfg_df: pd.DataFrame, key: str) -> Optional[str]:
     """
-    Config sheet design in your workbook is "wide" (keys are columns).
-    So "MIN_SHOTS" etc are columns.
+    Config sheet in your workbook is "wide" (keys are columns).
+    MIN_SHOTS etc should exist as columns.
     """
     if cfg_df is None or cfg_df.empty:
         return None
     cols = _cols(cfg_df)
     if key not in cols:
         return None
-    # Try to find first non-empty value in that column
+
+    # First non-empty cell from the column (commonly row 0)
     s = cfg_df[key].astype(str).str.strip()
     s = s[s.notna() & (s != "") & (s.str.lower() != "nan")]
     if len(s) == 0:
@@ -87,8 +92,11 @@ def _to_float(x: Optional[str]) -> Optional[float]:
         return None
 
 
-def _nonempty(df: pd.DataFrame) -> bool:
-    return isinstance(df, pd.DataFrame) and (not df.empty) and (len(df.columns) > 0)
+def _first_present(cols: List[str], candidates: List[str]) -> Optional[str]:
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
 
 
 # -----------------------------
@@ -98,8 +106,8 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
     """
     Validates the Google Sheet dataframes BEFORE the rest of the app runs.
 
-    This should NEVER raise. It returns a report so the app can:
-      - keep running
+    This NEVER raises; it returns a report so the app can:
+      - keep running (when possible)
       - show precise warnings
       - avoid silent failures
     """
@@ -114,7 +122,7 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
         )
         return report
 
-    # ---- Tab existence (core)
+    # ---- Required tabs
     required_tabs = ["Heads", "Shafts", "Questions", "Config"]
     for tab in required_tabs:
         if not _has_tab(data, tab) or not _nonempty(data[tab]):
@@ -125,31 +133,22 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
                 fix=f"Confirm the Google Sheet has a tab named exactly '{tab}' with headers + at least 1 row of data.",
             )
 
-    # Optional tabs
-    for tab in ["Fittings", "Descriptions", "Responses", "AI_Context"]:
-        if tab in data and not isinstance(data.get(tab), pd.DataFrame):
-            report.add(
-                "warn",
-                f"BAD_TAB_TYPE_{tab.upper()}",
-                f"Tab '{tab}' exists but is not a DataFrame.",
-                fix="Ensure the data loader returns pandas DataFrames for each tab.",
-            )
-
-    # Stop early if core tabs missing (prevents noisy downstream checks)
-    if len(report.errors) > 0:
+    # Stop early if core tabs missing
+    if report.errors:
         return report
 
     heads_df = data.get("Heads", pd.DataFrame())
     shafts_df = data.get("Shafts", pd.DataFrame())
     q_df = data.get("Questions", pd.DataFrame())
     cfg_df = data.get("Config", pd.DataFrame())
+
     fittings_df = data.get("Fittings", pd.DataFrame()) if _has_tab(data, "Fittings") else pd.DataFrame()
     desc_df = data.get("Descriptions", pd.DataFrame()) if _has_tab(data, "Descriptions") else pd.DataFrame()
+    resp_df = data.get("Responses", pd.DataFrame()) if _has_tab(data, "Responses") else pd.DataFrame()
 
     # ---- Shafts required columns
-    shafts_required = ["ID", "ShaftTag"]
     shafts_cols = _cols(shafts_df)
-    for c in shafts_required:
+    for c in ["ID", "ShaftTag"]:
         if c not in shafts_cols:
             report.add(
                 "error",
@@ -172,29 +171,54 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
                 duplicates=dupes,
             )
 
-    # ---- Questions required columns
-    q_required = ["QID", "Question", "Category", "InputType"]
+    # ---- Questions required columns (support both header styles)
     q_cols = _cols(q_df)
-    for c in q_required:
-        if c not in q_cols:
-            report.add(
-                "error",
-                f"QUESTIONS_MISSING_COL_{c}",
-                f"Questions tab missing required column '{c}'.",
-                fix="Restore the Questions sheet headers exactly (QID/Question/Category/InputType...).",
-            )
+
+    qid_col = _first_present(q_cols, ["QuestionID", "QID"])
+    qtext_col = _first_present(q_cols, ["QuestionText", "Question"])
+    cat_col = "Category" if "Category" in q_cols else None
+    input_col = "InputType" if "InputType" in q_cols else None
+
+    if qid_col is None:
+        report.add(
+            "error",
+            "QUESTIONS_MISSING_ID_COL",
+            "Questions tab is missing the ID column. Expected 'QuestionID' (preferred) or 'QID'.",
+            fix="Rename/add the question ID header to exactly 'QuestionID' (or 'QID').",
+        )
+    if qtext_col is None:
+        report.add(
+            "error",
+            "QUESTIONS_MISSING_TEXT_COL",
+            "Questions tab is missing the question text column. Expected 'QuestionText' (preferred) or 'Question'.",
+            fix="Rename/add the question text header to exactly 'QuestionText' (or 'Question').",
+        )
+    if cat_col is None:
+        report.add(
+            "error",
+            "QUESTIONS_MISSING_CATEGORY",
+            "Questions tab is missing required column 'Category'.",
+            fix="Add the column header 'Category' to Questions.",
+        )
+    if input_col is None:
+        report.add(
+            "error",
+            "QUESTIONS_MISSING_INPUTTYPE",
+            "Questions tab is missing required column 'InputType'.",
+            fix="Add the column header 'InputType' to Questions.",
+        )
 
     # QID duplicates check
-    if "QID" in q_cols and _nonempty(q_df):
-        qids = q_df["QID"].astype(str).str.strip()
+    if qid_col and _nonempty(q_df):
+        qids = q_df[qid_col].astype(str).str.strip()
         qids = qids[qids.notna() & (qids != "") & (qids.str.lower() != "nan")]
         dup_qids = qids[qids.duplicated()].unique().tolist()
         if dup_qids:
             report.add(
                 "error",
-                "QUESTIONS_DUPLICATE_QID",
-                f"Duplicate QIDs found: {dup_qids[:10]}{'...' if len(dup_qids) > 10 else ''}",
-                fix="Each Questions.QID must be unique.",
+                "QUESTIONS_DUPLICATE_IDS",
+                f"Duplicate question IDs found: {dup_qids[:10]}{'...' if len(dup_qids) > 10 else ''}",
+                fix=f"Each Questions.{qid_col} must be unique.",
                 duplicates=dup_qids,
             )
 
@@ -240,7 +264,7 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
     if _nonempty(fittings_df):
         f_cols = _cols(fittings_df)
         has_correct = "Fitting Environment" in f_cols
-        has_wrong = "Fitting Enviroment" in f_cols  # common misspelling we saw
+        has_wrong = "Fitting Enviroment" in f_cols  # misspelling seen before
         if has_wrong and not has_correct:
             report.add(
                 "warn",
@@ -255,19 +279,21 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
                 "info",
                 "FITTINGS_ENV_MISSING",
                 "Fittings tab does not include a Fitting Environment column (or it’s named differently).",
-                fix="If you want to write Q22 into Fittings, add the column header: Fitting Environment",
+                fix="If you want to store Q22 in Fittings, add the column header: Fitting Environment",
             )
+    else:
+        # Not an error; app can run without it, but we flag it for “writeback” stability.
+        report.add(
+            "info",
+            "FITTINGS_TAB_NOT_LOADED",
+            "Fittings tab is not loaded (or is empty). Validation cannot confirm writeback columns like Fitting Environment.",
+            fix="If you want schema checks on Fittings, ensure the loader includes the 'Fittings' tab.",
+        )
 
     # ---- Descriptions join risk (Model text mismatches)
-    # We cannot guarantee how your code joins, but we can flag mismatch risk early.
     if _nonempty(desc_df) and _nonempty(shafts_df):
         desc_cols = _cols(desc_df)
-        # common patterns: "Model", "Description", "Verdict"
-        model_col = None
-        for candidate in ["Model", "Shaft", "ShaftModel", "Name"]:
-            if candidate in desc_cols:
-                model_col = candidate
-                break
+        model_col = _first_present(desc_cols, ["Model", "Shaft", "Name"])
         if model_col is None:
             report.add(
                 "info",
@@ -276,14 +302,13 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
                 fix="If you plan to use this tab, ensure it has a Model column or (better) move blurbs into Shafts.Description keyed by ID.",
             )
         else:
-            # check overlap with shafts Model column if present
             shafts_model_col = "Model" if "Model" in shafts_cols else None
             if shafts_model_col is None:
                 report.add(
                     "info",
                     "SHAFTS_NO_MODEL_COL",
                     "Shafts tab has no 'Model' column. Any Descriptions join-by-model is likely fragile.",
-                    fix="Best practice: store the verdict blurb in Shafts.Description (keyed by Shafts.ID).",
+                    fix="Best practice: store verdict blurbs in Shafts.Description (keyed by Shafts.ID).",
                 )
             else:
                 a = set(desc_df[model_col].astype(str).str.strip())
@@ -304,24 +329,22 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
                             shafts_model_count=len(b),
                         )
 
-    # ---- Responses tab likely deprecated
-    if _has_tab(data, "Responses"):
-        r_df = data.get("Responses", pd.DataFrame())
-        if _nonempty(r_df):
-            r_cols = _cols(r_df)
-            # heuristic: if it references Q17 but Questions doesn't contain it, warn
-            if "QID" in r_cols and "QID" in q_cols:
-                qids = set(q_df["QID"].astype(str).str.strip())
-                rqids = set(r_df["QID"].astype(str).str.strip())
-                missing = sorted([x for x in rqids if x and x.lower() != "nan" and x not in qids])
-                if missing:
-                    report.add(
-                        "info",
-                        "RESPONSES_ORPHAN_QIDS",
-                        f"Responses tab includes QIDs not found in Questions: {missing[:10]}{'...' if len(missing) > 10 else ''}",
-                        fix="If Responses is obsolete, consider archiving it. If not obsolete, align QIDs with Questions.",
-                        missing_qids=missing,
-                    )
+    # ---- Responses tab likely deprecated / orphan QIDs check (supports both styles)
+    if _nonempty(resp_df) and qid_col:
+        r_cols = _cols(resp_df)
+        r_qid_col = _first_present(r_cols, ["QuestionID", "QID"])
+        if r_qid_col:
+            qids = set(q_df[qid_col].astype(str).str.strip())
+            rqids = set(resp_df[r_qid_col].astype(str).str.strip())
+            missing = sorted([x for x in rqids if x and x.lower() != "nan" and x not in qids])
+            if missing:
+                report.add(
+                    "info",
+                    "RESPONSES_ORPHAN_QIDS",
+                    f"Responses tab includes question IDs not found in Questions: {missing[:10]}{'...' if len(missing) > 10 else ''}",
+                    fix="If Responses is obsolete, consider archiving it. If not obsolete, align IDs with Questions.",
+                    missing_qids=missing,
+                )
 
     return report
 
@@ -332,7 +355,7 @@ def validate_sheet_data(data: Dict[str, pd.DataFrame]) -> ValidationReport:
 def render_report_streamlit(report: ValidationReport) -> None:
     """
     Optional Streamlit UI helper. Import and call this from app.py.
-    This function is safe to call even if report is empty.
+    Safe to call even if report has no messages.
     """
     import streamlit as st  # local import keeps core clean
 
@@ -353,7 +376,6 @@ def render_report_streamlit(report: ValidationReport) -> None:
             if m.fix:
                 st.caption(f"Fix: {m.fix}")
 
-    # keep infos collapsed so UI stays clean
     if report.infos:
         with st.expander("ℹ️ Sheet Validation Info", expanded=False):
             for m in report.infos:
