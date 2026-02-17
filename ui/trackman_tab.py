@@ -2,60 +2,24 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Dict, Any, Optional, List
 
 import pandas as pd
 import streamlit as st
 
 from core.trackman import load_trackman, summarize_trackman, debug_trackman
 from core.trackman_display import render_trackman_session
-from core.phase6_optimizer import phase6_recommendations
 
-# Optional modular intelligence layer
+# Intelligence block is optional but expected in your repo
 UI_INTEL_AVAILABLE = True
 try:
     from ui.intelligence import render_intelligence_block
 except Exception:
     UI_INTEL_AVAILABLE = False
 
-# Optional efficiency-only fallback
-EFF_AVAILABLE = True
-try:
-    from core.efficiency_optimizer import (
-        EfficiencyConfig,
-        build_comparison_table,
-        pick_efficiency_winner,
-    )
-except Exception:
-    EFF_AVAILABLE = False
 
-
-# ------------------ TrackMan helpers ------------------
-def process_trackman_file(uploaded_file, shaft_id):
-    """
-    Returns (raw_df, stat_dict) on success, (None, None) on failure.
-    """
-    try:
-        name = getattr(uploaded_file, "name", "") or ""
-        if name.lower().endswith(".pdf"):
-            return None, None
-
-        raw = load_trackman(uploaded_file)
-
-        if hasattr(raw, "columns"):
-            raw = raw.loc[:, ~raw.columns.duplicated()].copy()
-
-        stat = summarize_trackman(raw, shaft_id, include_std=True)
-
-        required_any = any(
-            k in stat for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
-        )
-        if not required_any:
-            return None, None
-
-        return raw, stat
-    except Exception:
-        return None, None
+def _controls_complete() -> bool:
+    return all(bool(v) for v in st.session_state.lab_controls.values())
 
 
 def _extract_tag_ids(raw_df: pd.DataFrame) -> List[str]:
@@ -120,7 +84,34 @@ def _filter_by_tag(raw_df: pd.DataFrame, tag_id: str) -> pd.DataFrame:
     return raw_df.loc[s_norm == str(tag_id)].copy()
 
 
-def find_baseline_shaft_id_from_answers(ans: Dict[str, Any], shafts_df: pd.DataFrame) -> Optional[str]:
+def _process_trackman_file(uploaded_file, shaft_id):
+    """
+    Returns (raw_df, stat_dict) on success, (None, None) on failure.
+    """
+    try:
+        name = getattr(uploaded_file, "name", "") or ""
+        if name.lower().endswith(".pdf"):
+            return None, None
+
+        raw = load_trackman(uploaded_file)
+
+        if hasattr(raw, "columns"):
+            raw = raw.loc[:, ~raw.columns.duplicated()].copy()
+
+        stat = summarize_trackman(raw, shaft_id, include_std=True)
+
+        required_any = any(
+            k in stat for k in ["Club Speed", "Ball Speed", "Smash Factor", "Carry", "Spin Rate"]
+        )
+        if not required_any:
+            return None, None
+
+        return raw, stat
+    except Exception:
+        return None, None
+
+
+def _find_baseline_shaft_id_from_answers(ans: Dict[str, Any], shafts_df: pd.DataFrame) -> Optional[str]:
     """
     Attempts to match the interview's current/gamer shaft answers to Shafts sheet.
     Assumes:
@@ -161,11 +152,54 @@ def find_baseline_shaft_id_from_answers(ans: Dict[str, Any], shafts_df: pd.DataF
     return None
 
 
-def _controls_complete() -> bool:
-    return all(bool(v) for v in st.session_state.lab_controls.values())
+def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Try to standardize winner info out of whatever the intelligence layer returns,
+    without assuming a single fixed key.
+    """
+    if not isinstance(intel, dict):
+        return None
+
+    # Common candidates we’ve used / might use
+    candidates = [
+        "winner_summary",
+        "highlighted_pick",
+        "highlight_pick",
+        "winner",
+        "decision",
+        "tour_proven_pick",
+        "best_alternative",
+    ]
+
+    raw = None
+    for k in candidates:
+        if k in intel and intel.get(k):
+            raw = intel.get(k)
+            break
+
+    # Already in standardized dict form
+    if isinstance(raw, dict):
+        return {
+            "shaft_id": raw.get("shaft_id") or raw.get("Shaft ID") or raw.get("id"),
+            "shaft_label": raw.get("shaft_label") or raw.get("Shaft") or raw.get("label"),
+            "headline": raw.get("headline") or raw.get("title") or "Winner selected",
+            "explain": raw.get("explain") or raw.get("reason") or raw.get("message"),
+            "raw": raw,
+        }
+
+    # If it’s just a string, wrap it
+    if isinstance(raw, str) and raw.strip():
+        return {
+            "shaft_id": None,
+            "shaft_label": None,
+            "headline": "Winner selected",
+            "explain": raw.strip(),
+            "raw": raw,
+        }
+
+    return None
 
 
-# ------------------ TrackMan tab renderer ------------------
 def render_trackman_tab(
     *,
     all_data: Dict[str, pd.DataFrame],
@@ -176,14 +210,6 @@ def render_trackman_tab(
     WARN_CARRY_SD: float,
     WARN_SMASH_SD: float,
 ) -> None:
-    """
-    Full UI for the Trackman Lab tab, extracted from app.py.
-
-    Contract:
-      - Reads/writes st.session_state keys:
-          tm_lab_data, phase6_recs, environment, selected_tag_ids, baseline_tag_id, lab_controls
-      - Does not require app.py to manage internal Trackman UI state.
-    """
     st.header("🧪 Trackman Lab (Controlled Testing)")
 
     st.caption(
@@ -232,14 +258,15 @@ def render_trackman_tab(
 
     c_up, c_res = st.columns([1, 2])
 
-    # ---------- Upload / Preview ----------
     with c_up:
         shaft_map = _shaft_label_map(all_data["Shafts"])
-        baseline_id = find_baseline_shaft_id_from_answers(answers, all_data["Shafts"])
+        baseline_id = _find_baseline_shaft_id_from_answers(answers, all_data["Shafts"])
         baseline_label = shaft_map.get(str(baseline_id), "Current Baseline") if baseline_id else "Current Baseline"
 
         test_list = [baseline_label] + [
-            all_winners[k].iloc[0]["Model"] for k in all_winners if not all_winners[k].empty
+            all_winners[k].iloc[0]["Model"]
+            for k in all_winners
+            if not all_winners[k].empty
         ]
         selected_s = st.selectbox("Default Assign (if no Tags in file):", test_list, index=0)
 
@@ -256,7 +283,7 @@ def render_trackman_tab(
             if name.lower().endswith(".pdf"):
                 st.info("PDF uploaded (accepted but not parsed). Export as CSV/XLSX for analysis.")
             else:
-                raw_preview, _ = process_trackman_file(tm_file, selected_s)
+                raw_preview, _ = _process_trackman_file(tm_file, selected_s)
 
         if tm_file is not None and raw_preview is None:
             st.error("Could not parse TrackMan file for preview. Showing debug below.")
@@ -277,7 +304,6 @@ def render_trackman_tab(
         elif raw_preview is not None:
             render_trackman_session(raw_preview)
 
-            # Tags mapping + selection
             tag_ids = _extract_tag_ids(raw_preview)
             if tag_ids:
                 st.markdown("## Shaft selection from TrackMan Tags")
@@ -321,7 +347,6 @@ def render_trackman_tab(
                 else:
                     st.session_state["baseline_tag_id"] = None
 
-                # Split session by shaft
                 st.markdown("## Split session by shaft (Tags)")
                 for sid in selected_tag_ids:
                     sub = _filter_by_tag(raw_preview, sid)
@@ -344,7 +369,7 @@ def render_trackman_tab(
                     "Please export TrackMan as **CSV or XLSX** for analysis."
                 )
             else:
-                raw, _ = process_trackman_file(tm_file, selected_s)
+                raw, _ = _process_trackman_file(tm_file, selected_s)
                 if raw is None or raw.empty:
                     st.error("Could not parse TrackMan file (no required metrics found).")
                 else:
@@ -385,7 +410,7 @@ def render_trackman_tab(
         if tm_file is not None and not _controls_complete():
             st.info("Finish Lab Controls above to enable logging.")
 
-    # ---------- Results / Correlation ----------
+    # ---------- Results / Intelligence ----------
     with c_res:
         if not st.session_state.tm_lab_data:
             st.info("Upload files to begin correlation.")
@@ -420,106 +445,36 @@ def render_trackman_tab(
             "Face To Path SD",
             "Dynamic Lie SD",
         ]
-        show_cols = [c for c in preferred_cols if c in lab_df.columns] + [
-            c for c in lab_df.columns if c not in preferred_cols
-        ]
+        show_cols = [c for c in preferred_cols if c in lab_df.columns] + [c for c in lab_df.columns if c not in preferred_cols]
         st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
         st.divider()
 
         baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
 
-        # Preferred path: modular intelligence block (matrix + phase6)
-        if UI_INTEL_AVAILABLE:
-            intel = render_intelligence_block(
-                lab_df=lab_df,
-                baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
-                answers=st.session_state.answers,
-                environment=st.session_state.environment,
-                MIN_SHOTS=MIN_SHOTS,
-                WARN_FACE_TO_PATH_SD=WARN_FACE_TO_PATH_SD,
-                WARN_CARRY_SD=WARN_CARRY_SD,
-                WARN_SMASH_SD=WARN_SMASH_SD,
-            )
-
-            if intel and intel.get("phase6_recs"):
-                st.session_state.phase6_recs = intel["phase6_recs"]
-                for r in intel["phase6_recs"]:
-                    css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
-                    st.markdown(
-                        f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
-                        unsafe_allow_html=True,
-                    )
+        if not UI_INTEL_AVAILABLE:
+            st.error("Intelligence module not available (ui/intelligence.py import failed).")
             return
 
-        # Fallback: classic efficiency table only
-        if not EFF_AVAILABLE:
-            st.error(
-                "Efficiency Optimizer module not found.\n\n"
-                "To enable the Baseline Comparison Table, you must add:\n"
-                "- core/efficiency_optimizer.py\n"
-                "- (recommended) core/__init__.py\n\n"
-                "After committing those files, Streamlit Cloud will redeploy and this section will activate."
-            )
-            return
-
-        eff_cfg = EfficiencyConfig(
-            MIN_SHOTS=int(MIN_SHOTS),
-            WARN_FACE_TO_PATH_SD=float(WARN_FACE_TO_PATH_SD),
-            WARN_CARRY_SD=float(WARN_CARRY_SD),
-            WARN_SMASH_SD=float(WARN_SMASH_SD),
-        )
-        comparison_df = build_comparison_table(
-            lab_df,
+        intel = render_intelligence_block(
+            lab_df=lab_df,
             baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
-            cfg=eff_cfg,
+            answers=st.session_state.answers,
+            environment=st.session_state.environment,
+            MIN_SHOTS=MIN_SHOTS,
+            WARN_FACE_TO_PATH_SD=WARN_FACE_TO_PATH_SD,
+            WARN_CARRY_SD=WARN_CARRY_SD,
+            WARN_SMASH_SD=WARN_SMASH_SD,
         )
-        st.subheader("📊 Baseline Comparison Table")
-        display_cols = [
-            "Shaft",
-            "Carry Δ",
-            "Launch Δ",
-            "Spin Δ",
-            "Smash",
-            "Dispersion",
-            "Efficiency",
-            "Confidence",
-        ]
-        if comparison_df is not None and not comparison_df.empty:
-            st.dataframe(
-                comparison_df[[c for c in display_cols if c in comparison_df.columns]],
-                use_container_width=True,
-                hide_index=True,
-                height=320,
-            )
-        else:
-            st.info("No comparison rows yet. Add at least one logged shaft set.")
-            return
 
-        winner = pick_efficiency_winner(comparison_df)
-        if winner is not None:
-            st.success(
-                f"🏆 **Efficiency Winner:** {winner['Shaft']} "
-                f"(Efficiency {winner['Efficiency']} | Confidence {winner['Confidence']})"
-            )
-            st.subheader("Phase 6 Optimization Suggestions")
-            w_id = str(winner.get("Shaft ID"))
-            w_match = (
-                lab_df[lab_df["Shaft ID"].astype(str) == w_id]
-                if "Shaft ID" in lab_df.columns
-                else pd.DataFrame()
-            )
-            winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
-            recs = phase6_recommendations(
-                winner_row,
-                baseline_row=None,
-                club="6i",
-                environment=st.session_state.environment,
-            )
-            st.session_state.phase6_recs = recs
-            for r in recs:
-                css = "rec-warn" if r.get("severity") == "warn" else "rec-info"
-                st.markdown(
-                    f"<div class='{css}'><b>{r.get('type','Note')}:</b> {r.get('text','')}</div>",
-                    unsafe_allow_html=True,
-                )
+        # Store Phase 6 and Winner Summary for downstream UI
+        if isinstance(intel, dict):
+            if intel.get("phase6_recs"):
+                st.session_state.phase6_recs = intel["phase6_recs"]
+
+            ws = _extract_winner_summary(intel)
+            if ws:
+                st.session_state.winner_summary = ws
+            else:
+                # Keep prior winner_summary if it exists; don't wipe it
+                st.session_state.setdefault("winner_summary", None)
