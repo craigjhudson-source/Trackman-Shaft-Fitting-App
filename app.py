@@ -146,6 +146,12 @@ if "winner_summary" not in st.session_state:
 if "environment" not in st.session_state:
     st.session_state.environment = "Indoors (Mat)"
 
+# ✅ HOTFIX: Trackman tab expects this to exist
+if "lab_controls" not in st.session_state or not isinstance(st.session_state.get("lab_controls"), dict):
+    st.session_state.lab_controls = {}
+# Ensure the specific key that crashed exists
+st.session_state.lab_controls.setdefault("length_matched", False)
+
 
 # ------------------ Load sheet ------------------
 all_data = get_data_from_gsheet()
@@ -182,21 +188,6 @@ if not st.session_state.interview_complete:
 
 else:
     ans = st.session_state.answers
-
-    # ------------------ Legacy key compatibility (summary/UI expects old IDs) ------------------
-    # Current Flight / Target Flight (old: Q16/Q17)
-    if "Q16" not in ans and ans.get("Q16_1"):
-        ans["Q16"] = ans.get("Q16_1", "")
-    if "Q17" not in ans and ans.get("Q16_3"):
-        ans["Q17"] = ans.get("Q16_3", "")
-
-    # Current Feel / Target Feel (old: Q19/Q20)
-    if "Q19" not in ans and ans.get("Q19_1"):
-        ans["Q19"] = ans.get("Q19_1", "")
-    if "Q20" not in ans and ans.get("Q19_3"):
-        ans["Q20"] = ans.get("Q19_3", "")
-
-    # -----------------------------------------------------------------------------------------
 
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
     st.session_state.environment = (ans.get("Q22") or st.session_state.environment or "Indoors (Mat)").strip()
