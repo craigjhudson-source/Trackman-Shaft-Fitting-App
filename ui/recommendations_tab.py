@@ -29,23 +29,26 @@ def _fmt_pref_line(primary: str, followup: str) -> str:
 
 
 def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensures an ID column exists and is first.
+    """
     if df is None or df.empty:
         return pd.DataFrame()
 
     d = df.copy()
     if "ID" not in d.columns:
+        # last resort fallback
         try:
             d.insert(0, "ID", [str(x).strip() for x in d.index.tolist()])
         except Exception:
             pass
-    d = d.reset_index(drop=True)
 
     cols = list(d.columns)
     if "ID" in cols:
         cols = ["ID"] + [c for c in cols if c != "ID"]
         d = d[cols]
 
-    return d
+    return d.reset_index(drop=True)
 
 
 def _get_goal_rankings() -> Optional[Dict[str, Any]]:
@@ -54,17 +57,6 @@ def _get_goal_rankings() -> Optional[Dict[str, Any]]:
 
 
 def _get_goal_recs() -> Optional[Dict[str, Any]]:
-    """
-    Fallback payload produced by Trackman tab until full goal scoring leaderboard is activated.
-    Expected shape (minimum):
-      {
-        "source": "...",
-        "winner_summary": {...},
-        "baseline_tag_id": ...,
-        "environment": ...,
-        "generated_at": ...
-      }
-    """
     gr = st.session_state.get("goal_recs", None)
     return gr if isinstance(gr, dict) else None
 
@@ -87,61 +79,21 @@ def _result_to_row(r: Any) -> Dict[str, Any]:
     }
 
 
-def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) -> None:
-    if best is None:
-        return
-
-    if isinstance(best, dict):
-        lab = str(best.get("shaft_label", "")).strip()
-        sid = str(best.get("shaft_id", "")).strip()
-        reasons = best.get("reasons") or []
-        g_scores = best.get("goal_scores") or {}
-    else:
-        lab = str(getattr(best, "shaft_label", "")).strip()
-        sid = str(getattr(best, "shaft_id", "")).strip()
-        reasons = getattr(best, "reasons", []) or []
-        g_scores = getattr(best, "goal_scores", {}) or {}
-
-    g_val = None
-    try:
-        if isinstance(g_scores, dict):
-            g_val = float(g_scores.get(goal_name, 0.0) or 0.0)
-    except Exception:
-        g_val = None
-
-    baseline_txt = f"(vs baseline {baseline_id})" if baseline_id else "(vs baseline)"
-
-    st.markdown(f"**{goal_name}** {baseline_txt}")
-    st.write(f"**{lab}**  (ID {sid})")
-    if g_val is not None:
-        st.caption(f"Goal score: {g_val:.2f}")
-    if reasons:
-        for b in reasons[:3]:
-            st.write(f"- {b}")
-
-
 def _refresh_controls() -> None:
-    """
-    Refresh button + optional auto-refresh signaling based on Trackman updates.
-    """
     c1, c2, c3 = st.columns([1, 1, 3])
 
-    # Manual refresh
     if c1.button("🔄 Refresh Recommendations"):
         st.rerun()
 
-    # Show last Trackman update if available
     last = st.session_state.get("tm_last_update", "")
     if last:
         c3.caption(f"Last Trackman update: {last}")
 
-    # Optional: auto-rerun once when Trackman version changes
     auto = c2.checkbox("Auto-refresh", value=True)
     if auto:
         current_v = int(st.session_state.get("tm_data_version", 0) or 0)
         seen_v = int(st.session_state.get("recs_seen_tm_version", -1) or -1)
 
-        # If Trackman data changed since last time this tab ran, rerun once.
         if current_v != seen_v:
             st.session_state.recs_seen_tm_version = current_v
             if seen_v != -1:
@@ -164,15 +116,6 @@ def _render_goal_based_from_goal_rankings(gr: Dict[str, Any]) -> None:
         if why:
             st.caption(why)
 
-    top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
-    if top_by_goal:
-        st.markdown("#### Best shaft by goal")
-        gcols = st.columns(2)
-        items = list(top_by_goal.items())
-        for i, (goal_name, best) in enumerate(items):
-            with gcols[0] if i % 2 == 0 else gcols[1]:
-                _goal_best_to_card(best, goal_name, baseline_id)
-
     st.markdown("#### Goal Scorecard Leaderboard")
     rows = [_result_to_row(r) for r in results[:8]]
     if rows:
@@ -181,38 +124,20 @@ def _render_goal_based_from_goal_rankings(gr: Dict[str, Any]) -> None:
     st.divider()
 
 
-def _render_goal_based_from_goal_recs(goal_recs: Dict[str, Any]) -> None:
+def _render_goal_based_from_winner_summary(ws: Dict[str, Any], source_label: str) -> None:
     """
-    Fallback rendering: show at least the Trackman winner and context.
+    Fallback: show the current Trackman winner in the goal section,
+    until full goal_rankings scoring is wired.
     """
-    ws = goal_recs.get("winner_summary", None)
-    baseline_tag_id = goal_recs.get("baseline_tag_id", None)
-    env = goal_recs.get("environment", None)
-    ts = goal_recs.get("generated_at", None)
+    headline = ws.get("headline") or "Best pick"
+    shaft_label = ws.get("shaft_label") or "Winner selected"
+    explain = ws.get("explain") or ""
 
     st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
-    st.caption("Fallback mode (goal scoring leaderboard not yet activated).")
-
-    meta_bits: List[str] = []
-    if baseline_tag_id is not None and str(baseline_tag_id).strip():
-        meta_bits.append(f"Baseline: {baseline_tag_id}")
-    if env:
-        meta_bits.append(f"Env: {env}")
-    if ts:
-        meta_bits.append(f"Updated: {ts}")
-    if meta_bits:
-        st.caption(" • ".join(meta_bits))
-
-    if isinstance(ws, dict):
-        headline = ws.get("headline") or "Best pick"
-        shaft_label = ws.get("shaft_label") or "Winner selected"
-        explain = ws.get("explain") or ""
-        st.success(f"**{headline}:** {shaft_label}")
-        if explain:
-            st.caption(explain)
-    else:
-        st.info("Trackman winner is available but winner_summary payload is missing.")
-
+    st.caption(f"Fallback mode using {source_label} (leaderboard not yet active).")
+    st.success(f"**{headline}:** {shaft_label}")
+    if explain:
+        st.caption(explain)
     st.divider()
 
 
@@ -225,7 +150,6 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],
     environment: str,
 ) -> None:
-    # Refresh controls at the top
     _refresh_controls()
 
     # Flight/Feel mapping
@@ -267,11 +191,14 @@ def render_recommendations_tab(
     # ---------------- Goal-based Trackman Recommendations ----------------
     gr = _get_goal_rankings()
     goal_recs = _get_goal_recs()
+    ws = st.session_state.get("winner_summary", None)
 
     if gr and gr.get("results"):
         _render_goal_based_from_goal_rankings(gr)
-    elif goal_recs and isinstance(goal_recs.get("winner_summary", None), dict):
-        _render_goal_based_from_goal_recs(goal_recs)
+    elif isinstance(goal_recs, dict) and isinstance(goal_recs.get("winner_summary", None), dict):
+        _render_goal_based_from_winner_summary(goal_recs["winner_summary"], "goal_recs")
+    elif isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
+        _render_goal_based_from_winner_summary(ws, "winner_summary")
     else:
         st.info(
             "Goal-based recommendations will appear here after you upload Trackman data in **🧪 Trackman Lab** "
@@ -279,8 +206,7 @@ def render_recommendations_tab(
         )
         st.divider()
 
-    # Winner summary (still shown separately for now)
-    ws = st.session_state.get("winner_summary", None)
+    # Winner summary (keep section for now; can remove later)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
         shaft_label = ws.get("shaft_label") or "Winner selected"
@@ -305,7 +231,8 @@ def render_recommendations_tab(
         with col1 if i < 2 else col2:
             st.markdown(f"### {c_name}")
             if cat in all_winners and isinstance(all_winners[cat], pd.DataFrame):
-                st.table(_table_with_id(all_winners[cat]))
+                d = _table_with_id(all_winners[cat])
+                st.dataframe(d, use_container_width=True, hide_index=True)
                 blurb = v_items[i][1] if i < len(v_items) else "Optimized."
                 st.markdown(
                     f"<div class='verdict-text'><b>Verdict:</b> {blurb}</div>",
