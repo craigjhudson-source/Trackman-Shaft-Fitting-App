@@ -7,11 +7,41 @@ from fpdf import FPDF
 
 
 def _safe_text(s: Any) -> str:
-    # Keep it simple: convert to string and replace weird whitespace.
+    # Convert to string and normalize whitespace
     txt = "" if s is None else str(s)
     txt = txt.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    txt = txt.replace("\u00A0", " ")  # non-breaking space
     txt = " ".join(txt.split())
     return txt
+
+
+def _latin1_safe(s: str) -> str:
+    """
+    fpdf2 core fonts (Helvetica, etc.) are NOT unicode.
+    Force text into Latin-1 so FPDFUnicodeEncodingException can't happen.
+    """
+    if not s:
+        return ""
+
+    # Friendly replacements for common offenders
+    repl = {
+        "•": "-",
+        "⚠️": "WARNING: ",
+        "⚠": "WARNING: ",
+        "→": "->",
+        "—": "-",
+        "–": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "\u200b": "",  # zero-width space
+    }
+    for a, b in repl.items():
+        s = s.replace(a, b)
+
+    # Hard guarantee: latin-1 only
+    return s.encode("latin-1", "replace").decode("latin-1")
 
 
 def _break_long_tokens(s: str) -> str:
@@ -19,7 +49,8 @@ def _break_long_tokens(s: str) -> str:
     Help fpdf line breaking by inserting spaces after common separators.
     This avoids super-long tokens like URLs/IDs causing overflow.
     """
-    for sep in ["/", "_", "|", "—", "-", ":", ";"]:
+    # NOTE: keep separators latin-1 safe (no em dash here)
+    for sep in ["/", "_", "|", "-", ":", ";"]:
         s = s.replace(sep, f"{sep} ")
     return s
 
@@ -32,19 +63,19 @@ class TourProvenPDF(FPDF):
 
     def header(self):
         self.set_font("Helvetica", "B", 14)
-        self.cell(0, 8, "Tour Proven Shaft Fitting", ln=1)
+        self.cell(0, 8, _latin1_safe("Tour Proven Shaft Fitting"), ln=1)
         self.ln(2)
 
     def footer(self):
         self.set_y(-12)
         self.set_font("Helvetica", "", 9)
-        self.cell(0, 8, f"Page {self.page_no()}", align="C")
+        self.cell(0, 8, _latin1_safe(f"Page {self.page_no()}"), align="C")
 
     def section_title(self, title: str) -> None:
         self.ln(2)
         self.set_font("Helvetica", "B", 12)
         self.set_x(self.l_margin)
-        self.cell(0, 7, _safe_text(title), ln=1)
+        self.cell(0, 7, _latin1_safe(_safe_text(title)), ln=1)
         self.set_draw_color(200, 200, 200)
         self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
         self.ln(2)
@@ -52,14 +83,15 @@ class TourProvenPDF(FPDF):
     def kv_line(self, k: str, v: Any) -> None:
         self.set_font("Helvetica", "B", 10)
         self.set_x(self.l_margin)
-        self.cell(40, 5, _safe_text(k))
+        self.cell(40, 5, _latin1_safe(_safe_text(k)))
         self.set_font("Helvetica", "", 10)
-        self.safe_multicell(_safe_text(v), line_h=5)
+        self.safe_multicell(_latin1_safe(_safe_text(v)), line_h=5)
 
     def safe_multicell(self, text: str, line_h: float = 4.5) -> None:
         """
         Key fix: always reset X to left margin and compute positive width.
         If width is too small, force a line break and retry.
+        Also: sanitize to Latin-1 so unicode can't crash PDF.
         """
         self.set_x(self.l_margin)
         w = (self.w - self.r_margin) - self.get_x()
@@ -68,12 +100,12 @@ class TourProvenPDF(FPDF):
             self.set_x(self.l_margin)
             w = (self.w - self.r_margin) - self.get_x()
 
-        txt = _break_long_tokens(_safe_text(text))
+        txt = _latin1_safe(_break_long_tokens(_safe_text(text)))
 
         try:
             self.multi_cell(w, line_h, txt)
         except Exception:
-            # last resort safety: reset margins and retry with conservative width
+            # Last resort safety: reset margins and retry with conservative width
             self.set_margins(12, 12, 12)
             self.set_x(self.l_margin)
             w2 = (self.w - self.r_margin) - self.get_x()
@@ -83,7 +115,8 @@ class TourProvenPDF(FPDF):
 
     def bullet(self, text: str) -> None:
         self.set_font("Helvetica", "", 10)
-        self.safe_multicell(f"• {text}", line_h=4.5)
+        # Force ASCII bullet so it can never crash
+        self.safe_multicell(_latin1_safe(f"- {text}"), line_h=4.5)
 
 
 def create_pdf_bytes(
@@ -96,7 +129,7 @@ def create_pdf_bytes(
 ) -> bytes:
     """
     Drop-in replacement for utils.create_pdf_bytes signature.
-    Designed to never crash on Phase 6 bullets or long verdict strings.
+    Designed to never crash on Phase 6 bullets, long verdict strings, or unicode.
     """
     pdf = TourProvenPDF(orientation="P", unit="mm", format="A4")
     pdf.add_page()
@@ -140,10 +173,10 @@ def create_pdf_bytes(
     if phase6_recs and isinstance(phase6_recs, list):
         for r in phase6_recs:
             try:
-                r_type = _safe_text(r.get("type", "Note"))
-                txt = _safe_text(r.get("text", ""))
-                sev = _safe_text(r.get("severity", "")).lower()
-                prefix = "⚠️ " if sev == "warn" else ""
+                r_type = _latin1_safe(_safe_text(r.get("type", "Note")))
+                txt = _latin1_safe(_safe_text(r.get("text", "")))
+                sev = _latin1_safe(_safe_text(r.get("severity", ""))).lower()
+                prefix = "WARNING: " if sev == "warn" else ""
                 pdf.bullet(f"{prefix}{r_type}: {txt}")
             except Exception:
                 continue
@@ -153,4 +186,5 @@ def create_pdf_bytes(
     out = pdf.output(dest="S")
     if isinstance(out, (bytes, bytearray)):
         return bytes(out)
+    # Final safety: latin-1 bytes
     return str(out).encode("latin-1", "replace")
