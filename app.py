@@ -798,13 +798,6 @@ else:
                         WARN_SMASH_SD=float(WARN_SMASH_SD),
                     )
 
-                    comparison_df = build_comparison_table(
-                        lab_df,
-                        baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
-                        cfg=eff_cfg,
-                    )
-
-                    st.subheader("📊 Baseline Comparison Table")
                     display_cols = ["Shaft", "Carry Δ", "Launch Δ", "Spin Δ", "Smash", "Dispersion", "Efficiency", "Confidence"]
                     if not comparison_df.empty:
                         st.dataframe(comparison_df[display_cols], use_container_width=True, hide_index=True, height=320)
