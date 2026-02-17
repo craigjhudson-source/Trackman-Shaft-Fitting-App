@@ -102,6 +102,12 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
 
 
 def save_to_fittings(answers: Dict[str, Any]) -> None:
+    """
+    Writes a new row to the Fittings sheet by matching the sheet headers to:
+      - Questions.QuestionText -> QuestionID
+      - Special header mappings for sub-questions (Q16_1, Q16_2, Q19_1, Q19_2)
+    This prevents the "Q01..Q29 appended in order" misalignment problem.
+    """
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -113,12 +119,69 @@ def save_to_fittings(answers: Dict[str, Any]) -> None:
         sh = gc.open_by_url(
             "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
         )
-        worksheet = sh.worksheet("Fittings")
 
-        row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [
-            answers.get(f"Q{i:02d}", "") for i in range(1, 30)
-        ]
-        worksheet.append_row(row)
+        ws_fit = sh.worksheet("Fittings")
+        ws_q = sh.worksheet("Questions")
+
+        # Read headers from Fittings (row 1)
+        fit_headers = ws_fit.row_values(1)
+        fit_headers = [str(h).strip() for h in fit_headers if str(h).strip()]
+
+        # Build QuestionText -> QuestionID map
+        q_rows = ws_q.get_all_values()
+        q_headers = q_rows[0] if q_rows else []
+        q_data = q_rows[1:] if len(q_rows) > 1 else []
+
+        # Find column indices safely
+        def _col_idx(name: str) -> Optional[int]:
+            for i, h in enumerate(q_headers):
+                if str(h).strip() == name:
+                    return i
+            return None
+
+        idx_id = _col_idx("QuestionID")
+        idx_text = _col_idx("QuestionText")
+
+        text_to_qid: Dict[str, str] = {}
+        if idx_id is not None and idx_text is not None:
+            for r in q_data:
+                if len(r) <= max(idx_id, idx_text):
+                    continue
+                qid = str(r[idx_id]).strip()
+                qtext = str(r[idx_text]).strip()
+                if qid and qtext:
+                    text_to_qid[qtext] = qid
+
+        # Special cases where Fittings headers don't match QuestionText exactly
+        special_header_to_qid = {
+            "Flight Satisfaction": "Q16_1",
+            "Flight Change": "Q16_2",
+            "Feel Satisfaction": "Q19_1",
+            "Target Shaft Feel": "Q19_2",
+        }
+
+        # Build row in exact header order
+        now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row_out: List[Any] = []
+
+        for h in fit_headers:
+            if h.lower() == "timestamp":
+                row_out.append(now_ts)
+                continue
+
+            qid = None
+            if h in special_header_to_qid:
+                qid = special_header_to_qid[h]
+            elif h in text_to_qid:
+                qid = text_to_qid[h]
+
+            val = ""
+            if qid:
+                val = answers.get(qid, "")
+            row_out.append(val)
+
+        ws_fit.append_row(row_out, value_input_option="USER_ENTERED")
+
     except Exception as e:
         st.error(f"Error saving: {e}")
 
@@ -160,6 +223,8 @@ if "tm_lab_data" not in st.session_state:
     st.session_state.tm_lab_data = []
 if "phase6_recs" not in st.session_state:
     st.session_state.phase6_recs = None
+if "winner_summary" not in st.session_state:
+    st.session_state.winner_summary = None
 if "environment" not in st.session_state:
     st.session_state.environment = "Indoors (Mat)"
 if "selected_tag_ids" not in st.session_state:
