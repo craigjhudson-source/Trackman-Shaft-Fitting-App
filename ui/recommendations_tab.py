@@ -18,55 +18,55 @@ def _winner_ready() -> bool:
     return isinstance(phase6, list) and len(phase6) > 0
 
 
-def _fmt_flight_line(ans: Dict[str, Any]) -> str:
-    """
-    Sheet truth:
-      Q16_1 = Current Flight
-      Q16_2 = Are you happy with your current flight? (Yes/No/Unsure)
-      Q16_3 = If not, do you want it higher or lower?
-    """
-    cur = str(ans.get("Q16_1", "")).strip()
-    happy = str(ans.get("Q16_2", "")).strip()
-    change = str(ans.get("Q16_3", "")).strip()
-
-    if not cur and not happy and not change:
+def _fmt_pref_line(primary: str, followup: str) -> str:
+    p = (primary or "").strip()
+    f = (followup or "").strip()
+    if not p and not f:
         return ""
-
-    # If they are unhappy (No/Unsure), show desired change
-    if happy.lower() in {"no", "unsure"} and change:
-        # ex: "Mid (No) → Higher"
-        if cur:
-            return f"{cur} ({happy}) → {change}"
-        return f"{happy} → {change}"
-
-    # Otherwise just show current + happy
-    if cur and happy:
-        return f"{cur} ({happy})"
-    return cur or happy
+    if f:
+        return f"{p} → {f}" if p else f
+    return p
 
 
-def _fmt_feel_line(ans: Dict[str, Any]) -> str:
+def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Sheet truth:
-      Q19_1 = Current Shaft Feel
-      Q19_2 = Are you happy with your current feel? (Yes/No/Unsure)
-      Q19_3 = If not, what do you want it to feel like?
+    Streamlit st.table() shows the DataFrame index as the first column.
+    We want that to be the Shaft ID instead (and hide the default row index).
+    This works whether the ID is stored as index OR already as a column.
     """
-    cur = str(ans.get("Q19_1", "")).strip()
-    happy = str(ans.get("Q19_2", "")).strip()
-    target = str(ans.get("Q19_3", "")).strip()
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-    if not cur and not happy and not target:
-        return ""
+    d = df.copy()
 
-    if happy.lower() in {"no", "unsure"} and target:
-        if cur:
-            return f"{cur} ({happy}) → {target}"
-        return f"{happy} → {target}"
+    # If index looks like Shaft IDs and there's no explicit ID column, promote it.
+    if "ID" not in d.columns:
+        try:
+            idx = d.index
+            # if most index values are numeric-ish, treat as IDs
+            numeric_like = 0
+            total = 0
+            for v in idx.tolist():
+                total += 1
+                s = str(v).strip()
+                if s and s.replace(".", "", 1).isdigit():
+                    numeric_like += 1
+            if total > 0 and (numeric_like / total) >= 0.8:
+                d.insert(0, "ID", [str(x).strip() for x in d.index.tolist()])
+                d = d.reset_index(drop=True)
+            else:
+                d = d.reset_index(drop=True)
+        except Exception:
+            d = d.reset_index(drop=True)
+    else:
+        # Ensure ID is the first column and drop the index
+        d = d.reset_index(drop=True)
+        cols = list(d.columns)
+        if "ID" in cols:
+            cols = ["ID"] + [c for c in cols if c != "ID"]
+            d = d[cols]
 
-    if cur and happy:
-        return f"{cur} ({happy})"
-    return cur or happy
+    return d
 
 
 def render_recommendations_tab(
@@ -78,10 +78,27 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],
     environment: str,
 ) -> None:
-    flight_line = _fmt_flight_line(ans)
-    feel_line = _fmt_feel_line(ans)
+    # Correct Flight/Feel mapping
+    flight_current = str(ans.get("Q16_1", "")).strip()
+    flight_happy = str(ans.get("Q16_2", "")).strip()
+    flight_target = str(ans.get("Q16_3", "")).strip()
 
-    # Header bar
+    feel_current = str(ans.get("Q19_1", "")).strip()
+    feel_happy = str(ans.get("Q19_2", "")).strip()
+    feel_target = str(ans.get("Q19_3", "")).strip()
+
+    flight_line = flight_current
+    if flight_happy:
+        flight_line = f"{flight_line} ({flight_happy})" if flight_line else f"({flight_happy})"
+    if flight_target:
+        flight_line = _fmt_pref_line(flight_line, flight_target)
+
+    feel_line = feel_current
+    if feel_happy:
+        feel_line = f"{feel_line} ({feel_happy})" if feel_line else f"({feel_happy})"
+    if feel_target:
+        feel_line = _fmt_pref_line(feel_line, feel_target)
+
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -96,7 +113,6 @@ def render_recommendations_tab(
         unsafe_allow_html=True,
     )
 
-    # Winner summary (if available)
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
@@ -108,7 +124,6 @@ def render_recommendations_tab(
         if explain:
             st.caption(explain)
 
-    # Predictor buckets
     v_items = list(verdicts.items())
     col1, col2 = st.columns(2)
     cats = [
@@ -117,11 +132,12 @@ def render_recommendations_tab(
         ("Launch & Height", "🚀 Launch"),
         ("Feel & Smoothness", "☁️ Feel"),
     ]
+
     for i, (cat, c_name) in enumerate(cats):
         with col1 if i < 2 else col2:
             st.subheader(c_name)
-            if cat in all_winners:
-                st.table(all_winners[cat])
+            if cat in all_winners and isinstance(all_winners[cat], pd.DataFrame):
+                st.table(_table_with_id(all_winners[cat]))
                 blurb = v_items[i][1] if i < len(v_items) else "Optimized."
                 st.markdown(
                     f"<div class='verdict-text'><b>Verdict:</b> {blurb}</div>",
@@ -129,47 +145,25 @@ def render_recommendations_tab(
                 )
 
     st.divider()
+    st.subheader("📄 Send PDF Report")
 
-    # ---------------- PDF controls ----------------
-    st.subheader("📄 PDF Report")
-
-    if not _winner_ready():
-        st.warning(
-            "PDF is available **after** you pick a winner in **🧪 Trackman Lab** "
-            "(or Phase 6 notes exist)."
-        )
-        return
-
-    # Generate PDF (always allowed once winner exists)
-    if st.button("Generate PDF", type="primary"):
-        with st.spinner("Generating PDF..."):
-            pdf_bytes = create_pdf_bytes(
-                p_name,
-                all_winners,
-                ans,
-                verdicts,
-                phase6_recs=st.session_state.get("phase6_recs", None),
-                environment=environment,
-            )
-        st.download_button(
-            label="Download PDF",
-            data=pdf_bytes,
-            file_name=f"Report_{p_name}.pdf",
-            mime="application/pdf",
-        )
-
-    st.divider()
-
-    # Send PDF (only if email provided)
     if not p_email:
-        st.info("Add the player's email in the interview to enable **Send PDF**.")
+        st.info("Add the player's email in the interview to enable PDF sending.")
         return
 
     if st.session_state.get("email_sent", False):
         st.success(f"📬 PDF already sent to {p_email}.")
         return
 
-    if st.button(f"Send PDF to {p_email}"):
+    if not _winner_ready():
+        st.warning(
+            "PDF sending is enabled **after** you choose a winner in **🧪 Trackman Lab**.\n\n"
+            "Log swings and let the Intelligence block generate the winner. Then return here to send the PDF."
+        )
+        return
+
+    want_send = st.checkbox(f"Yes — send the PDF to {p_email}", value=False)
+    if st.button("Generate & Send PDF", disabled=not want_send):
         with st.spinner("Generating PDF and sending email..."):
             pdf_bytes = create_pdf_bytes(
                 p_name,
