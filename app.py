@@ -101,12 +101,26 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
         return None
 
 
+def _norm_header(s: Any) -> str:
+    """
+    Normalize headers to be tolerant of:
+    - different casing
+    - extra spaces
+    - non-breaking spaces
+    """
+    txt = "" if s is None else str(s)
+    txt = txt.replace("\u00A0", " ")  # nbsp
+    txt = " ".join(txt.strip().split())
+    return txt.lower()
+
+
 def save_to_fittings(answers: Dict[str, Any]) -> None:
     """
     Writes a new row to the Fittings sheet by matching the sheet headers to:
-      - Questions.QuestionText -> QuestionID
+      - Questions.QuestionText -> QuestionID (case/space tolerant)
       - Special header mappings for sub-questions (Q16_1, Q16_2, Q19_1, Q19_2)
-    This prevents the "Q01..Q29 appended in order" misalignment problem.
+    This prevents the "Q01..Q29 appended in order" misalignment problem AND
+    fixes issues where headers have slight variations.
     """
     try:
         scopes = [
@@ -124,15 +138,18 @@ def save_to_fittings(answers: Dict[str, Any]) -> None:
         ws_q = sh.worksheet("Questions")
 
         # Read headers from Fittings (row 1)
-        fit_headers = ws_fit.row_values(1)
-        fit_headers = [str(h).strip() for h in fit_headers if str(h).strip()]
+        fit_headers_raw = ws_fit.row_values(1)
+        fit_headers_raw = [h for h in fit_headers_raw if str(h).strip()]
 
-        # Build QuestionText -> QuestionID map
+        # Build QuestionText -> QuestionID map (normalized)
         q_rows = ws_q.get_all_values()
-        q_headers = q_rows[0] if q_rows else []
-        q_data = q_rows[1:] if len(q_rows) > 1 else []
+        if not q_rows or len(q_rows) < 2:
+            st.error("Questions sheet is empty; cannot write fitting.")
+            return
 
-        # Find column indices safely
+        q_headers = q_rows[0]
+        q_data = q_rows[1:]
+
         def _col_idx(name: str) -> Optional[int]:
             for i, h in enumerate(q_headers):
                 if str(h).strip() == name:
@@ -142,7 +159,7 @@ def save_to_fittings(answers: Dict[str, Any]) -> None:
         idx_id = _col_idx("QuestionID")
         idx_text = _col_idx("QuestionText")
 
-        text_to_qid: Dict[str, str] = {}
+        textnorm_to_qid: Dict[str, str] = {}
         if idx_id is not None and idx_text is not None:
             for r in q_data:
                 if len(r) <= max(idx_id, idx_text):
@@ -150,30 +167,48 @@ def save_to_fittings(answers: Dict[str, Any]) -> None:
                 qid = str(r[idx_id]).strip()
                 qtext = str(r[idx_text]).strip()
                 if qid and qtext:
-                    text_to_qid[qtext] = qid
+                    textnorm_to_qid[_norm_header(qtext)] = qid
 
-        # Special cases where Fittings headers don't match QuestionText exactly
-        special_header_to_qid = {
-            "Flight Satisfaction": "Q16_1",
-            "Flight Change": "Q16_2",
-            "Feel Satisfaction": "Q19_1",
-            "Target Shaft Feel": "Q19_2",
+        # Special cases where Fittings headers might vary vs QuestionText
+        # We normalize keys so "Flight Satisfaction", "flight satisfaction ", etc all match.
+        special_normheader_to_qid = {
+            _norm_header("Flight Satisfaction"): "Q16_1",
+            _norm_header("Flight Change"): "Q16_2",
+            _norm_header("Feel Satisfaction"): "Q19_1",
+            _norm_header("Target Shaft Feel"): "Q19_2",
         }
 
-        # Build row in exact header order
+        # Also support exact-QID headers if you ever decide to use them
+        # e.g. a column named "Q16_1" or "q16_1"
+        def _qid_from_header(h_raw: str) -> Optional[str]:
+            h = str(h_raw).strip()
+            if h.lower().startswith("q") and any(ch.isdigit() for ch in h):
+                return h.upper()
+            return None
+
         now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row_out: List[Any] = []
 
-        for h in fit_headers:
-            if h.lower() == "timestamp":
+        for h_raw in fit_headers_raw:
+            h_norm = _norm_header(h_raw)
+
+            if h_norm == "timestamp":
                 row_out.append(now_ts)
                 continue
 
             qid = None
-            if h in special_header_to_qid:
-                qid = special_header_to_qid[h]
-            elif h in text_to_qid:
-                qid = text_to_qid[h]
+
+            # 1) Exact special mapping (flight/feel followups)
+            if h_norm in special_normheader_to_qid:
+                qid = special_normheader_to_qid[h_norm]
+            else:
+                # 2) If header is literally a QID
+                qid_guess = _qid_from_header(h_raw)
+                if qid_guess:
+                    qid = qid_guess
+                else:
+                    # 3) Map header text to question text
+                    qid = textnorm_to_qid.get(h_norm)
 
             val = ""
             if qid:
