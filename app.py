@@ -98,7 +98,11 @@ def get_data_from_gsheet():
         return None
 
 
-def save_to_fittings(answers):
+def save_to_fittings(answers, question_ids):
+    """
+    Appends a row to Fittings: timestamp + answers in the same order as Questions sheet.
+    Supports sub-IDs like Q16_1, Q19_2, and new questions like Q23.
+    """
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -110,12 +114,15 @@ def save_to_fittings(answers):
             "https://docs.google.com/spreadsheets/d/1D3MGF3BxboxYdWHz8TpEEU5Z-FV7qs3jtnLAqXcEetY/edit"
         )
         worksheet = sh.worksheet("Fittings")
+
+        qids = [str(q).strip() for q in question_ids if str(q).strip()]
         row = [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + [
-            answers.get(f"Q{i:02d}", "") for i in range(1, 23)  # includes Q22
+            answers.get(qid, "") for qid in qids
         ]
         worksheet.append_row(row)
     except Exception as e:
         st.error(f"Error saving: {e}")
+
 
 
 # ------------------ TrackMan helpers ------------------
@@ -303,6 +310,25 @@ MIN_SHOTS = int(cfg_float(cfg, "MIN_SHOTS", 8))
 q_master = all_data["Questions"]
 categories = list(dict.fromkeys(q_master["Category"].tolist()))
 
+def should_show_question(qid: str, answers: dict) -> bool:
+    """
+    Decision-tree visibility for sub-questions.
+    Hides follow-ups unless satisfaction is answered and is not "Yes".
+    """
+    qid = str(qid).strip()
+
+    # Flight follow-up only if NOT happy with flight
+    if qid == "Q16_2":
+        a = str(answers.get("Q16_1", "")).strip().lower()
+        return a in {"no", "unsure"}
+
+    # Feel follow-up only if NOT happy with feel
+    if qid == "Q19_2":
+        a = str(answers.get("Q19_1", "")).strip().lower()
+        return a in {"no", "unsure"}
+
+    return True
+
 
 # ------------------ Interview ------------------
 if not st.session_state.interview_complete:
@@ -312,6 +338,10 @@ if not st.session_state.interview_complete:
 
     for _, row in q_df.iterrows():
         qid = str(row["QuestionID"]).strip()
+        
+if not should_show_question(qid, st.session_state.answers):
+    continue
+                    
         qtext = row["QuestionText"]
         qtype = row["InputType"]
         qopts = str(row["Options"]).strip()
@@ -407,7 +437,7 @@ if not st.session_state.interview_complete:
             sync_all()
             if st.session_state.answers.get("Q22"):
                 st.session_state.environment = st.session_state.answers["Q22"]
-            save_to_fittings(st.session_state.answers)
+            save_to_fittings(st.session_state.answers, q_master["QuestionID"].tolist())
             st.session_state.interview_complete = True
             st.rerun()
 
