@@ -159,10 +159,36 @@ def _find_baseline_shaft_id_from_answers(ans: Dict[str, Any], shafts_df: pd.Data
     return None
 
 
-def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _value_is_present(v: Any) -> bool:
+    """
+    Safe truthiness check that won't crash on pandas objects.
+    """
+    if v is None:
+        return False
+
+    # Pandas objects (DataFrame / Series / Index) can't be used in boolean context
+    if isinstance(v, (pd.DataFrame, pd.Series, pd.Index)):
+        return not v.empty
+
+    if isinstance(v, str):
+        return bool(v.strip())
+
+    if isinstance(v, (list, tuple, set, dict)):
+        return len(v) > 0
+
+    # Fallback for simple scalars
+    try:
+        return bool(v)
+    except Exception:
+        return False
+
+
+def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
     """
     Try to standardize winner info out of whatever the intelligence layer returns,
     without assuming a single fixed key.
+
+    IMPORTANT: intel may contain pandas objects; never evaluate them directly as bool.
     """
     if not isinstance(intel, dict):
         return None
@@ -179,10 +205,14 @@ def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     raw = None
     for k in candidates:
-        if k in intel and intel.get(k):
-            raw = intel.get(k)
+        if k not in intel:
+            continue
+        v = intel.get(k, None)
+        if _value_is_present(v):
+            raw = v
             break
 
+    # Already in standardized dict form
     if isinstance(raw, dict):
         return {
             "shaft_id": raw.get("shaft_id") or raw.get("Shaft ID") or raw.get("id"),
@@ -192,6 +222,7 @@ def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "raw": raw,
         }
 
+    # If it’s just a string, wrap it
     if isinstance(raw, str) and raw.strip():
         return {
             "shaft_id": None,
@@ -199,6 +230,16 @@ def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "headline": "Winner selected",
             "explain": raw.strip(),
             "raw": raw,
+        }
+
+    # If it’s a pandas object, preserve a small note instead of crashing
+    if isinstance(raw, (pd.DataFrame, pd.Series)) and not raw.empty:
+        return {
+            "shaft_id": None,
+            "shaft_label": None,
+            "headline": "Winner selected",
+            "explain": "Winner object returned (table).",
+            "raw": None,
         }
 
     return None
