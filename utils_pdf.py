@@ -54,7 +54,7 @@ class TourProvenPDF(FPDF):
         self.set_x(self.l_margin)
         self.cell(40, 5, _safe_text(k))
         self.set_font("Helvetica", "", 10)
-        self.multi_cell(self.w - self.l_margin - self.r_margin - 40, 5, _safe_text(v))
+        self.safe_multicell(_safe_text(v), line_h=5)
 
     def safe_multicell(self, text: str, line_h: float = 4.5) -> None:
         """
@@ -69,7 +69,17 @@ class TourProvenPDF(FPDF):
             w = (self.w - self.r_margin) - self.get_x()
 
         txt = _break_long_tokens(_safe_text(text))
-        self.multi_cell(w, line_h, txt)
+
+        try:
+            self.multi_cell(w, line_h, txt)
+        except Exception:
+            # last resort safety: reset margins and retry with conservative width
+            self.set_margins(12, 12, 12)
+            self.set_x(self.l_margin)
+            w2 = (self.w - self.r_margin) - self.get_x()
+            if w2 <= 5:
+                w2 = max(20, self.w - 24)
+            self.multi_cell(w2, line_h, txt)
 
     def bullet(self, text: str) -> None:
         self.set_font("Helvetica", "", 10)
@@ -86,9 +96,9 @@ def create_pdf_bytes(
 ) -> bytes:
     """
     Drop-in replacement for utils.create_pdf_bytes signature.
-    Designed to never crash on Phase 6 bullets.
+    Designed to never crash on Phase 6 bullets or long verdict strings.
     """
-    pdf = TourProvenPDF(orientation="P", unit="mm", format="Letter")
+    pdf = TourProvenPDF(orientation="P", unit="mm", format="A4")
     pdf.add_page()
 
     # ---- Player summary ----
@@ -136,12 +146,10 @@ def create_pdf_bytes(
                 prefix = "⚠️ " if sev == "warn" else ""
                 pdf.bullet(f"{prefix}{r_type}: {txt}")
             except Exception:
-                # Never allow a single bad record to crash the PDF
                 continue
     else:
         pdf.safe_multicell("No Phase 6 notes available yet. Generate a winner in Trackman Lab first.")
 
-    # Output bytes
     out = pdf.output(dest="S")
     if isinstance(out, (bytes, bytearray)):
         return bytes(out)
