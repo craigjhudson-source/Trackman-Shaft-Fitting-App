@@ -1,7 +1,7 @@
 # ui/intelligence.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import streamlit as st
@@ -28,7 +28,7 @@ def render_intelligence_block(
     WARN_CARRY_SD: float,
     WARN_SMASH_SD: float,
     club: str = "6i",
-) -> Tuple[Optional[pd.Series], pd.DataFrame, Optional[list]]:
+) -> Dict[str, Any]:
     """
     Draws:
       - Baseline comparison table
@@ -36,18 +36,26 @@ def render_intelligence_block(
       - Tour Proven recommendation + matrix
       - Phase 6 suggestions
 
-    Returns (winner_row, comparison_df, phase6_recs)
+    Returns a dict so app.py can do:
+      intel = render_intelligence_block(...)
+      if intel and intel.get("phase6_recs"): ...
     """
+    out: Dict[str, Any] = {
+        "winner": None,
+        "comparison_df": pd.DataFrame(),
+        "phase6_recs": None,
+    }
+
     if not EFF_AVAILABLE:
         st.error(
             "Efficiency Optimizer module not available.\n\n"
             "Add core/efficiency_optimizer.py (and optionally core/__init__.py) then redeploy."
         )
-        return None, pd.DataFrame(), None
+        return out
 
     if lab_df is None or lab_df.empty:
         st.info("Upload + log TrackMan lab data to enable Intelligence.")
-        return None, pd.DataFrame(), None
+        return out
 
     eff_cfg = EfficiencyConfig(
         MIN_SHOTS=int(MIN_SHOTS),
@@ -62,6 +70,8 @@ def render_intelligence_block(
         cfg=eff_cfg,
     )
 
+    out["comparison_df"] = comparison_df
+
     st.subheader("📊 Baseline Comparison Table")
     display_cols = ["Shaft", "Carry Δ", "Launch Δ", "Spin Δ", "Smash", "Dispersion", "Efficiency", "Confidence"]
     if comparison_df is not None and not comparison_df.empty:
@@ -69,12 +79,14 @@ def render_intelligence_block(
         st.dataframe(comparison_df[cols], use_container_width=True, hide_index=True, height=320)
     else:
         st.info("No comparison rows yet. Add at least one logged shaft set.")
-        return None, pd.DataFrame(), None
+        return out
 
     winner = pick_efficiency_winner(comparison_df)
+    out["winner"] = winner
+
     if winner is None:
         st.warning("No efficiency winner could be computed yet.")
-        return None, comparison_df, None
+        return out
 
     st.success(
         f"🏆 **Efficiency Winner:** {winner['Shaft']} "
@@ -103,7 +115,11 @@ def render_intelligence_block(
     st.subheader("Phase 6 Optimization Suggestions")
 
     w_id = str(winner.get("Shaft ID", ""))
-    w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id] if "Shaft ID" in lab_df.columns else pd.DataFrame()
+    if "Shaft ID" in lab_df.columns:
+        w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id]
+    else:
+        w_match = pd.DataFrame()
+
     winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
 
     recs = phase6_recommendations(
@@ -113,6 +129,8 @@ def render_intelligence_block(
         environment=environment,
     )
 
+    out["phase6_recs"] = recs
+
     for r in recs or []:
         sev = (r.get("severity") or "").lower()
         css = "rec-warn" if sev == "warn" else "rec-info"
@@ -121,4 +139,4 @@ def render_intelligence_block(
             unsafe_allow_html=True,
         )
 
-    return winner, comparison_df, recs
+    return out
