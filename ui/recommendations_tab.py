@@ -29,36 +29,19 @@ def _fmt_pref_line(primary: str, followup: str) -> str:
 
 
 def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Streamlit st.table() shows the DataFrame index as the first column.
-    We want that to be the Shaft ID instead (and hide the default row index).
-    Works whether the ID is stored as index OR already as a column.
-    """
     if df is None or df.empty:
         return pd.DataFrame()
 
     d = df.copy()
-
     if "ID" not in d.columns:
         try:
-            idx = d.index
-            numeric_like = 0
-            total = 0
-            for v in idx.tolist():
-                total += 1
-                s = str(v).strip()
-                if s and s.replace(".", "", 1).isdigit():
-                    numeric_like += 1
-            if total > 0 and (numeric_like / total) >= 0.8:
-                d.insert(0, "ID", [str(x).strip() for x in d.index.tolist()])
-                d = d.reset_index(drop=True)
-            else:
-                d = d.reset_index(drop=True)
+            d.insert(0, "ID", [str(x).strip() for x in d.index.tolist()])
         except Exception:
-            d = d.reset_index(drop=True)
-    else:
-        d = d.reset_index(drop=True)
-        cols = list(d.columns)
+            pass
+    d = d.reset_index(drop=True)
+
+    cols = list(d.columns)
+    if "ID" in cols:
         cols = ["ID"] + [c for c in cols if c != "ID"]
         d = d[cols]
 
@@ -71,9 +54,6 @@ def _get_goal_rankings() -> Optional[Dict[str, Any]]:
 
 
 def _result_to_row(r: Any) -> Dict[str, Any]:
-    """
-    GoalScoreResult -> display row (robust to dataclass or dict).
-    """
     if r is None:
         return {}
     if isinstance(r, dict):
@@ -83,8 +63,6 @@ def _result_to_row(r: Any) -> Dict[str, Any]:
             "Score": float(r.get("overall_score", 0.0) or 0.0),
             "Why": " | ".join([str(x) for x in (r.get("reasons") or [])][:3]),
         }
-
-    # dataclass-like
     return {
         "Shaft ID": str(getattr(r, "shaft_id", "")).strip(),
         "Shaft": str(getattr(r, "shaft_label", "")).strip(),
@@ -97,11 +75,17 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
     if best is None:
         return
 
-    # dataclass or dict
-    sid = str(best.get("shaft_id")) if isinstance(best, dict) else str(getattr(best, "shaft_id", ""))
-    lab = str(best.get("shaft_label")) if isinstance(best, dict) else str(getattr(best, "shaft_label", ""))
-    reasons = best.get("reasons") if isinstance(best, dict) else getattr(best, "reasons", [])
-    g_scores = best.get("goal_scores") if isinstance(best, dict) else getattr(best, "goal_scores", {})
+    if isinstance(best, dict):
+        lab = str(best.get("shaft_label", "")).strip()
+        sid = str(best.get("shaft_id", "")).strip()
+        reasons = best.get("reasons") or []
+        g_scores = best.get("goal_scores") or {}
+    else:
+        lab = str(getattr(best, "shaft_label", "")).strip()
+        sid = str(getattr(best, "shaft_id", "")).strip()
+        reasons = getattr(best, "reasons", []) or []
+        g_scores = getattr(best, "goal_scores", {}) or {}
+
     g_val = None
     try:
         if isinstance(g_scores, dict):
@@ -112,12 +96,42 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
     baseline_txt = f"(vs baseline {baseline_id})" if baseline_id else "(vs baseline)"
 
     st.markdown(f"**{goal_name}** {baseline_txt}")
-    st.write(f"**{lab}**")
+    st.write(f"**{lab}**  (ID {sid})")
     if g_val is not None:
         st.caption(f"Goal score: {g_val:.2f}")
     if reasons:
         for b in reasons[:3]:
             st.write(f"- {b}")
+
+
+def _refresh_controls() -> None:
+    """
+    Refresh button + optional auto-refresh signaling based on Trackman updates.
+    """
+    c1, c2, c3 = st.columns([1, 1, 3])
+
+    # Manual refresh
+    if c1.button("🔄 Refresh Recommendations"):
+        st.rerun()
+
+    # Show last Trackman update if available
+    last = st.session_state.get("tm_last_update", "")
+    if last:
+        c3.caption(f"Last Trackman update: {last}")
+
+    # Optional: auto-rerun once when Trackman version changes
+    auto = c2.checkbox("Auto-refresh", value=True)
+    if auto:
+        current_v = int(st.session_state.get("tm_data_version", 0) or 0)
+        seen_v = int(st.session_state.get("recs_seen_tm_version", -1) or -1)
+
+        # If Trackman data changed since last time this tab ran, rerun once.
+        if current_v != seen_v:
+            st.session_state.recs_seen_tm_version = current_v
+            if seen_v != -1:
+                st.rerun()
+        else:
+            st.session_state.recs_seen_tm_version = current_v
 
 
 def render_recommendations_tab(
@@ -129,7 +143,10 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],
     environment: str,
 ) -> None:
-    # Correct Flight/Feel mapping
+    # Refresh controls at the top
+    _refresh_controls()
+
+    # Flight/Feel mapping
     flight_current = str(ans.get("Q16_1", "")).strip()
     flight_happy = str(ans.get("Q16_2", "")).strip()
     flight_target = str(ans.get("Q16_3", "")).strip()
@@ -171,12 +188,9 @@ def render_recommendations_tab(
         st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
 
         baseline_id = gr.get("baseline_shaft_id", None)
-
         results = gr.get("results", [])
-        # results is list[GoalScoreResult] (dataclass) usually; robust either way
         top = results[0] if results else None
 
-        # Overall best for goals
         if top is not None:
             row = _result_to_row(top)
             st.success(f"**Best for your goals:** {row.get('Shaft','')}  (ID {row.get('Shaft ID','')})")
@@ -184,7 +198,6 @@ def render_recommendations_tab(
             if why:
                 st.caption(why)
 
-        # Per-goal winners
         top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
         if top_by_goal:
             st.markdown("#### Best shaft by goal")
@@ -194,22 +207,20 @@ def render_recommendations_tab(
                 with gcols[0] if i % 2 == 0 else gcols[1]:
                     _goal_best_to_card(best, goal_name, baseline_id)
 
-        # Small leaderboard table (top 8)
         st.markdown("#### Goal Scorecard Leaderboard")
         rows = [_result_to_row(r) for r in results[:8]]
         if rows:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         st.divider()
-
     else:
         st.info(
             "Goal-based recommendations will appear here after you upload Trackman data in **🧪 Trackman Lab** "
-            "and the lab table contains at least one logged shaft."
+            "and click **➕ Add** at least once."
         )
         st.divider()
 
-    # ---------------- Winner summary (existing intelligence) ----------------
+    # Winner summary
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
@@ -221,7 +232,7 @@ def render_recommendations_tab(
         if explain:
             st.caption(explain)
 
-    # ---------------- Interview starting point (existing buckets) ----------------
+    # Interview buckets
     st.subheader("🧠 Interview Starting Point (before Trackman)")
     v_items = list(verdicts.items())
     col1, col2 = st.columns(2)
@@ -244,7 +255,7 @@ def render_recommendations_tab(
 
     st.divider()
 
-    # ---------------- PDF sending (unchanged behavior) ----------------
+    # PDF sending
     st.subheader("📄 Send PDF Report")
 
     if not p_email:
