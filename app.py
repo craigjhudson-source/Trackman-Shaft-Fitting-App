@@ -89,12 +89,6 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
 
 
 def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame]) -> None:
-    """
-    Sheet-driven write:
-      - Read Fittings headers from row 1
-      - Build QuestionText->QuestionID mapping from Questions tab
-      - Fill row aligned to headers (meta + answers)
-    """
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -107,7 +101,6 @@ def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame])
     )
     ws_fit = sh.worksheet("Fittings")
 
-    # Keep only non-empty headers (prevents append_row width mismatch)
     fit_headers = [h for h in ws_fit.row_values(1) if str(h).strip()]
 
     q_df = all_data.get("Questions", pd.DataFrame())
@@ -122,7 +115,7 @@ def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame])
         timestamp=now_ts,
         name=str(answers.get("Q01", "")).strip(),
         email=str(answers.get("Q02", "")).strip(),
-        phone=str(answers.get("Q03", "")).strip(),  # ok if blank/not used
+        phone=str(answers.get("Q03", "")).strip(),
     )
 
     row_out = build_fittings_row(
@@ -189,6 +182,22 @@ if not st.session_state.interview_complete:
 
 else:
     ans = st.session_state.answers
+
+    # ------------------ Legacy key compatibility (summary/UI expects old IDs) ------------------
+    # Current Flight / Target Flight (old: Q16/Q17)
+    if "Q16" not in ans and ans.get("Q16_1"):
+        ans["Q16"] = ans.get("Q16_1", "")
+    if "Q17" not in ans and ans.get("Q16_3"):
+        ans["Q17"] = ans.get("Q16_3", "")
+
+    # Current Feel / Target Feel (old: Q19/Q20)
+    if "Q19" not in ans and ans.get("Q19_1"):
+        ans["Q19"] = ans.get("Q19_1", "")
+    if "Q20" not in ans and ans.get("Q19_3"):
+        ans["Q20"] = ans.get("Q19_3", "")
+
+    # -----------------------------------------------------------------------------------------
+
     p_name, p_email = ans.get("Q01", "Player"), ans.get("Q02", "")
     st.session_state.environment = (ans.get("Q22") or st.session_state.environment or "Indoors (Mat)").strip()
 
