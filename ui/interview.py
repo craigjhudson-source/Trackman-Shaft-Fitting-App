@@ -1,0 +1,209 @@
+# ui/interview.py
+from __future__ import annotations
+
+from typing import Dict, Any, List, Optional
+
+import pandas as pd
+import streamlit as st
+
+
+def _sync_all() -> None:
+    """
+    Copy all widget_ answers into st.session_state.answers.
+    """
+    for key in list(st.session_state.keys()):
+        if key.startswith("widget_"):
+            st.session_state.answers[key.replace("widget_", "")] = st.session_state[key]
+
+
+def _should_show_question(qid: str, answers: Dict[str, Any]) -> bool:
+    """
+    Decision-tree visibility for sub-questions.
+    Hides follow-ups unless satisfaction is answered and is not Yes.
+    """
+    qid = str(qid).strip()
+
+    # Flight follow-up only if NOT happy with flight
+    if qid == "Q16_2":
+        a = str(answers.get("Q16_1", "")).strip().lower()
+        return a in {"no", "unsure"}
+
+    # Feel follow-up only if NOT happy with feel
+    if qid == "Q19_2":
+        a = str(answers.get("Q19_1", "")).strip().lower()
+        return a in {"no", "unsure"}
+
+    return True
+
+
+def render_interview(
+    *,
+    all_data: Dict[str, pd.DataFrame],
+    q_master: pd.DataFrame,
+    categories: List[str],
+    save_to_fittings_fn,
+) -> None:
+    """
+    Renders the multi-step interview UI and updates st.session_state:
+      - st.session_state.answers
+      - st.session_state.form_step
+      - st.session_state.environment (from Q22 if present)
+      - st.session_state.interview_complete
+    """
+    st.title("⛳ Tour Proven Fitting Interview")
+
+    if not categories:
+        st.error("No Categories found in Questions tab.")
+        st.stop()
+
+    step = int(st.session_state.get("form_step", 0))
+    step = max(0, min(step, len(categories) - 1))
+    st.session_state.form_step = step
+
+    current_cat = categories[step]
+    q_df = q_master[q_master["Category"].astype(str) == str(current_cat)].copy()
+
+    for _, row in q_df.iterrows():
+        qid = str(row.get("QuestionID", "")).strip()
+        if not qid:
+            continue
+
+        if not _should_show_question(qid, st.session_state.answers):
+            continue
+
+        qtext = str(row.get("QuestionText", "")).strip()
+        qtype = str(row.get("InputType", "")).strip()
+        qopts = str(row.get("Options", "")).strip()
+        ans_val = st.session_state.answers.get(qid, "")
+
+        if qtype == "Dropdown":
+            opts: List[str] = [""]
+
+            # Heads dynamic dropdowns
+            if "Heads" in qopts:
+                brand_val = st.session_state.answers.get("Q08", "")
+
+                if "Brand" in qtext:
+                    if "Manufacturer" in all_data["Heads"].columns:
+                        opts += sorted(all_data["Heads"]["Manufacturer"].dropna().unique().tolist())
+                    else:
+                        opts += sorted(all_data["Heads"].iloc[:, 0].dropna().unique().tolist())
+                else:
+                    if "Manufacturer" in all_data["Heads"].columns and "Model" in all_data["Heads"].columns:
+                        if brand_val:
+                            opts += sorted(
+                                all_data["Heads"][all_data["Heads"]["Manufacturer"] == brand_val]["Model"]
+                                .dropna()
+                                .unique()
+                                .tolist()
+                            )
+                        else:
+                            opts += ["Select Brand First"]
+                    else:
+                        opts += ["Select Brand First"]
+
+            # Shafts dynamic dropdowns
+            elif "Shafts" in qopts:
+                s_brand = st.session_state.answers.get("Q10", "")
+                s_flex = st.session_state.answers.get("Q11", "")
+
+                if "Brand" in qtext:
+                    if "Brand" in all_data["Shafts"].columns:
+                        opts += sorted(all_data["Shafts"]["Brand"].dropna().unique().tolist())
+
+                elif "Flex" in qtext:
+                    if s_brand and "Flex" in all_data["Shafts"].columns and "Brand" in all_data["Shafts"].columns:
+                        opts += sorted(
+                            all_data["Shafts"][all_data["Shafts"]["Brand"] == s_brand]["Flex"]
+                            .dropna()
+                            .unique()
+                            .tolist()
+                        )
+                    else:
+                        opts += ["Select Brand First"]
+
+                elif "Model" in qtext:
+                    if (
+                        s_brand
+                        and s_flex
+                        and "Brand" in all_data["Shafts"].columns
+                        and "Flex" in all_data["Shafts"].columns
+                        and "Model" in all_data["Shafts"].columns
+                    ):
+                        opts += sorted(
+                            all_data["Shafts"][
+                                (all_data["Shafts"]["Brand"] == s_brand) & (all_data["Shafts"]["Flex"] == s_flex)
+                            ]["Model"]
+                            .dropna()
+                            .unique()
+                            .tolist()
+                        )
+                    else:
+                        opts += ["Select Brand/Flex First"]
+
+            # Config-driven dropdowns
+            elif qopts.lower().startswith("config:"):
+                col = qopts.split(":", 1)[1].strip()
+                if col in all_data["Config"].columns:
+                    opts += [str(x).strip() for x in all_data["Config"][col].dropna().tolist() if str(x).strip()]
+
+            # Responses sheet fallback (if present)
+            else:
+                resp_df = all_data.get("Responses", pd.DataFrame())
+                if (
+                    resp_df is not None
+                    and not resp_df.empty
+                    and "QuestionID" in resp_df.columns
+                    and "ResponseOption" in resp_df.columns
+                ):
+                    opts += (
+                        resp_df[resp_df["QuestionID"].astype(str).str.strip() == qid]["ResponseOption"]
+                        .astype(str)
+                        .tolist()
+                    )
+
+            opts = list(dict.fromkeys([str(x) for x in opts if str(x).strip() != ""]))
+
+            st.selectbox(
+                qtext,
+                opts,
+                index=opts.index(str(ans_val)) if str(ans_val) in opts else 0,
+                key=f"widget_{qid}",
+                on_change=_sync_all,
+            )
+
+        elif qtype == "Numeric":
+            try:
+                v = float(ans_val) if str(ans_val).strip() else 0.0
+            except Exception:
+                v = 0.0
+            st.number_input(qtext, value=v, key=f"widget_{qid}", on_change=_sync_all)
+
+        else:
+            st.text_input(qtext, value=str(ans_val), key=f"widget_{qid}", on_change=_sync_all)
+
+    c1, c2, _ = st.columns([1, 1, 4])
+
+    if c1.button("⬅️ Back") and st.session_state.form_step > 0:
+        _sync_all()
+        st.session_state.form_step -= 1
+        st.rerun()
+
+    if st.session_state.form_step < len(categories) - 1:
+        if c2.button("Next ➡️"):
+            _sync_all()
+            st.session_state.form_step += 1
+            st.rerun()
+    else:
+        if c2.button("🔥 Calculate"):
+            _sync_all()
+
+            # Environment question (Q22) optional; still store if present
+            if st.session_state.answers.get("Q22"):
+                st.session_state.environment = str(st.session_state.answers["Q22"]).strip()
+
+            # Persist the fitting row
+            save_to_fittings_fn(st.session_state.answers)
+
+            st.session_state.interview_complete = True
+            st.rerun()
