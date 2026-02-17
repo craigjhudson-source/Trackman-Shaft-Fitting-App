@@ -19,7 +19,14 @@ except Exception:
 
 
 def _controls_complete() -> bool:
-    return all(bool(v) for v in st.session_state.lab_controls.values())
+    """
+    Controls are 'complete' only when every required checkbox is True.
+    If lab_controls is missing, treat as incomplete (never crash).
+    """
+    lc = st.session_state.get("lab_controls", None)
+    if not isinstance(lc, dict) or not lc:
+        return False
+    return all(bool(v) for v in lc.values())
 
 
 def _extract_tag_ids(raw_df: pd.DataFrame) -> List[str]:
@@ -160,7 +167,6 @@ def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(intel, dict):
         return None
 
-    # Common candidates we’ve used / might use
     candidates = [
         "winner_summary",
         "highlighted_pick",
@@ -177,7 +183,6 @@ def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             raw = intel.get(k)
             break
 
-    # Already in standardized dict form
     if isinstance(raw, dict):
         return {
             "shaft_id": raw.get("shaft_id") or raw.get("Shaft ID") or raw.get("id"),
@@ -187,7 +192,6 @@ def _extract_winner_summary(intel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "raw": raw,
         }
 
-    # If it’s just a string, wrap it
     if isinstance(raw, str) and raw.strip():
         return {
             "shaft_id": None,
@@ -219,6 +223,13 @@ def render_trackman_tab(
         f"WARN_CARRY_SD={WARN_CARRY_SD} | "
         f"WARN_SMASH_SD={WARN_SMASH_SD}"
     )
+
+    # ✅ HOTFIX: initialize lab_controls dict + required keys (prevents all KeyErrors)
+    if "lab_controls" not in st.session_state or not isinstance(st.session_state.get("lab_controls"), dict):
+        st.session_state.lab_controls = {}
+
+    for k in ["length_matched", "swing_weight_matched", "grip_matched", "same_head", "same_ball"]:
+        st.session_state.lab_controls.setdefault(k, False)
 
     env_choice = st.radio(
         "Testing environment",
@@ -319,7 +330,6 @@ def render_trackman_tab(
                 label_to_id = {shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid for tid in tag_ids}
                 st.session_state["selected_tag_ids"] = [label_to_id[x] for x in selected_labels if x in label_to_id]
 
-                # Baseline selection dropdown
                 selected_tag_ids = st.session_state.get("selected_tag_ids", [])
                 baseline_default_id = None
                 if baseline_id and str(baseline_id) in selected_tag_ids:
