@@ -11,20 +11,21 @@ from utils import send_email_with_pdf
 
 
 def _winner_ready() -> bool:
-    """
-    Winner chosen signal:
-      - preferred: st.session_state.winner_summary exists
-      - fallback: phase6_recs exists
-    """
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         return True
-
     phase6 = st.session_state.get("phase6_recs", None)
-    if isinstance(phase6, list) and len(phase6) > 0:
-        return True
+    return isinstance(phase6, list) and len(phase6) > 0
 
-    return False
+
+def _fmt_pref_line(primary: str, followup: str) -> str:
+    p = (primary or "").strip()
+    f = (followup or "").strip()
+    if not p and not f:
+        return ""
+    if f:
+        return f"{p} → {f}" if p else f
+    return p
 
 
 def render_recommendations_tab(
@@ -36,7 +37,16 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],
     environment: str,
 ) -> None:
-    # Header bar
+    # Pull flight/feel answers
+    flight_sat = str(ans.get("Q16_1", "")).strip()
+    flight_change = str(ans.get("Q16_2", "")).strip()
+    feel_sat = str(ans.get("Q19_1", "")).strip()
+    feel_change = str(ans.get("Q19_2", "")).strip()
+
+    flight_line = _fmt_pref_line(flight_sat, flight_change)
+    feel_line = _fmt_pref_line(feel_sat, feel_change)
+
+    # Header bar (now includes flight/feel)
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -45,11 +55,13 @@ def render_recommendations_tab(
 <div><b>SPECS:</b> {ans.get('Q13','')} L / {ans.get('Q14','')} SW</div>
 <div><b>GRIP/BALL:</b> {ans.get('Q06','')}/{ans.get('Q07','')}</div>
 <div><b>ENVIRONMENT:</b> {environment}</div>
+<div><b>FLIGHT:</b> {flight_line or "<span class='smallcap'>not answered</span>"}</div>
+<div><b>FEEL:</b> {feel_line or "<span class='smallcap'>not answered</span>"}</div>
 </div></div>""",
         unsafe_allow_html=True,
     )
 
-    # Show winner summary if we have it
+    # Winner summary (if available)
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
