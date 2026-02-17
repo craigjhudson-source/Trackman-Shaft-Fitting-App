@@ -6,7 +6,11 @@ from typing import Any, Dict, Optional
 import pandas as pd
 import streamlit as st
 
-from core.efficiency_optimizer import EfficiencyConfig, build_comparison_table, pick_efficiency_winner
+from core.efficiency_optimizer import (
+    EfficiencyConfig,
+    build_comparison_table,
+    pick_efficiency_winner,
+)
 from core.phase6_optimizer import phase6_recommendations
 from ui.tour_proven_matrix import render_tour_proven_matrix
 
@@ -17,28 +21,27 @@ def render_intelligence_block(
     baseline_shaft_id: Optional[str],
     answers: Dict[str, Any],
     environment: str,
-    MIN_SHOTS: int,
-    WARN_FACE_TO_PATH_SD: float,
-    WARN_CARRY_SD: float,
-    WARN_SMASH_SD: float,
-) -> None:
+    MIN_SHOTS: int = 8,
+    WARN_FACE_TO_PATH_SD: float = 3.0,
+    WARN_CARRY_SD: float = 10.0,
+    WARN_SMASH_SD: float = 0.10,
+) -> Optional[Dict[str, Any]]:
     """
-    Safe, modular Intelligence section:
-    - ALWAYS defines comparison_df (prevents NameError)
-    - Builds comparison table if possible
-    - Renders Tour Proven Matrix
-    - Renders Baseline Comparison table
-    - Picks winner and shows confidence warnings
-    - Runs Phase 6 recs
-    """
+    Renders the full Intelligence block inside TrackMan Lab:
+      1) Baseline Comparison Table (Efficiency + Confidence)
+      2) Efficiency Winner banner + quality warnings
+      3) Tour Proven Matrix (5-bucket recommendation)
+      4) Phase 6 optimizer suggestions for the efficiency winner
 
-    # Prevent NameError forever:
-    comparison_df = pd.DataFrame()
+    Returns:
+      phase6_recs (list[dict]) or None
+    """
 
     if lab_df is None or lab_df.empty:
-        st.info("Upload files to begin correlation.")
-        return
+        st.info("Upload and log TrackMan data (click ➕ Add) to enable the intelligence layer.")
+        return None
 
+    # ------------------ Build comparison table ------------------
     eff_cfg = EfficiencyConfig(
         MIN_SHOTS=int(MIN_SHOTS),
         WARN_FACE_TO_PATH_SD=float(WARN_FACE_TO_PATH_SD),
@@ -52,33 +55,25 @@ def render_intelligence_block(
         cfg=eff_cfg,
     )
 
-    # --- Tour Proven Matrix (new) ---
-    render_tour_proven_matrix(
-        comparison_df,
-        baseline_shaft_id,
-        answers,
-    )
-
-    # --- Baseline table ---
     st.subheader("📊 Baseline Comparison Table")
 
     display_cols = ["Shaft", "Carry Δ", "Launch Δ", "Spin Δ", "Smash", "Dispersion", "Efficiency", "Confidence"]
     if comparison_df is not None and not comparison_df.empty:
-        cols = [c for c in display_cols if c in comparison_df.columns]
-        st.dataframe(comparison_df[cols], use_container_width=True, hide_index=True, height=320)
+        safe_cols = [c for c in display_cols if c in comparison_df.columns]
+        st.dataframe(comparison_df[safe_cols], use_container_width=True, hide_index=True, height=320)
     else:
         st.info("No comparison rows yet. Add at least one logged shaft set.")
-        return
+        return None
 
-    # --- Winner ---
+    # ------------------ Pick winner + show warnings ------------------
     winner = pick_efficiency_winner(comparison_df)
     if winner is None:
         st.warning("No efficiency winner could be computed yet.")
-        return
+        return None
 
     st.success(
-        f"🏆 **Efficiency Winner:** {winner.get('Shaft','')} "
-        f"(Efficiency {winner.get('Efficiency','')} | Confidence {winner.get('Confidence','')})"
+        f"🏆 **Efficiency Winner:** {winner['Shaft']} "
+        f"(Efficiency {winner['Efficiency']} | Confidence {winner['Confidence']})"
     )
 
     flags = winner.get("_flags") or {}
@@ -91,33 +86,36 @@ def render_intelligence_block(
     if flags.get("high_smash_sd"):
         st.warning(f"⚠️ Smash SD high (> {float(WARN_SMASH_SD):.3f}). Confidence reduced.")
 
-    # --- Phase 6 ---
+    st.divider()
+
+    # ------------------ Tour Proven Matrix ------------------
+    # IMPORTANT: keyword args required (tour_proven_matrix signature enforces this)
+    render_tour_proven_matrix(
+        comparison_df,
+        baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
+        answers=answers or {},
+        environment_qid="Q22",
+    )
+
+    st.divider()
+
+    # ------------------ Phase 6 Optimization Suggestions ------------------
     st.subheader("Phase 6 Optimization Suggestions")
 
+    # Find row in lab_df matching the winning shaft id (fallback to first row)
+    w_id = str(winner.get("Shaft ID", ""))
     try:
-        w_id = str(winner.get("Shaft ID", "")).strip()
-        if w_id and "Shaft ID" in lab_df.columns:
-            w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id]
-            winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
-        else:
-            winner_row = lab_df.iloc[0]
+        w_match = lab_df[lab_df["Shaft ID"].astype(str) == w_id]
+        winner_row = w_match.iloc[0] if len(w_match) else lab_df.iloc[0]
+    except Exception:
+        winner_row = lab_df.iloc[0]
 
-        recs = phase6_recommendations(
-            winner_row,
-            baseline_row=None,
-            club="6i",
-            environment=environment,
-        )
+    recs = phase6_recommendations(
+        winner_row,
+        baseline_row=None,
+        club="6i",
+        environment=environment,
+    )
 
-        # Return these to app.py via session_state if you want
-        st.session_state.phase6_recs = recs
-
-        for r in recs:
-            sev = r.get("severity")
-            if sev == "warn":
-                st.warning(f"{r.get('type','Note')}: {r.get('text','')}")
-            else:
-                st.info(f"{r.get('type','Note')}: {r.get('text','')}")
-
-    except Exception as e:
-        st.error(f"Phase 6 optimizer error: {e}")
+    # Return to caller to include in PDF if desired
+    return {"phase6_recs": recs}
