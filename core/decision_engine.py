@@ -1,4 +1,3 @@
-# core/decision_engine.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,12 +21,54 @@ def _to_float(x) -> Optional[float]:
         return None
 
 
-def _z(series: pd.Series) -> pd.Series:
-    s = pd.to_numeric(series, errors="coerce")
+def _z(x: Any) -> pd.Series:
+    """
+    Robust z-score helper.
+
+    Accepts:
+      - pandas Series (preferred)
+      - list/tuple/numpy array
+      - scalar numbers (float/int)
+      - None
+
+    Returns:
+      - pandas Series
+        * If input was a Series, output preserves its index/length.
+        * If input was scalar, output is length-1 Series.
+        * If input is array-like, output matches that length.
+    """
+    # Preserve index when possible
+    if isinstance(x, pd.Series):
+        s = pd.to_numeric(x, errors="coerce")
+        idx = x.index
+    else:
+        # Scalar / None / array-like -> normalize to Series
+        if x is None:
+            s = pd.Series([np.nan])
+        elif isinstance(x, (int, float, np.number)):
+            s = pd.Series([float(x)])
+        else:
+            try:
+                s = pd.Series(list(x))
+            except Exception:
+                s = pd.Series([np.nan])
+        s = pd.to_numeric(s, errors="coerce")
+        idx = s.index
+
+    # Handle empty / all-NaN
+    if len(s) == 0:
+        return pd.Series([], dtype="float64", index=idx)
+
+    if s.isna().all():
+        return pd.Series([0.0] * len(s), index=idx)
+
     mu = s.mean(skipna=True)
     sd = s.std(skipna=True)
-    if sd is None or np.isnan(sd) or sd == 0:
-        return pd.Series([0.0] * len(series), index=series.index)
+
+    # Guard against sd = 0 / NaN
+    if sd is None or (isinstance(sd, float) and np.isnan(sd)) or float(sd) == 0.0:
+        return pd.Series([0.0] * len(s), index=idx)
+
     return (s - mu) / sd
 
 
@@ -245,8 +286,10 @@ def build_tour_proven_matrix(
         raw_dist = _z(carry_delta)
     dist = (raw_dist.rank(pct=True).fillna(0.5) * 100.0).round(1)
 
-    disp = compute_dispersion_blend(df) if (("Face To Path SD" in df.columns) or ("Carry SD" in df.columns)) else pd.Series(
-        [50.0] * len(df), index=df.index
+    disp = (
+        compute_dispersion_blend(df)
+        if (("Face To Path SD" in df.columns) or ("Carry SD" in df.columns))
+        else pd.Series([50.0] * len(df), index=df.index)
     )
     hold = compute_hold_index(df, environment=environment, cfg=cfg)
     flight = compute_flight_window_score(df, answers=answers)
