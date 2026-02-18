@@ -9,6 +9,20 @@ from utils_pdf import create_pdf_bytes
 from utils import send_email_with_pdf
 
 
+def _to_float(x: Any, default: float = 0.0) -> float:
+    try:
+        if x is None:
+            return float(default)
+        if isinstance(x, str):
+            s = x.strip()
+            if s == "" or s.lower() in {"nan", "none", "—", "-"}:
+                return float(default)
+            return float(s)
+        return float(x)
+    except Exception:
+        return float(default)
+
+
 def _winner_ready() -> bool:
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
@@ -117,7 +131,7 @@ def _tested_shaft_ids() -> Set[str]:
 
 def _index_is_row_numbers(idx: pd.Index) -> bool:
     """
-    True if idx looks like 0..N-1 or 1..N, which is almost always a row-number index.
+    True if idx looks like 0..N-1 or 1..N (row-number index).
     """
     try:
         vals = list(idx.tolist())
@@ -147,8 +161,8 @@ def _index_is_row_numbers(idx: pd.Index) -> bool:
 
 def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
     """
-    Prefer an explicit ID column, otherwise use a non-row-number index (even if numeric),
-    because shaft IDs can be numeric.
+    Prefer an explicit ID column, otherwise use a non-row-number index
+    (even if numeric), because shaft IDs can be numeric.
     """
     if d is None or d.empty:
         return None
@@ -186,6 +200,7 @@ def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
 
     id_series = _extract_id_series(d)
     if id_series is not None:
+        d = d.copy()
         d.insert(0, "ID", [str(x).strip() for x in id_series.values])
         d["ID"] = d["ID"].astype(str).str.strip().replace({"nan": "", "None": "", "NaN": ""})
         cols = ["ID"] + [c for c in d.columns if c != "ID"]
@@ -364,19 +379,21 @@ def _pick_interview_short_list(
 def _result_to_row(r: Any) -> Dict[str, Any]:
     if r is None:
         return {}
+
     if isinstance(r, dict):
-        return {
-            "Shaft ID": str(r.get("shaft_id", "")).strip() or str(r.get("Shaft ID", "")).strip(),
-            "Shaft": str(r.get("shaft_label", "")).strip() or str(r.get("Shaft", "")).strip(),
-            "Score": float(r.get("overall_score", r.get("Score", 0.0)) or 0.0),
-            "Why": " | ".join([str(x) for x in (r.get("reasons") or [])][:3]) or str(r.get("Why", "") or ""),
-        }
-    return {
-        "Shaft ID": str(getattr(r, "shaft_id", "")).strip(),
-        "Shaft": str(getattr(r, "shaft_label", "")).strip(),
-        "Score": float(getattr(r, "overall_score", 0.0) or 0.0),
-        "Why": " | ".join([str(x) for x in (getattr(r, "reasons", None) or [])][:3]),
-    }
+        sid = str(r.get("shaft_id", "")).strip() or str(r.get("Shaft ID", "")).strip()
+        lab = str(r.get("shaft_label", "")).strip() or str(r.get("Shaft", "")).strip()
+        score = _to_float(r.get("overall_score", r.get("Score", 0.0)), 0.0)
+        why = " | ".join([str(x) for x in (r.get("reasons") or [])][:3]).strip()
+        if not why:
+            why = str(r.get("Why", "") or "").strip()
+        return {"Shaft ID": sid, "Shaft": lab, "Score": score, "Why": why}
+
+    sid = str(getattr(r, "shaft_id", "")).strip()
+    lab = str(getattr(r, "shaft_label", "")).strip()
+    score = _to_float(getattr(r, "overall_score", 0.0), 0.0)
+    why = " | ".join([str(x) for x in (getattr(r, "reasons", None) or [])][:3]).strip()
+    return {"Shaft ID": sid, "Shaft": lab, "Score": score, "Why": why}
 
 
 def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) -> None:
@@ -406,7 +423,7 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
     st.write(f"**{lab}**  (ID {sid})")
     if g_val is not None:
         st.caption(f"Goal score: {g_val:.2f}")
-    if reasons:
+    if isinstance(reasons, list) and reasons:
         for b in reasons[:3]:
             st.write(f"- {b}")
 
@@ -445,10 +462,9 @@ def render_recommendations_tab(
 ) -> None:
     _refresh_controls()
 
-    # Q23 = main driver
     q23 = str(ans.get("Q23", "")).strip()
 
-    # Flight/Feel mapping (keep your current fields; safe if blank)
+    # Flight/Feel mapping (safe if blank)
     flight_current = str(ans.get("Q16_1", "")).strip()
     flight_happy = str(ans.get("Q16_2", "")).strip()
     flight_target = str(ans.get("Q16_3", "")).strip()
@@ -469,7 +485,6 @@ def render_recommendations_tab(
     if feel_target:
         feel_line = _fmt_pref_line(feel_line, feel_target)
 
-    # Header bar (includes Q23)
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -490,7 +505,6 @@ def render_recommendations_tab(
     # -----------------------------
     gr = _get_goal_payload()
 
-    # Normalize: we accept either "results" or a winner_summary-only payload
     has_results = isinstance(gr, dict) and isinstance(gr.get("results", None), list) and len(gr.get("results", [])) > 0
     has_winner_only = isinstance(gr, dict) and isinstance(gr.get("winner_summary", None), dict)
 
@@ -499,11 +513,12 @@ def render_recommendations_tab(
 
         baseline_id = None
         if isinstance(gr, dict):
-            baseline_id = gr.get("baseline_shaft_id", None) or gr.get("baseline_tag_id", None) or st.session_state.get(
-                "baseline_tag_id", None
+            baseline_id = (
+                gr.get("baseline_shaft_id", None)
+                or gr.get("baseline_tag_id", None)
+                or st.session_state.get("baseline_tag_id", None)
             )
 
-        # Top result
         if has_results:
             results = gr.get("results", [])
             top = results[0] if results else None
@@ -514,7 +529,6 @@ def render_recommendations_tab(
                 if why:
                     st.caption(why)
 
-            # Per-goal winners (optional)
             top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
             if top_by_goal:
                 st.markdown("#### Best shaft by goal")
@@ -524,13 +538,11 @@ def render_recommendations_tab(
                     with gcols[0] if i % 2 == 0 else gcols[1]:
                         _goal_best_to_card(best, goal_name, str(baseline_id) if baseline_id else None)
 
-            # Leaderboard
             st.markdown("#### Goal Scorecard Leaderboard")
             rows = [_result_to_row(r) for r in results[:8]]
             if rows:
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-            # Next round suggestions (optional)
             next_round = _next_round_from_goal_payload(gr, max_n=3)
             st.subheader("🧪 Next Round to Test (after first round)")
             if next_round:
@@ -539,7 +551,6 @@ def render_recommendations_tab(
             else:
                 st.info("No new shafts to recommend yet — log additional candidates or widen the test set.")
 
-        # Winner-only payload (bridge mode)
         if (not has_results) and has_winner_only:
             ws = gr.get("winner_summary", {})
             shaft_label = ws.get("shaft_label") or "Winner selected"
