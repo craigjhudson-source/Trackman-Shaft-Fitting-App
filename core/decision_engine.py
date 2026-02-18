@@ -21,6 +21,18 @@ def _to_float(x) -> Optional[float]:
         return None
 
 
+def _as_series(df: pd.DataFrame, col: str) -> pd.Series:
+    """
+    Always return a Series aligned to df.index.
+    If col missing, returns all-NaN series (same length/index).
+    """
+    if df is None or df.empty:
+        return pd.Series([], dtype="float64")
+    if col in df.columns:
+        return pd.to_numeric(df[col], errors="coerce")
+    return pd.Series([np.nan] * len(df), index=df.index, dtype="float64")
+
+
 def _z(x: Any) -> pd.Series:
     """
     Robust z-score helper.
@@ -37,12 +49,10 @@ def _z(x: Any) -> pd.Series:
         * If input was scalar, output is length-1 Series.
         * If input is array-like, output matches that length.
     """
-    # Preserve index when possible
     if isinstance(x, pd.Series):
         s = pd.to_numeric(x, errors="coerce")
         idx = x.index
     else:
-        # Scalar / None / array-like -> normalize to Series
         if x is None:
             s = pd.Series([np.nan])
         elif isinstance(x, (int, float, np.number)):
@@ -55,7 +65,6 @@ def _z(x: Any) -> pd.Series:
         s = pd.to_numeric(s, errors="coerce")
         idx = s.index
 
-    # Handle empty / all-NaN
     if len(s) == 0:
         return pd.Series([], dtype="float64", index=idx)
 
@@ -65,8 +74,10 @@ def _z(x: Any) -> pd.Series:
     mu = s.mean(skipna=True)
     sd = s.std(skipna=True)
 
-    # Guard against sd = 0 / NaN
-    if sd is None or (isinstance(sd, float) and np.isnan(sd)) or float(sd) == 0.0:
+    try:
+        if sd is None or np.isnan(sd) or float(sd) == 0.0:
+            return pd.Series([0.0] * len(s), index=idx)
+    except Exception:
         return pd.Series([0.0] * len(s), index=idx)
 
     return (s - mu) / sd
@@ -77,8 +88,14 @@ def _soft_tradeoff_line(delta_carry: Optional[float]) -> Optional[str]:
     Soft phrasing everywhere.
     Shows if abs(delta) >= 2.0 yards, rounded to nearest 0.5.
     """
-    if delta_carry is None or np.isnan(delta_carry):
+    if delta_carry is None:
         return None
+    try:
+        if np.isnan(delta_carry):
+            return None
+    except Exception:
+        return None
+
     if abs(delta_carry) < 2.0:
         return None
     rounded = round(delta_carry * 2.0) / 2.0
@@ -132,9 +149,9 @@ def compute_hold_index(table_df: pd.DataFrame, *, environment: str, cfg: Decisio
     if col_land is None and col_spin is None and col_h is None:
         return pd.Series([50.0] * len(table_df), index=table_df.index)
 
-    z_land = _z(table_df[col_land]) if col_land else pd.Series([0.0] * len(table_df), index=table_df.index)
-    z_spin = _z(table_df[col_spin]) if col_spin else pd.Series([0.0] * len(table_df), index=table_df.index)
-    z_h = _z(table_df[col_h]) if col_h else pd.Series([0.0] * len(table_df), index=table_df.index)
+    z_land = _z(pd.to_numeric(table_df[col_land], errors="coerce")) if col_land else pd.Series([0.0] * len(table_df), index=table_df.index)
+    z_spin = _z(pd.to_numeric(table_df[col_spin], errors="coerce")) if col_spin else pd.Series([0.0] * len(table_df), index=table_df.index)
+    z_h = _z(pd.to_numeric(table_df[col_h], errors="coerce")) if col_h else pd.Series([0.0] * len(table_df), index=table_df.index)
 
     if indoor:
         w_land, w_spin, w_h = cfg.HOLD_INDOOR_W_LAND, cfg.HOLD_INDOOR_W_SPIN, cfg.HOLD_INDOOR_W_HEIGHT
@@ -155,9 +172,9 @@ def compute_dispersion_blend(table_df: pd.DataFrame) -> pd.Series:
     ftp_sd = pd.to_numeric(table_df.get("Face To Path SD"), errors="coerce")
     carry_sd = pd.to_numeric(table_df.get("Carry SD"), errors="coerce")
 
-    if ftp_sd is None or ftp_sd.isna().all():
+    if ftp_sd is None or getattr(ftp_sd, "isna", lambda: pd.Series([True]))().all():
         ftp_sd = pd.Series([np.nan] * len(table_df), index=table_df.index)
-    if carry_sd is None or carry_sd.isna().all():
+    if carry_sd is None or getattr(carry_sd, "isna", lambda: pd.Series([True]))().all():
         carry_sd = pd.Series([np.nan] * len(table_df), index=table_df.index)
 
     z_ftp = _z(ftp_sd)
@@ -198,9 +215,9 @@ def compute_flight_window_score(table_df: pd.DataFrame, *, answers: Dict[str, An
     col_h = _safe_col(table_df, "Max Height - Height", "Peak Height", "Max Height")
     col_land = _safe_col(table_df, "Carry Flat - Land. Angle", "Landing Angle", "Land. Angle")
 
-    z_launch = _z(table_df[col_launch]) if col_launch else pd.Series([0.0] * len(table_df), index=table_df.index)
-    z_h = _z(table_df[col_h]) if col_h else pd.Series([0.0] * len(table_df), index=table_df.index)
-    z_land = _z(table_df[col_land]) if col_land else pd.Series([0.0] * len(table_df), index=table_df.index)
+    z_launch = _z(pd.to_numeric(table_df[col_launch], errors="coerce")) if col_launch else pd.Series([0.0] * len(table_df), index=table_df.index)
+    z_h = _z(pd.to_numeric(table_df[col_h], errors="coerce")) if col_h else pd.Series([0.0] * len(table_df), index=table_df.index)
+    z_land = _z(pd.to_numeric(table_df[col_land], errors="coerce")) if col_land else pd.Series([0.0] * len(table_df), index=table_df.index)
 
     if want == "higher":
         raw = (0.45 * z_launch) + (0.35 * z_h) + (0.20 * z_land)
@@ -273,15 +290,22 @@ def build_tour_proven_matrix(
         return {"matrix": [], "highlighted": None, "too_close": False, "too_close_reason": None}
 
     df = comparison_table.copy()
-    df["Shaft ID"] = df["Shaft ID"].astype(str)
+    if "Shaft ID" in df.columns:
+        df["Shaft ID"] = df["Shaft ID"].astype(str)
+    else:
+        df["Shaft ID"] = ""
+
     base_id = str(baseline_shaft_id) if baseline_shaft_id is not None else None
 
-    eff = pd.to_numeric(df.get("Efficiency"), errors="coerce").fillna(0.0)
+    eff = pd.to_numeric(df.get("Efficiency"), errors="coerce")
+    if not isinstance(eff, pd.Series):
+        eff = pd.Series([0.0] * len(df), index=df.index)
+    eff = eff.fillna(0.0)
 
-    carry_delta = pd.to_numeric(df.get("Carry Δ"), errors="coerce")
+    carry_delta = _as_series(df, "Carry Δ")
     if carry_delta.isna().all():
-        carry_abs = pd.to_numeric(df.get("Carry"), errors="coerce")
-        raw_dist = _z(carry_abs) if carry_abs is not None else pd.Series([0.0] * len(df), index=df.index)
+        carry_abs = _as_series(df, "Carry")
+        raw_dist = _z(carry_abs)
     else:
         raw_dist = _z(carry_delta)
     dist = (raw_dist.rank(pct=True).fillna(0.5) * 100.0).round(1)
@@ -315,7 +339,12 @@ def build_tour_proven_matrix(
     df["_score_feel"] = feel
 
     def pick_best(score_col: str) -> pd.Series:
-        tmp = df.sort_values([score_col, "Confidence"], ascending=[False, False])
+        conf = pd.to_numeric(df.get("Confidence"), errors="coerce")
+        if not isinstance(conf, pd.Series):
+            conf = pd.Series([0.0] * len(df), index=df.index)
+        tmp = df.copy()
+        tmp["_conf"] = conf.fillna(0.0)
+        tmp = tmp.sort_values([score_col, "_conf"], ascending=[False, False])
         return tmp.iloc[0]
 
     overall_w = pick_best("_score_overall")
@@ -326,7 +355,13 @@ def build_tour_proven_matrix(
     feel_w = pick_best("_score_feel")
 
     # too close
-    tmp_overall = df.sort_values(["_score_overall", "Confidence"], ascending=[False, False]).reset_index(drop=True)
+    conf = pd.to_numeric(df.get("Confidence"), errors="coerce")
+    if not isinstance(conf, pd.Series):
+        conf = pd.Series([0.0] * len(df), index=df.index)
+    tmp_overall = df.copy()
+    tmp_overall["_conf"] = conf.fillna(0.0)
+    tmp_overall = tmp_overall.sort_values(["_score_overall", "_conf"], ascending=[False, False]).reset_index(drop=True)
+
     too_close = False
     too_close_reason = None
     if len(tmp_overall) >= 2:
@@ -347,7 +382,7 @@ def build_tour_proven_matrix(
     # highlighted pick (never baseline)
     highlighted = overall_w
     if base_id is not None and str(overall_w.get("Shaft ID")) == base_id:
-        alt = df[df["Shaft ID"] != base_id].sort_values(["_score_overall", "Confidence"], ascending=[False, False])
+        alt = df[df["Shaft ID"] != base_id].sort_values(["_score_overall"], ascending=[False])
         if not alt.empty:
             highlighted = alt.iloc[0]
 
@@ -357,7 +392,7 @@ def build_tour_proven_matrix(
         base_rows = df[df["Shaft ID"] == base_id]
         if not base_rows.empty:
             base = base_rows.iloc[0]
-            alt_df = df[df["Shaft ID"] != base_id].sort_values(["_score_overall", "Confidence"], ascending=[False, False])
+            alt_df = df[df["Shaft ID"] != base_id].sort_values(["_score_overall"], ascending=[False])
             if not alt_df.empty:
                 best_alt = alt_df.iloc[0]
 
