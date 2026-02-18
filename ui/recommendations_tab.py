@@ -1,7 +1,7 @@
 # ui/recommendations_tab.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, List, Set
+from typing import Any, Dict, Optional, List, Set, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -79,9 +79,6 @@ def _baseline_logged() -> bool:
 
 
 def _tested_shaft_ids() -> Set[str]:
-    """
-    Shaft IDs already logged in Trackman Lab (dedupe next-round suggestions).
-    """
     out: Set[str] = set()
     try:
         lab = st.session_state.get("tm_lab_data", None)
@@ -98,7 +95,44 @@ def _tested_shaft_ids() -> Set[str]:
     return out
 
 
+def _index_is_row_numbers(idx: pd.Index) -> bool:
+    """
+    True if idx looks like 0..N-1 or 1..N, which is almost always a row-number index.
+    """
+    try:
+        vals = list(idx.tolist())
+        if len(vals) == 0:
+            return True
+
+        # RangeIndex that starts at 0, step 1 is row numbers
+        if isinstance(idx, pd.RangeIndex) and idx.start == 0 and idx.step == 1:
+            return True
+
+        # Try numeric compare
+        nums = pd.to_numeric(pd.Series(vals), errors="coerce")
+        if nums.isna().any():
+            return False
+
+        n = len(vals)
+        seq0 = list(range(0, n))
+        seq1 = list(range(1, n + 1))
+
+        # If exactly sequential, it's row numbers
+        if nums.astype(int).tolist() == seq0:
+            return True
+        if nums.astype(int).tolist() == seq1:
+            return True
+
+        return False
+    except Exception:
+        return True
+
+
 def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
+    """
+    Prefer an explicit ID column, otherwise use a non-row-number index (even if numeric),
+    because your shaft IDs (24, 51, 27, ...) are numeric.
+    """
     if d is None or d.empty:
         return None
 
@@ -110,14 +144,11 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
         if k in cols:
             return d[k].astype(str).str.strip()
 
+    # Fallback: use index if it doesn't look like row numbers
     try:
-        if isinstance(d.index, pd.RangeIndex):
+        if _index_is_row_numbers(d.index):
             return None
-        idx = pd.Series([str(x).strip() for x in d.index.tolist()])
-        numeric = pd.to_numeric(idx, errors="coerce")
-        if numeric.notna().mean() > 0.8:
-            return None
-        return idx
+        return pd.Series([str(x).strip() for x in d.index.tolist()])
     except Exception:
         return None
 
@@ -125,77 +156,206 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
 def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
     """
     Ensures a stable 'ID' column without crashing if 'ID' already exists.
-    Also avoids lying with row numbers.
+    Avoids inserting wrong row-number IDs.
     """
     if df is None or df.empty:
         return pd.DataFrame()
 
     d = df.copy()
 
-    # If ID already exists, just normalize and move to front.
     if "ID" in d.columns:
         try:
             d["ID"] = d["ID"].astype(str).str.strip()
+            d["ID"] = d["ID"].replace({"nan": "", "None": "", "NaN": ""})
         except Exception:
             pass
         cols = ["ID"] + [c for c in d.columns if c != "ID"]
-        d = d[cols].reset_index(drop=True)
-        return d
+        return d[cols].reset_index(drop=True)
 
     id_series = _extract_id_series(d)
     if id_series is not None:
         d = d.copy()
-
-        # Safety: drop any ID-like columns we’re about to replace
-        for k in ["Shaft ID", "shaft_id", "shaftId", "ShaftId"]:
-            if k in d.columns:
-                d = d.drop(columns=[k], errors="ignore")
-
         d.insert(0, "ID", [str(x).strip() for x in id_series.values])
-
+        d["ID"] = d["ID"].astype(str).str.strip().replace({"nan": "", "None": "", "NaN": ""})
         cols = ["ID"] + [c for c in d.columns if c != "ID"]
-        d = d[cols].reset_index(drop=True)
-        return d
+        return d[cols].reset_index(drop=True)
 
-    # No usable ID; return without adding wrong IDs
     return d.reset_index(drop=True)
+
+
+def _gamer_identity(ans: Dict[str, Any]) -> Tuple[str, str, str]:
+    brand = str(ans.get("Q10", "")).strip().lower()
+    model = str(ans.get("Q12", "")).strip().lower()
+    flex = str(ans.get("Q11", "")).strip().lower()
+    return brand, model, flex
 
 
 def _gamer_row(ans: Dict[str, Any]) -> Dict[str, Any]:
     brand = str(ans.get("Q10", "")).strip()
     model = str(ans.get("Q12", "")).strip()
     flex = str(ans.get("Q11", "")).strip()
-    wt = str(ans.get("Q14", "")).strip()
     label = " ".join([x for x in [brand, model] if x]).strip() or "Current Gamer"
     return {
         "ID": "GAMER",
         "Brand": brand or "—",
         "Model": model or label,
         "Flex": flex or "—",
-        "Weight (g)": wt or "—",
+        "Weight (g)": "—",
     }
 
 
-def _pick_interview_short_list(all_winners: Dict[str, pd.DataFrame], max_additional: int = 3) -> pd.DataFrame:
-    picks: List[pd.DataFrame] = []
-    seen: set = set()
+def _goal_key_from_q23(q23: str) -> str:
+    """
+    Decide which interview bucket(s) to prioritize from Q23.
+    Q23 is intended to be the MAIN driver for initial suggestions.
+    """
+    s = (q23 or "").strip().lower()
 
-    order = ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]
-    for key in order:
+    # Adjust these keywords to match your actual Q23 wording
+    if any(k in s for k in ["lower", "bring down", "flatten", "reduce height", "too high"]):
+        return "lower"
+    if any(k in s for k in ["higher", "more height", "launch", "help launch", "get up"]):
+        return "higher"
+    if any(k in s for k in ["dispersion", "tighten", "accuracy", "left/right", "stable", "stability"]):
+        return "stability"
+    if any(k in s for k in ["feel", "smooth", "load", "harsh", "boardy"]):
+        return "feel"
+    return "balanced"
+
+
+def _bucket_priority_from_q23(q23: str) -> List[str]:
+    key = _goal_key_from_q23(q23)
+
+    # Keys must match your all_winners dict keys exactly
+    if key == "higher":
+        return ["Launch & Height", "Balanced", "Feel & Smoothness", "Maximum Stability"]
+    if key == "lower":
+        # Lower flight generally = keep it stable / reduce dynamic loft tendencies
+        return ["Maximum Stability", "Balanced", "Feel & Smoothness", "Launch & Height"]
+    if key == "stability":
+        return ["Maximum Stability", "Balanced", "Launch & Height", "Feel & Smoothness"]
+    if key == "feel":
+        return ["Feel & Smoothness", "Balanced", "Maximum Stability", "Launch & Height"]
+    return ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]
+
+
+def _normalize_shortlist(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    d = df.copy()
+
+    # Normalize columns
+    for c in ["ID", "Brand", "Model", "Flex", "Weight (g)"]:
+        if c not in d.columns:
+            d[c] = ""
+        try:
+            d[c] = d[c].astype(str).str.strip()
+        except Exception:
+            pass
+
+    # Replace common pandas string-nans
+    d["ID"] = d["ID"].replace({"nan": "", "None": "", "NaN": ""})
+
+    keep = ["ID", "Brand", "Model", "Flex", "Weight (g)"]
+    return d[keep].reset_index(drop=True)
+
+
+def _dedupe_shortlist(df: pd.DataFrame, gamer_ans: Dict[str, Any]) -> pd.DataFrame:
+    """
+    - Remove anything that matches gamer identity (brand/model/flex) so gamer doesn't appear twice.
+    - Remove duplicates by ID if present, otherwise by (brand, model, flex).
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    d = _normalize_shortlist(df)
+
+    g_brand, g_model, g_flex = _gamer_identity(gamer_ans)
+
+    def _norm(x: str) -> str:
+        return (x or "").strip().lower()
+
+    # Drop gamer duplicates (not the GAMER row)
+    keep_rows: List[int] = []
+    for i, r in d.iterrows():
+        rid = _norm(str(r.get("ID", "")))
+        b = _norm(str(r.get("Brand", "")))
+        m = _norm(str(r.get("Model", "")))
+        f = _norm(str(r.get("Flex", "")))
+
+        if rid != "gamer" and b == g_brand and m == g_model and f == g_flex:
+            continue
+        keep_rows.append(i)
+
+    d = d.iloc[keep_rows].reset_index(drop=True)
+
+    seen_ids: Set[str] = set()
+    seen_keys: Set[Tuple[str, str, str]] = set()
+    out_rows: List[Dict[str, Any]] = []
+
+    for _, r in d.iterrows():
+        rid = str(r.get("ID", "")).strip()
+        b = str(r.get("Brand", "")).strip()
+        m = str(r.get("Model", "")).strip()
+        f = str(r.get("Flex", "")).strip()
+
+        key = (_norm(b), _norm(m), _norm(f))
+
+        if rid and rid.upper() != "GAMER":
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+        else:
+            # No ID? Dedupe by identity
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+        out_rows.append(
+            {"ID": rid, "Brand": b, "Model": m, "Flex": f, "Weight (g)": str(r.get("Weight (g)", "")).strip()}
+        )
+
+    return pd.DataFrame(out_rows)
+
+
+def _pick_interview_short_list(all_winners: Dict[str, pd.DataFrame], ans: Dict[str, Any], max_additional: int = 3) -> pd.DataFrame:
+    """
+    Picks 2–3 shafts based on Q23 priority, using the FIRST row of each prioritized bucket,
+    but ensures we keep true shaft IDs (from column ID or from non-row-number index).
+    """
+    picks: List[pd.DataFrame] = []
+    used: Set[str] = set()
+
+    priorities = _bucket_priority_from_q23(str(ans.get("Q23", "")).strip())
+
+    for key in priorities:
         df = all_winners.get(key, None)
         if not isinstance(df, pd.DataFrame) or df.empty:
             continue
 
         t = _table_with_id(df)
+        t = _normalize_shortlist(t)
         if t.empty:
             continue
 
         r = t.iloc[[0]].copy()
-        sid = str(r.iloc[0].get("ID", "")).strip()
-        if sid and sid in seen:
-            continue
-        if sid:
-            seen.add(sid)
+
+        rid = str(r.iloc[0].get("ID", "")).strip()
+        if rid:
+            if rid in used:
+                continue
+            used.add(rid)
+        else:
+            # If no ID, use identity as uniqueness
+            b = str(r.iloc[0].get("Brand", "")).strip().lower()
+            m = str(r.iloc[0].get("Model", "")).strip().lower()
+            f = str(r.iloc[0].get("Flex", "")).strip().lower()
+            k = f"{b}|{m}|{f}"
+            if k in used:
+                continue
+            used.add(k)
+
         picks.append(r)
 
         if len(picks) >= max_additional:
@@ -205,8 +365,7 @@ def _pick_interview_short_list(all_winners: Dict[str, pd.DataFrame], max_additio
         return pd.DataFrame()
 
     out = pd.concat(picks, axis=0, ignore_index=True)
-    keep = [c for c in ["ID", "Brand", "Model", "Flex", "Weight (g)"] if c in out.columns]
-    return out[keep] if keep else out
+    return _normalize_shortlist(out)
 
 
 def _result_to_row(r: Any) -> Dict[str, Any]:
@@ -260,10 +419,6 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
 
 
 def _next_round_from_goal_rankings(gr: Dict[str, Any], max_n: int = 3) -> List[Dict[str, Any]]:
-    """
-    Next-round picks should NOT repeat shafts already tested in lab.
-    Also excludes baseline itself.
-    """
     baseline_id = str(gr.get("baseline_shaft_id", "") or "").strip()
     results = gr.get("results", []) or []
 
@@ -297,6 +452,10 @@ def render_recommendations_tab(
 ) -> None:
     _refresh_controls()
 
+    # Q23 = main driver
+    q23 = str(ans.get("Q23", "")).strip()
+
+    # Flight/Feel mapping
     flight_current = str(ans.get("Q16_1", "")).strip()
     flight_happy = str(ans.get("Q16_2", "")).strip()
     flight_target = str(ans.get("Q16_3", "")).strip()
@@ -317,6 +476,7 @@ def render_recommendations_tab(
     if feel_target:
         feel_line = _fmt_pref_line(feel_line, feel_target)
 
+    # Header bar (now includes Q23)
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -327,10 +487,12 @@ def render_recommendations_tab(
 <div><b>ENVIRONMENT:</b> {environment}</div>
 <div><b>FLIGHT:</b> {flight_line or "<span class='smallcap'>not answered</span>"}</div>
 <div><b>FEEL:</b> {feel_line or "<span class='smallcap'>not answered</span>"}</div>
+<div><b>PRIMARY GOAL (Q23):</b> {q23 or "<span class='smallcap'>not answered</span>"}</div>
 </div></div>""",
         unsafe_allow_html=True,
     )
 
+    # Goal-based recommendations (Trackman Lab)
     gr = _get_goal_rankings()
     if gr and gr.get("results"):
         st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
@@ -377,6 +539,7 @@ def render_recommendations_tab(
         )
         st.divider()
 
+    # Winner summary (Trackman Lab intelligence)
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
@@ -387,21 +550,19 @@ def render_recommendations_tab(
         if explain:
             st.caption(explain)
 
-    # Interview section behavior:
-    # - If baseline not logged: show a small modern shortlist.
-    # - If baseline logged: hide the old interview section by default.
+    # Pre-test (before baseline logged): show gamer + 2–3 based on Q23 priority
     if not _baseline_logged():
         st.subheader("🧠 Pre-Test Short List (before baseline testing is logged)")
-        st.caption(
-            "This stays short to avoid old/legacy UI. Once baseline is logged, Trackman/goal scoring takes over."
-        )
+        st.caption("Driven by Q23. Stays short until baseline is logged; then Trackman/goal scoring takes over.")
 
         gamer = pd.DataFrame([_gamer_row(ans)])
-        shortlist = _pick_interview_short_list(all_winners, max_additional=3)
+        shortlist = _pick_interview_short_list(all_winners, ans, max_additional=3)
 
         combined = gamer
         if isinstance(shortlist, pd.DataFrame) and not shortlist.empty:
             combined = pd.concat([gamer, shortlist], axis=0, ignore_index=True)
+
+        combined = _dedupe_shortlist(combined, ans)
 
         st.dataframe(_table_with_id(combined), use_container_width=True, hide_index=True)
         st.divider()
@@ -409,6 +570,7 @@ def render_recommendations_tab(
         with st.expander("Show legacy interview section (optional)", expanded=False):
             st.subheader("🧠 Interview Starting Point (reference only)")
             st.caption("Baseline is logged — Trackman/goal scoring should be your main decision driver now.")
+
             cats = [
                 ("Balanced", "⚖️ Balanced"),
                 ("Maximum Stability", "🛡️ Stability"),
@@ -432,6 +594,7 @@ def render_recommendations_tab(
 
         st.divider()
 
+    # PDF sending
     st.subheader("📄 Send PDF Report")
 
     if not p_email:
