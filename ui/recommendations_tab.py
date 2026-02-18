@@ -1,7 +1,7 @@
 # ui/recommendations_tab.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Set
 
 import pandas as pd
 import streamlit as st
@@ -29,9 +29,6 @@ def _fmt_pref_line(primary: str, followup: str) -> str:
 
 
 def _refresh_controls() -> None:
-    """
-    Refresh button + optional auto-refresh signaling based on Trackman updates.
-    """
     c1, c2, c3 = st.columns([1, 1, 3])
 
     if c1.button("🔄 Refresh Recommendations"):
@@ -59,10 +56,6 @@ def _get_goal_rankings() -> Optional[Dict[str, Any]]:
 
 
 def _baseline_logged() -> bool:
-    """
-    True when we have Trackman lab rows AND baseline appears to be present.
-    (Prevents showing big “old” interview buckets until baseline exists.)
-    """
     lab = st.session_state.get("tm_lab_data", None)
     if not isinstance(lab, list) or len(lab) == 0:
         return False
@@ -80,20 +73,32 @@ def _baseline_logged() -> bool:
             return False
         if "Shaft ID" in df.columns:
             return (df["Shaft ID"].astype(str).str.strip() == b).any()
-        # If we can’t verify Shaft ID, still consider “some lab exists”
         return True
     except Exception:
         return True
 
 
+def _tested_shaft_ids() -> Set[str]:
+    """
+    Shaft IDs already logged in Trackman Lab (dedupe next-round suggestions).
+    """
+    out: Set[str] = set()
+    try:
+        lab = st.session_state.get("tm_lab_data", None)
+        if not isinstance(lab, list) or len(lab) == 0:
+            return out
+        df = pd.DataFrame(lab)
+        if df.empty:
+            return out
+        if "Shaft ID" in df.columns:
+            vals = df["Shaft ID"].astype(str).str.strip()
+            out.update([v for v in vals.tolist() if v])
+    except Exception:
+        return out
+    return out
+
+
 def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
-    """
-    Returns a best-effort ID series from a DF.
-    Priority:
-      1) "ID"
-      2) common variants: "Shaft ID", "shaft_id", "shaftId"
-      3) index only if it's clearly not a default RangeIndex
-    """
     if d is None or d.empty:
         return None
 
@@ -105,15 +110,12 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
         if k in cols:
             return d[k].astype(str).str.strip()
 
-    # Only use index if it doesn't look like a default 0..N RangeIndex
     try:
         if isinstance(d.index, pd.RangeIndex):
             return None
         idx = pd.Series([str(x).strip() for x in d.index.tolist()])
-        # if most are numeric 0..N-1, it's probably not a real ID
         numeric = pd.to_numeric(idx, errors="coerce")
         if numeric.notna().mean() > 0.8:
-            # still might be real IDs, but default row-ish IDs are common—avoid
             return None
         return idx
     except Exception:
@@ -122,42 +124,48 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
 
 def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Ensures a stable "ID" column for display. Avoids falling back to row numbers
-    when an ID-like column exists.
+    Ensures a stable 'ID' column without crashing if 'ID' already exists.
+    Also avoids lying with row numbers.
     """
     if df is None or df.empty:
         return pd.DataFrame()
 
     d = df.copy()
 
+    # If ID already exists, just normalize and move to front.
+    if "ID" in d.columns:
+        try:
+            d["ID"] = d["ID"].astype(str).str.strip()
+        except Exception:
+            pass
+        cols = ["ID"] + [c for c in d.columns if c != "ID"]
+        d = d[cols].reset_index(drop=True)
+        return d
+
     id_series = _extract_id_series(d)
     if id_series is not None:
         d = d.copy()
-        d.insert(0, "ID", id_series.values)
-        # Remove duplicate ID-like columns if present
+
+        # Safety: drop any ID-like columns we’re about to replace
         for k in ["Shaft ID", "shaft_id", "shaftId", "ShaftId"]:
             if k in d.columns:
                 d = d.drop(columns=[k], errors="ignore")
 
-    # If we still don't have ID, leave it out (better than wrong row numbers)
-    if "ID" in d.columns:
-        cols = ["ID"] + [c for c in d.columns if c != "ID"]
-        d = d[cols]
+        d.insert(0, "ID", [str(x).strip() for x in id_series.values])
 
-    # Always hide index in Streamlit tables
-    d = d.reset_index(drop=True)
-    return d
+        cols = ["ID"] + [c for c in d.columns if c != "ID"]
+        d = d[cols].reset_index(drop=True)
+        return d
+
+    # No usable ID; return without adding wrong IDs
+    return d.reset_index(drop=True)
 
 
 def _gamer_row(ans: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Simple “Gamer” display row (ID may be unknown here, but this keeps the UI honest).
-    """
     brand = str(ans.get("Q10", "")).strip()
     model = str(ans.get("Q12", "")).strip()
     flex = str(ans.get("Q11", "")).strip()
-    wt = str(ans.get("Q14", "")).strip()  # not perfect, but better than blank in UI
-
+    wt = str(ans.get("Q14", "")).strip()
     label = " ".join([x for x in [brand, model] if x]).strip() or "Current Gamer"
     return {
         "ID": "GAMER",
@@ -168,18 +176,10 @@ def _gamer_row(ans: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _pick_interview_short_list(
-    all_winners: Dict[str, pd.DataFrame],
-    max_additional: int = 3,
-) -> pd.DataFrame:
-    """
-    Returns 2–3 unique shafts from the existing interview winners, without showing
-    the full legacy 4 tables.
-    """
+def _pick_interview_short_list(all_winners: Dict[str, pd.DataFrame], max_additional: int = 3) -> pd.DataFrame:
     picks: List[pd.DataFrame] = []
     seen: set = set()
 
-    # Prefer Balanced first, then Stability, then Launch
     order = ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]
     for key in order:
         df = all_winners.get(key, None)
@@ -190,7 +190,6 @@ def _pick_interview_short_list(
         if t.empty:
             continue
 
-        # take up to 1 per bucket to keep it short
         r = t.iloc[[0]].copy()
         sid = str(r.iloc[0].get("ID", "")).strip()
         if sid and sid in seen:
@@ -206,7 +205,6 @@ def _pick_interview_short_list(
         return pd.DataFrame()
 
     out = pd.concat(picks, axis=0, ignore_index=True)
-    # Keep only common columns if present
     keep = [c for c in ["ID", "Brand", "Model", "Flex", "Weight (g)"] if c in out.columns]
     return out[keep] if keep else out
 
@@ -263,20 +261,23 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
 
 def _next_round_from_goal_rankings(gr: Dict[str, Any], max_n: int = 3) -> List[Dict[str, Any]]:
     """
-    Suggest next shafts to test after the first round:
-    - pulls from goal_rankings results
-    - excludes baseline
+    Next-round picks should NOT repeat shafts already tested in lab.
+    Also excludes baseline itself.
     """
     baseline_id = str(gr.get("baseline_shaft_id", "") or "").strip()
-    results = gr.get("results", [])
-    out: List[Dict[str, Any]] = []
+    results = gr.get("results", []) or []
 
-    for r in results or []:
+    tested = _tested_shaft_ids()
+    if baseline_id:
+        tested.add(baseline_id)
+
+    out: List[Dict[str, Any]] = []
+    for r in results:
         row = _result_to_row(r)
         sid = str(row.get("Shaft ID", "")).strip()
         if not sid:
             continue
-        if baseline_id and sid == baseline_id:
+        if sid in tested:
             continue
         out.append(row)
         if len(out) >= max_n:
@@ -296,7 +297,6 @@ def render_recommendations_tab(
 ) -> None:
     _refresh_controls()
 
-    # Flight/Feel mapping
     flight_current = str(ans.get("Q16_1", "")).strip()
     flight_happy = str(ans.get("Q16_2", "")).strip()
     flight_target = str(ans.get("Q16_3", "")).strip()
@@ -317,7 +317,6 @@ def render_recommendations_tab(
     if feel_target:
         feel_line = _fmt_pref_line(feel_line, feel_target)
 
-    # Header bar
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -332,7 +331,6 @@ def render_recommendations_tab(
         unsafe_allow_html=True,
     )
 
-    # ---------------- Goal-based Trackman Recommendations ----------------
     gr = _get_goal_rankings()
     if gr and gr.get("results"):
         st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
@@ -362,12 +360,14 @@ def render_recommendations_tab(
         if rows:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-        # Next round list (this is what you asked for: “after first round…”)
         next_round = _next_round_from_goal_rankings(gr, max_n=3)
         if next_round:
             st.subheader("🧪 Next Round to Test (after first round)")
-            st.caption("These are the next shafts to test to chase your stated goal/flight change.")
+            st.caption("Filtered to avoid repeating shafts already logged in Trackman Lab.")
             st.dataframe(pd.DataFrame(next_round), use_container_width=True, hide_index=True)
+        else:
+            st.subheader("🧪 Next Round to Test (after first round)")
+            st.info("No new shafts to recommend yet — log additional candidates or widen the test set.")
 
         st.divider()
     else:
@@ -377,24 +377,23 @@ def render_recommendations_tab(
         )
         st.divider()
 
-    # Winner summary (even if goal_rankings missing)
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
         shaft_label = ws.get("shaft_label") or "Winner selected"
         explain = ws.get("explain") or ""
-
         st.subheader("🏆 Winner (from Trackman Lab Intelligence)")
         st.success(f"**{headline}:** {shaft_label}")
         if explain:
             st.caption(explain)
 
-    # ---------------- Interview Section (Slim + modern) ----------------
+    # Interview section behavior:
+    # - If baseline not logged: show a small modern shortlist.
+    # - If baseline logged: hide the old interview section by default.
     if not _baseline_logged():
         st.subheader("🧠 Pre-Test Short List (before baseline testing is logged)")
         st.caption(
-            "We keep this light on purpose. Once you log your baseline in Trackman Lab, "
-            "Trackman/goal scoring takes over."
+            "This stays short to avoid old/legacy UI. Once baseline is logged, Trackman/goal scoring takes over."
         )
 
         gamer = pd.DataFrame([_gamer_row(ans)])
@@ -405,34 +404,11 @@ def render_recommendations_tab(
             combined = pd.concat([gamer, shortlist], axis=0, ignore_index=True)
 
         st.dataframe(_table_with_id(combined), use_container_width=True, hide_index=True)
-
-        with st.expander("Legacy interview buckets (optional)", expanded=False):
-            st.caption("These are kept for reference, but are no longer the main UI once Trackman baseline exists.")
-            cats = [
-                ("Balanced", "⚖️ Balanced"),
-                ("Maximum Stability", "🛡️ Stability"),
-                ("Launch & Height", "🚀 Launch"),
-                ("Feel & Smoothness", "☁️ Feel"),
-            ]
-            col1, col2 = st.columns(2)
-            v_items = list(verdicts.items())
-
-            for i, (cat, c_name) in enumerate(cats):
-                with col1 if i < 2 else col2:
-                    st.markdown(f"### {c_name}")
-                    if cat in all_winners and isinstance(all_winners[cat], pd.DataFrame):
-                        st.dataframe(_table_with_id(all_winners[cat]), use_container_width=True, hide_index=True)
-                        blurb = v_items[i][1] if i < len(v_items) else "Optimized."
-                        st.markdown(
-                            f"<div class='verdict-text'><b>Verdict:</b> {blurb}</div>",
-                            unsafe_allow_html=True,
-                        )
-
         st.divider()
     else:
-        st.subheader("🧠 Interview Starting Point (reference only)")
-        st.caption("Baseline is logged — Trackman/goal scoring should be your main decision driver now.")
-        with st.expander("Show interview buckets", expanded=False):
+        with st.expander("Show legacy interview section (optional)", expanded=False):
+            st.subheader("🧠 Interview Starting Point (reference only)")
+            st.caption("Baseline is logged — Trackman/goal scoring should be your main decision driver now.")
             cats = [
                 ("Balanced", "⚖️ Balanced"),
                 ("Maximum Stability", "🛡️ Stability"),
@@ -441,11 +417,13 @@ def render_recommendations_tab(
             ]
             col1, col2 = st.columns(2)
             v_items = list(verdicts.items())
+
             for i, (cat, c_name) in enumerate(cats):
                 with col1 if i < 2 else col2:
                     st.markdown(f"### {c_name}")
-                    if cat in all_winners and isinstance(all_winners[cat], pd.DataFrame):
-                        st.dataframe(_table_with_id(all_winners[cat]), use_container_width=True, hide_index=True)
+                    df = all_winners.get(cat, None)
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        st.dataframe(_table_with_id(df), use_container_width=True, hide_index=True)
                         blurb = v_items[i][1] if i < len(v_items) else "Optimized."
                         st.markdown(
                             f"<div class='verdict-text'><b>Verdict:</b> {blurb}</div>",
@@ -454,7 +432,6 @@ def render_recommendations_tab(
 
         st.divider()
 
-    # ---------------- PDF sending ----------------
     st.subheader("📄 Send PDF Report")
 
     if not p_email:
