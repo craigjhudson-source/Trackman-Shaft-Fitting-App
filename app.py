@@ -162,7 +162,6 @@ def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame])
         if hn == "timestamp":
             row_out.append(now_ts)
         else:
-            # If header is a QID itself, map directly; otherwise leave blank
             if str(h).strip().upper().startswith("Q"):
                 qid = str(h).strip().upper().replace(".", "_")
                 row_out.append(answers.get(qid, ""))
@@ -170,6 +169,76 @@ def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame])
                 row_out.append("")
 
     ws_fit.append_row(row_out, value_input_option="USER_ENTERED")
+
+
+# ------------------
+# ID FIX: winners must carry Shafts-sheet ID (not df.index)
+# ------------------
+def _attach_ids_to_winner_tables(
+    all_winners: Dict[str, pd.DataFrame],
+    shafts_master: pd.DataFrame,
+) -> Dict[str, pd.DataFrame]:
+    """
+    Ensures every winner table has the real Shafts-sheet 'ID' column.
+    Prevents the UI from accidentally using dataframe index (off-by-one).
+    """
+    if not isinstance(all_winners, dict):
+        return all_winners
+    if shafts_master is None or shafts_master.empty:
+        return all_winners
+    if "ID" not in shafts_master.columns:
+        return all_winners
+
+    m = shafts_master.copy()
+    for c in ["ID", "Brand", "Model", "Flex", "Weight (g)", "Weight"]:
+        if c in m.columns:
+            m[c] = m[c].astype(str).str.strip()
+
+    out: Dict[str, pd.DataFrame] = {}
+
+    for k, df in all_winners.items():
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            out[k] = df
+            continue
+
+        t = df.copy()
+
+        # If already has ID column, normalize
+        if "ID" in t.columns:
+            try:
+                t["ID"] = t["ID"].astype(str).str.strip()
+            except Exception:
+                pass
+            out[k] = t
+            continue
+
+        # Try to attach IDs by matching Brand+Model(+Flex)
+        ids: List[str] = []
+        for _, r in t.iterrows():
+            b = str(r.get("Brand", "")).strip().lower()
+            mo = str(r.get("Model", "")).strip().lower()
+            f = str(r.get("Flex", "")).strip().lower()
+
+            hit = m[
+                (m.get("Brand", "").astype(str).str.strip().str.lower() == b)
+                & (m.get("Model", "").astype(str).str.strip().str.lower() == mo)
+            ]
+
+            # If flex present on both sides, tighten the match
+            if f and "Flex" in m.columns:
+                hit2 = hit[hit["Flex"].astype(str).str.strip().str.lower() == f]
+                if not hit2.empty:
+                    hit = hit2
+
+            if not hit.empty:
+                ids.append(str(hit.iloc[0]["ID"]).strip())
+            else:
+                ids.append("")
+
+        t.insert(0, "ID", ids)
+        out[k] = t
+
+    return out
 
 
 # ------------------ Load sheet ------------------
@@ -200,9 +269,14 @@ categories = list(dict.fromkeys(q_master["Category"].astype(str).tolist()))
 # ------------------ App flow ------------------
 st.title("Tour Proven Shaft Fitting")
 
-# Import UI renderers safely (this is what will show you the real SyntaxError)
-render_interview = _safe_import("ui.interview.render_interview", lambda: __import__("ui.interview", fromlist=["render_interview"]).render_interview)
-render_trackman_tab = _safe_import("ui.trackman_tab.render_trackman_tab", lambda: __import__("ui.trackman_tab", fromlist=["render_trackman_tab"]).render_trackman_tab)
+render_interview = _safe_import(
+    "ui.interview.render_interview",
+    lambda: __import__("ui.interview", fromlist=["render_interview"]).render_interview,
+)
+render_trackman_tab = _safe_import(
+    "ui.trackman_tab.render_trackman_tab",
+    lambda: __import__("ui.trackman_tab", fromlist=["render_trackman_tab"]).render_trackman_tab,
+)
 render_recommendations_tab = _safe_import(
     "ui.recommendations_tab.render_recommendations_tab",
     lambda: __import__("ui.recommendations_tab", fromlist=["render_recommendations_tab"]).render_recommendations_tab,
@@ -245,11 +319,22 @@ try:
 except Exception:
     carry_6i = 150.0
 
+# Predict winners
 all_winners = predict_shaft_winners(all_data["Shafts"], carry_6i)
+
+# ✅ Fix IDs right here so downstream UI always receives correct ID column
+all_winners = _attach_ids_to_winner_tables(all_winners, all_data["Shafts"])
 
 verdicts: Dict[str, str] = {}
 desc = all_data.get("Descriptions", pd.DataFrame())
-desc_map = dict(zip(desc["Model"], desc["Blurb"])) if desc is not None and not desc.empty and "Model" in desc.columns and "Blurb" in desc.columns else {}
+desc_map = (
+    dict(zip(desc["Model"], desc["Blurb"]))
+    if desc is not None
+    and not desc.empty
+    and "Model" in desc.columns
+    and "Blurb" in desc.columns
+    else {}
+)
 
 for k in all_winners:
     try:
@@ -268,6 +353,7 @@ with tab_report:
         all_winners=all_winners,
         verdicts=verdicts,
         environment=st.session_state.environment,
+        shafts_df=all_data.get("Shafts", pd.DataFrame()),  # ✅ for gamer weight + robust ID usage
     )
 
 with tab_lab:
