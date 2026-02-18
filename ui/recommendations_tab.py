@@ -1,3 +1,4 @@
+# ui/recommendations_tab.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, List, Set, Tuple
@@ -7,20 +8,6 @@ import streamlit as st
 
 from utils_pdf import create_pdf_bytes
 from utils import send_email_with_pdf
-
-
-def _to_float(x: Any, default: float = 0.0) -> float:
-    try:
-        if x is None:
-            return float(default)
-        if isinstance(x, str):
-            s = x.strip()
-            if s == "" or s.lower() in {"nan", "none", "—", "-"}:
-                return float(default)
-            return float(s)
-        return float(x)
-    except Exception:
-        return float(default)
 
 
 def _winner_ready() -> bool:
@@ -131,7 +118,7 @@ def _tested_shaft_ids() -> Set[str]:
 
 def _index_is_row_numbers(idx: pd.Index) -> bool:
     """
-    True if idx looks like 0..N-1 or 1..N (row-number index).
+    True if idx looks like 0..N-1 or 1..N, which is almost always a row-number index.
     """
     try:
         vals = list(idx.tolist())
@@ -161,8 +148,12 @@ def _index_is_row_numbers(idx: pd.Index) -> bool:
 
 def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
     """
-    Prefer an explicit ID column, otherwise use a non-row-number index
-    (even if numeric), because shaft IDs can be numeric.
+    Prefer an explicit ID column.
+
+    IMPORTANT:
+      Do NOT use dataframe index as ID if the index is numeric,
+      because subsets of the Shafts sheet often preserve original row index (0-based),
+      which creates off-by-one bugs (index=10 vs ID=11).
     """
     if d is None or d.empty:
         return None
@@ -175,6 +166,15 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
         if k in cols:
             return d[k].astype(str).str.strip()
 
+    # Never trust numeric index as ID
+    try:
+        nums = pd.to_numeric(pd.Series(d.index.tolist()), errors="coerce")
+        if not nums.isna().any():
+            return None
+    except Exception:
+        return None
+
+    # If index is non-numeric AND not row numbers, it might be a true ID
     try:
         if _index_is_row_numbers(d.index):
             return None
@@ -184,6 +184,10 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
 
 
 def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensures a stable 'ID' column without crashing if 'ID' already exists.
+    Avoids inserting wrong row-number IDs.
+    """
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -216,17 +220,73 @@ def _gamer_identity(ans: Dict[str, Any]) -> Tuple[str, str, str]:
     return brand, model, flex
 
 
-def _gamer_row(ans: Dict[str, Any]) -> Dict[str, Any]:
+def _lookup_gamer_weight(ans: Dict[str, Any], shafts_df: Optional[pd.DataFrame]) -> str:
+    """
+    Attempts to find the gamer in the Shafts sheet and return Weight (g).
+    Matches by Brand + Model (+ Flex when present).
+    """
+    if shafts_df is None or not isinstance(shafts_df, pd.DataFrame) or shafts_df.empty:
+        return "—"
+
+    g_brand, g_model, g_flex = _gamer_identity(ans)
+    if not g_brand or not g_model:
+        return "—"
+
+    m = shafts_df.copy()
+    for c in ["Brand", "Model", "Flex", "Weight (g)", "Weight"]:
+        if c in m.columns:
+            m[c] = m[c].astype(str).str.strip()
+
+    if "Brand" not in m.columns or "Model" not in m.columns:
+        return "—"
+
+    hit = m[
+        (m["Brand"].astype(str).str.strip().str.lower() == g_brand)
+        & (m["Model"].astype(str).str.strip().str.lower() == g_model)
+    ]
+
+    if g_flex and "Flex" in m.columns:
+        hit2 = hit[hit["Flex"].astype(str).str.strip().str.lower() == g_flex]
+        if not hit2.empty:
+            hit = hit2
+
+    if hit.empty:
+        return "—"
+
+    r = hit.iloc[0]
+    w = ""
+    if "Weight (g)" in hit.columns:
+        w = str(r.get("Weight (g)", "")).strip()
+    if not w and "Weight" in hit.columns:
+        w = str(r.get("Weight", "")).strip()
+
+    if not w or w.lower() in {"nan", "none"}:
+        return "—"
+
+    # Clean things like "129.0"
+    try:
+        fw = float(w)
+        if fw.is_integer():
+            return str(int(fw))
+        return str(fw)
+    except Exception:
+        return w
+
+
+def _gamer_row(ans: Dict[str, Any], shafts_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     brand = str(ans.get("Q10", "")).strip()
     model = str(ans.get("Q12", "")).strip()
     flex = str(ans.get("Q11", "")).strip()
     label = " ".join([x for x in [brand, model] if x]).strip() or "Current Gamer"
+
+    w = _lookup_gamer_weight(ans, shafts_df)
+
     return {
         "ID": "GAMER",
         "Brand": brand or "—",
         "Model": model or label,
         "Flex": flex or "—",
-        "Weight (g)": "—",
+        "Weight (g)": w or "—",
     }
 
 
@@ -273,20 +333,27 @@ def _normalize_shortlist(df: pd.DataFrame) -> pd.DataFrame:
             pass
 
     d["ID"] = d["ID"].replace({"nan": "", "None": "", "NaN": ""})
+
     keep = ["ID", "Brand", "Model", "Flex", "Weight (g)"]
     return d[keep].reset_index(drop=True)
 
 
 def _dedupe_shortlist(df: pd.DataFrame, gamer_ans: Dict[str, Any]) -> pd.DataFrame:
+    """
+    - Remove anything that matches gamer identity (brand/model/flex) so gamer doesn't appear twice.
+    - Remove duplicates by ID if present, otherwise by (brand, model, flex).
+    """
     if df is None or df.empty:
         return pd.DataFrame()
 
     d = _normalize_shortlist(df)
+
     g_brand, g_model, g_flex = _gamer_identity(gamer_ans)
 
     def _norm(x: str) -> str:
         return (x or "").strip().lower()
 
+    # Drop gamer duplicates (not the GAMER row)
     keep_rows: List[int] = []
     for i, r in d.iterrows():
         rid = _norm(str(r.get("ID", "")))
@@ -333,6 +400,13 @@ def _pick_interview_short_list(
     ans: Dict[str, Any],
     max_additional: int = 3,
 ) -> pd.DataFrame:
+    """
+    Picks 2–3 shafts based on Q23 priority, using the FIRST row of each prioritized bucket.
+
+    IMPORTANT:
+      We expect all_winners tables to already contain a real 'ID' column (from app.py fix).
+      We still call _table_with_id() for safety, but it will never invent numeric IDs from index now.
+    """
     picks: List[pd.DataFrame] = []
     used: Set[str] = set()
 
@@ -379,21 +453,19 @@ def _pick_interview_short_list(
 def _result_to_row(r: Any) -> Dict[str, Any]:
     if r is None:
         return {}
-
     if isinstance(r, dict):
-        sid = str(r.get("shaft_id", "")).strip() or str(r.get("Shaft ID", "")).strip()
-        lab = str(r.get("shaft_label", "")).strip() or str(r.get("Shaft", "")).strip()
-        score = _to_float(r.get("overall_score", r.get("Score", 0.0)), 0.0)
-        why = " | ".join([str(x) for x in (r.get("reasons") or [])][:3]).strip()
-        if not why:
-            why = str(r.get("Why", "") or "").strip()
-        return {"Shaft ID": sid, "Shaft": lab, "Score": score, "Why": why}
-
-    sid = str(getattr(r, "shaft_id", "")).strip()
-    lab = str(getattr(r, "shaft_label", "")).strip()
-    score = _to_float(getattr(r, "overall_score", 0.0), 0.0)
-    why = " | ".join([str(x) for x in (getattr(r, "reasons", None) or [])][:3]).strip()
-    return {"Shaft ID": sid, "Shaft": lab, "Score": score, "Why": why}
+        return {
+            "Shaft ID": str(r.get("shaft_id", "")).strip() or str(r.get("Shaft ID", "")).strip(),
+            "Shaft": str(r.get("shaft_label", "")).strip() or str(r.get("Shaft", "")).strip(),
+            "Score": float(r.get("overall_score", r.get("Score", 0.0)) or 0.0),
+            "Why": " | ".join([str(x) for x in (r.get("reasons") or [])][:3]) or str(r.get("Why", "") or ""),
+        }
+    return {
+        "Shaft ID": str(getattr(r, "shaft_id", "")).strip(),
+        "Shaft": str(getattr(r, "shaft_label", "")).strip(),
+        "Score": float(getattr(r, "overall_score", 0.0) or 0.0),
+        "Why": " | ".join([str(x) for x in (getattr(r, "reasons", None) or [])][:3]),
+    }
 
 
 def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) -> None:
@@ -423,7 +495,7 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
     st.write(f"**{lab}**  (ID {sid})")
     if g_val is not None:
         st.caption(f"Goal score: {g_val:.2f}")
-    if isinstance(reasons, list) and reasons:
+    if reasons:
         for b in reasons[:3]:
             st.write(f"- {b}")
 
@@ -459,9 +531,11 @@ def render_recommendations_tab(
     all_winners: Dict[str, pd.DataFrame],
     verdicts: Dict[str, str],
     environment: str,
+    shafts_df: Optional[pd.DataFrame] = None,
 ) -> None:
     _refresh_controls()
 
+    # Q23 = main driver
     q23 = str(ans.get("Q23", "")).strip()
 
     # Flight/Feel mapping (safe if blank)
@@ -485,6 +559,7 @@ def render_recommendations_tab(
     if feel_target:
         feel_line = _fmt_pref_line(feel_line, feel_target)
 
+    # Header bar
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -513,10 +588,8 @@ def render_recommendations_tab(
 
         baseline_id = None
         if isinstance(gr, dict):
-            baseline_id = (
-                gr.get("baseline_shaft_id", None)
-                or gr.get("baseline_tag_id", None)
-                or st.session_state.get("baseline_tag_id", None)
+            baseline_id = gr.get("baseline_shaft_id", None) or gr.get("baseline_tag_id", None) or st.session_state.get(
+                "baseline_tag_id", None
             )
 
         if has_results:
@@ -588,7 +661,7 @@ def render_recommendations_tab(
         st.subheader("🧠 Pre-Test Short List (before baseline testing is logged)")
         st.caption("Driven by Q23. Stays short until baseline is logged; then Trackman/goal scoring takes over.")
 
-        gamer = pd.DataFrame([_gamer_row(ans)])
+        gamer = pd.DataFrame([_gamer_row(ans, shafts_df=shafts_df)])
         shortlist = _pick_interview_short_list(all_winners, ans, max_additional=3)
 
         combined = gamer
@@ -596,7 +669,6 @@ def render_recommendations_tab(
             combined = pd.concat([gamer, shortlist], axis=0, ignore_index=True)
 
         combined = _dedupe_shortlist(combined, ans)
-
         st.dataframe(_table_with_id(combined), use_container_width=True, hide_index=True)
         st.divider()
     else:
