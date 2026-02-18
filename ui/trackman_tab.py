@@ -1,4 +1,3 @@
-# ui/trackman_tab.py
 from __future__ import annotations
 
 import datetime
@@ -9,6 +8,7 @@ import streamlit as st
 
 from core.trackman import load_trackman, summarize_trackman, debug_trackman
 from core.trackman_display import render_trackman_session
+from core.pretest_shortlist import build_pretest_shortlist
 
 UI_INTEL_AVAILABLE = True
 try:
@@ -37,30 +37,10 @@ def _ensure_lab_controls() -> None:
             st.session_state.lab_controls.setdefault(k, v)
 
 
-def _ensure_persistence_defaults() -> None:
-    st.session_state.setdefault("tm_preview_df", None)
-    st.session_state.setdefault("tm_preview_name", None)
-    st.session_state.setdefault("tm_preview_time", None)
-
-    # legacy mirrors
+def _ensure_preview_persistence_defaults() -> None:
     st.session_state.setdefault("tm_last_preview_df", None)
     st.session_state.setdefault("tm_last_preview_name", None)
     st.session_state.setdefault("tm_last_preview_time", None)
-
-    st.session_state.setdefault("tm_data_version", 0)
-    st.session_state.setdefault("tm_lab_data", [])
-    st.session_state.setdefault("answers", {})
-    st.session_state.setdefault("environment", "Indoors (Mat)")
-
-    st.session_state.setdefault("goal_recommendations", None)
-    st.session_state.setdefault("goal_recs", None)
-    st.session_state.setdefault("phase6_recs", None)
-    st.session_state.setdefault("winner_summary", None)
-
-
-def _controls_complete() -> bool:
-    _ensure_lab_controls()
-    return all(bool(v) for v in st.session_state.lab_controls.values())
 
 
 def _bump_tm_refresh() -> None:
@@ -69,6 +49,11 @@ def _bump_tm_refresh() -> None:
     except Exception:
         st.session_state.tm_data_version = 1
     st.session_state.tm_last_update = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _controls_complete() -> bool:
+    _ensure_lab_controls()
+    return all(bool(v) for v in st.session_state.lab_controls.values())
 
 
 def _extract_tag_ids(raw_df: pd.DataFrame) -> List[str]:
@@ -122,7 +107,7 @@ def _filter_by_tag(raw_df: pd.DataFrame, tag_id: str) -> pd.DataFrame:
 
     s = raw_df["Tags"].astype(str).str.strip()
 
-    def _norm(x: Any) -> str:
+    def _norm(x):
         try:
             fx = float(str(x))
             return str(int(fx)) if fx.is_integer() else str(x)
@@ -133,7 +118,7 @@ def _filter_by_tag(raw_df: pd.DataFrame, tag_id: str) -> pd.DataFrame:
     return raw_df.loc[s_norm == str(tag_id)].copy()
 
 
-def _process_trackman_file(uploaded_file, shaft_id):
+def _process_trackman_file(uploaded_file, shaft_id: str):
     """
     Returns (raw_df, stat_dict) on success, (None, None) on failure.
     """
@@ -147,6 +132,7 @@ def _process_trackman_file(uploaded_file, shaft_id):
         if hasattr(raw, "columns"):
             raw = raw.loc[:, ~raw.columns.duplicated()].copy()
 
+        # IMPORTANT: pass real shaft_id (Shafts!ID)
         stat = summarize_trackman(raw, shaft_id, include_std=True)
 
         required_any = any(
@@ -158,6 +144,46 @@ def _process_trackman_file(uploaded_file, shaft_id):
         return raw, stat
     except Exception:
         return None, None
+
+
+def _find_baseline_shaft_id_from_answers(ans: Dict[str, Any], shafts_df: pd.DataFrame) -> Optional[str]:
+    """
+    Attempts to match the interview's current/gamer answers to Shafts sheet.
+      Q10 = Brand, Q11 = Flex, Q12 = Model
+    Returns Shafts.ID as string, or None.
+    """
+    if shafts_df is None or shafts_df.empty:
+        return None
+
+    current_brand = str(ans.get("Q10", "")).strip()
+    current_flex = str(ans.get("Q11", "")).strip()
+    current_model = str(ans.get("Q12", "")).strip()
+
+    if not (current_brand and current_model):
+        return None
+
+    df = shafts_df.copy()
+    for c in ["ID", "Brand", "Model", "Flex"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+
+    if "Brand" not in df.columns or "Model" not in df.columns or "ID" not in df.columns:
+        return None
+
+    m = (df["Brand"].str.lower() == current_brand.lower()) & (df["Model"].str.lower() == current_model.lower())
+    if current_flex and "Flex" in df.columns:
+        m = m & (df["Flex"].str.lower() == current_flex.lower())
+
+    hit = df[m]
+    if len(hit) >= 1:
+        return str(hit.iloc[0]["ID"]).strip()
+
+    m2 = (df["Brand"].str.lower() == current_brand.lower()) & (df["Model"].str.lower() == current_model.lower())
+    hit2 = df[m2]
+    if len(hit2) >= 1:
+        return str(hit2.iloc[0]["ID"]).strip()
+
+    return None
 
 
 def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
@@ -180,12 +206,14 @@ def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
             v = intel.get(k, None)
             if v is None:
                 continue
-            if isinstance(v, (pd.DataFrame, pd.Series)) and len(v) == 0:
-                continue
-            if isinstance(v, (list, dict, str)) and not v:
-                continue
-            raw = v
-            break
+            if isinstance(v, (pd.DataFrame, pd.Series)):
+                if len(v) == 0:
+                    continue
+                raw = v
+                break
+            if isinstance(v, (list, dict, str)) and v:
+                raw = v
+                break
 
     if isinstance(raw, dict):
         return {
@@ -208,35 +236,23 @@ def _extract_winner_summary(intel: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _persist_preview(df: pd.DataFrame, name: str) -> None:
-    """
-    ✅ FIXED: previously this function got truncated during paste and caused SyntaxError.
-    Persist preview into canonical keys + legacy mirrors.
-    """
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    st.session_state.tm_preview_df = df
-    st.session_state.tm_preview_name = name
-    st.session_state.tm_preview_time = ts
-
-    # legacy mirrors (in case any older UI reads these)
-    st.session_state.tm_last_preview_df = df
-    st.session_state.tm_last_preview_name = name
-    st.session_state.tm_last_preview_time = ts
-
-
 def render_trackman_tab(
     *,
     all_data: Dict[str, pd.DataFrame],
     answers: Dict[str, Any],
-    all_winners: Dict[str, pd.DataFrame],
+    all_winners: Dict[str, pd.DataFrame],  # kept but no longer used for ID mapping
     MIN_SHOTS: int,
     WARN_FACE_TO_PATH_SD: float,
     WARN_CARRY_SD: float,
     WARN_SMASH_SD: float,
 ) -> None:
     _ensure_lab_controls()
-    _ensure_persistence_defaults()
+    _ensure_preview_persistence_defaults()
+
+    st.session_state.setdefault("environment", "Indoors (Mat)")
+    st.session_state.setdefault("answers", {})
+    st.session_state.setdefault("tm_lab_data", [])
+    st.session_state.setdefault("goal_recs", None)
 
     st.header("🧪 Trackman Lab (Controlled Testing)")
 
@@ -287,38 +303,60 @@ def render_trackman_tab(
     c_up, c_res = st.columns([1, 2])
 
     with c_up:
-        shaft_map = _shaft_label_map(all_data["Shafts"])
+        shafts_df = all_data.get("Shafts", pd.DataFrame())
+        shaft_map = _shaft_label_map(shafts_df)
 
-        # Your existing behavior (default assign)
-        test_list = ["Current Baseline"] + [
-            all_winners[k].iloc[0]["Model"]
-            for k in all_winners
-            if not all_winners[k].empty
-        ]
-        selected_s = st.selectbox("Default Assign (if no Tags in file):", test_list, index=0)
+        baseline_id = _find_baseline_shaft_id_from_answers(answers, shafts_df)
+        baseline_label = shaft_map.get(str(baseline_id), "Current Baseline") if baseline_id else "Current Baseline"
 
-        tm_file = st.file_uploader("Upload Trackman CSV/Excel/PDF", type=["csv", "xlsx", "pdf"])
+        # NEW: default assign list from interview-driven pretest shortlist (real IDs)
+        pretest = build_pretest_shortlist(shafts_df, answers, n=3)
+        pretest_ids = []
+        if isinstance(pretest, pd.DataFrame) and not pretest.empty and "ID" in pretest.columns:
+            pretest_ids = [str(x).strip() for x in pretest["ID"].tolist() if str(x).strip()]
+
+        options_labels = [baseline_label]
+        label_to_id: Dict[str, str] = {}
+
+        if baseline_id:
+            label_to_id[baseline_label] = str(baseline_id)
+
+        for sid in pretest_ids:
+            lab = shaft_map.get(str(sid), f"Unknown Shaft (ID {sid})")
+            if lab not in options_labels:
+                options_labels.append(lab)
+            label_to_id[lab] = str(sid)
+
+        selected_label = st.selectbox("Default Assign (if no Tags in file):", options_labels, index=0)
+        selected_default_id = label_to_id.get(selected_label, str(baseline_id) if baseline_id else "BASELINE")
+
+        tm_file = st.file_uploader(
+            "Upload Trackman CSV/Excel/PDF",
+            type=["csv", "xlsx", "pdf"],
+        )
 
         can_log = tm_file is not None and _controls_complete()
-        raw_preview: Optional[pd.DataFrame] = None
+        raw_preview = None
 
         if tm_file is not None:
             name = getattr(tm_file, "name", "") or ""
             if name.lower().endswith(".pdf"):
                 st.info("PDF uploaded (accepted but not parsed). Export as CSV/XLSX for analysis.")
             else:
-                raw_preview, _ = _process_trackman_file(tm_file, selected_s)
-                if raw_preview is not None and not raw_preview.empty:
-                    _persist_preview(raw_preview, name)
+                raw_preview, _ = _process_trackman_file(tm_file, selected_default_id)
 
-        # If uploader is empty (tab switch), show persisted preview
-        if tm_file is None and st.session_state.tm_preview_df is not None:
+                if raw_preview is not None and not raw_preview.empty:
+                    st.session_state.tm_last_preview_df = raw_preview
+                    st.session_state.tm_last_preview_name = name
+                    st.session_state.tm_last_preview_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if tm_file is None and st.session_state.tm_last_preview_df is not None:
             st.subheader("Last Preview (Persisted)")
             st.caption(
-                f"{st.session_state.tm_preview_name or 'Previous Upload'} "
-                f"• {st.session_state.tm_preview_time or ''}"
+                f"{st.session_state.tm_last_preview_name or 'Previous Upload'} "
+                f"• {st.session_state.tm_last_preview_time or ''}"
             )
-            render_trackman_session(st.session_state.tm_preview_df)
+            render_trackman_session(st.session_state.tm_last_preview_df)
             st.info("Upload the file again to log it to the lab. (Preview persists for reference.)")
 
         if tm_file is not None and raw_preview is None:
@@ -333,6 +371,8 @@ def render_trackman_tab(
                     st.code("\n".join(dbg.get("columns", [])))
                     prev = dbg.get("head_preview")
                     if isinstance(prev, pd.DataFrame):
+                        prev = prev.copy()
+                        prev.columns = [str(c) for c in prev.columns]
                         st.dataframe(prev, use_container_width=True)
 
         elif raw_preview is not None:
@@ -350,10 +390,49 @@ def render_trackman_tab(
                     key="tag_selected_labels",
                 )
 
-                label_to_id = {shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid for tid in tag_ids}
-                st.session_state["selected_tag_ids"] = [label_to_id[x] for x in selected_labels if x in label_to_id]
+                label_to_id2 = {shaft_map.get(tid, f"Unknown Shaft (ID {tid})"): tid for tid in tag_ids}
+                st.session_state["selected_tag_ids"] = [label_to_id2[x] for x in selected_labels if x in label_to_id2]
+
+                selected_tag_ids = st.session_state.get("selected_tag_ids", [])
+                baseline_default_id = None
+                if baseline_id and str(baseline_id) in selected_tag_ids:
+                    baseline_default_id = str(baseline_id)
+                elif selected_tag_ids:
+                    baseline_default_id = str(selected_tag_ids[0])
+
+                if selected_tag_ids:
+                    baseline_options = [shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})") for tid in selected_tag_ids]
+                    label_to_id_selected = {
+                        shaft_map.get(str(tid), f"Unknown Shaft (ID {tid})"): str(tid) for tid in selected_tag_ids
+                    }
+                    default_label = shaft_map.get(str(baseline_default_id), baseline_options[0])
+
+                    st.markdown("### Baseline for comparison")
+                    st.caption("Used for deltas, confidence scoring, and optimizer comparisons.")
+
+                    picked_label = st.selectbox(
+                        "Select the baseline shaft (usually the gamer):",
+                        options=baseline_options,
+                        index=baseline_options.index(default_label) if default_label in baseline_options else 0,
+                        key="baseline_tag_label",
+                    )
+                    st.session_state["baseline_tag_id"] = label_to_id_selected.get(picked_label, baseline_default_id)
+                else:
+                    st.session_state["baseline_tag_id"] = None
+
+                st.markdown("## Split session by shaft (Tags)")
+                for sid in selected_tag_ids:
+                    sub = _filter_by_tag(raw_preview, sid)
+                    label = shaft_map.get(str(sid), f"Unknown Shaft (ID {sid})")
+                    with st.expander(label, expanded=False):
+                        if sub is None or sub.empty:
+                            st.warning("No shots found for this Tag.")
+                        else:
+                            render_trackman_session(sub)
+                            st.caption(f"Shots in this group: {len(sub)}")
             else:
                 st.session_state["selected_tag_ids"] = []
+                st.session_state["baseline_tag_id"] = None
 
         if st.button("➕ Add") and can_log:
             name = getattr(tm_file, "name", "") or ""
@@ -363,21 +442,45 @@ def render_trackman_tab(
                     "Please export TrackMan as **CSV or XLSX** for analysis."
                 )
             else:
-                raw, _ = _process_trackman_file(tm_file, selected_s)
+                raw, _ = _process_trackman_file(tm_file, selected_default_id)
                 if raw is None or raw.empty:
                     st.error("Could not parse TrackMan file (no required metrics found).")
                 else:
-                    # Minimal add behavior preserved from your previous version:
-                    stat = summarize_trackman(raw, selected_s, include_std=True)
-                    stat["Shaft ID"] = str(selected_s)
-                    stat["Shaft Label"] = str(selected_s)
-                    stat["Controlled"] = "Yes"
-                    stat["Environment"] = st.session_state.environment
-                    stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    st.session_state.tm_lab_data.append(stat)
+                    selected_tag_ids = st.session_state.get("selected_tag_ids", [])
+                    if "Tags" in raw.columns and selected_tag_ids:
+                        logged_any = False
+                        for sid in selected_tag_ids:
+                            sub = _filter_by_tag(raw, sid)
+                            if sub is None or sub.empty:
+                                continue
 
-                    _bump_tm_refresh()
-                    st.rerun()
+                            stat = summarize_trackman(sub, str(sid), include_std=True)
+                            stat["Shaft ID"] = str(sid)
+                            stat["Shaft Label"] = shaft_map.get(str(sid), f"Unknown (ID {sid})")
+                            stat["Controlled"] = "Yes"
+                            stat["Environment"] = st.session_state.environment
+                            stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            stat["Baseline Tag"] = st.session_state.get("baseline_tag_id", None)
+
+                            st.session_state.tm_lab_data.append(stat)
+                            logged_any = True
+
+                        if not logged_any:
+                            st.error("No shots matched the selected Tag IDs.")
+                        else:
+                            _bump_tm_refresh()
+                            st.rerun()
+                    else:
+                        stat = summarize_trackman(raw, str(selected_default_id), include_std=True)
+                        stat["Shaft ID"] = str(selected_default_id)
+                        stat["Shaft Label"] = shaft_map.get(str(selected_default_id), str(selected_label))
+                        stat["Controlled"] = "Yes"
+                        stat["Environment"] = st.session_state.environment
+                        stat["Timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        stat["Baseline Tag"] = None
+                        st.session_state.tm_lab_data.append(stat)
+                        _bump_tm_refresh()
+                        st.rerun()
 
         if tm_file is not None and not _controls_complete():
             st.info("Finish Lab Controls above to enable logging.")
@@ -389,9 +492,40 @@ def render_trackman_tab(
             return
 
         lab_df = pd.DataFrame(st.session_state.tm_lab_data)
-        st.dataframe(lab_df, use_container_width=True, hide_index=True, height=420)
+
+        preferred_cols = [
+            "Timestamp",
+            "Shaft ID",
+            "Shaft Label",
+            "Baseline Tag",
+            "Controlled",
+            "Environment",
+            "Shot Count",
+            "Club Speed",
+            "Ball Speed",
+            "Smash Factor",
+            "Carry",
+            "Spin Rate",
+            "Launch Angle",
+            "Landing Angle",
+            "Face To Path",
+            "Dynamic Lie",
+            "Carry Side",
+            "Total Side",
+            "Club Speed SD",
+            "Ball Speed SD",
+            "Smash Factor SD",
+            "Carry SD",
+            "Spin Rate SD",
+            "Face To Path SD",
+            "Dynamic Lie SD",
+        ]
+        show_cols = [c for c in preferred_cols if c in lab_df.columns] + [c for c in lab_df.columns if c not in preferred_cols]
+        st.dataframe(lab_df[show_cols], use_container_width=True, hide_index=True, height=420)
 
         st.divider()
+
+        baseline_shaft_id = st.session_state.get("baseline_tag_id", None)
 
         if not UI_INTEL_AVAILABLE:
             st.error("Intelligence module not available (ui/intelligence.py import failed).")
@@ -399,7 +533,7 @@ def render_trackman_tab(
 
         intel = render_intelligence_block(
             lab_df=lab_df,
-            baseline_shaft_id=None,
+            baseline_shaft_id=str(baseline_shaft_id) if baseline_shaft_id else None,
             answers=st.session_state.answers,
             environment=st.session_state.environment,
             MIN_SHOTS=MIN_SHOTS,
@@ -412,24 +546,21 @@ def render_trackman_tab(
             if intel.get("phase6_recs"):
                 st.session_state.phase6_recs = intel["phase6_recs"]
 
-            # Canonical goal recommendations output
-            if intel.get("goal_recommendations") is not None:
-                st.session_state.goal_recommendations = intel.get("goal_recommendations")
-                st.session_state.goal_recs = st.session_state.goal_recommendations  # legacy mirror
-            elif intel.get("goal_recs") is not None:
-                st.session_state.goal_recommendations = intel.get("goal_recs")
+            if "goal_recs" in intel and intel.get("goal_recs") is not None:
                 st.session_state.goal_recs = intel.get("goal_recs")
 
             ws = _extract_winner_summary(intel)
             if ws:
                 st.session_state.winner_summary = ws
 
-                if st.session_state.get("goal_recommendations") is None:
-                    payload = {
+                if st.session_state.get("goal_recs") is None:
+                    st.session_state.goal_recs = {
                         "source": "trackman_intelligence",
                         "winner_summary": ws,
+                        "baseline_tag_id": st.session_state.get("baseline_tag_id"),
                         "environment": st.session_state.get("environment"),
                         "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
-                    st.session_state.goal_recommendations = payload
-                    st.session_state.goal_recs = payload
+            else:
+                st.session_state.setdefault("winner_summary", None)
+                st.session_state.setdefault("goal_recs", None)
