@@ -1,4 +1,3 @@
-# ui/recommendations_tab.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, List, Set, Tuple
@@ -8,6 +7,18 @@ import streamlit as st
 
 from utils_pdf import create_pdf_bytes
 from utils import send_email_with_pdf
+
+from core.pretest_shortlist import build_pretest_shortlist
+
+
+# -----------------------------
+# Utilities
+# -----------------------------
+def _safe_str(x: Any) -> str:
+    try:
+        return str(x).strip()
+    except Exception:
+        return ""
 
 
 def _winner_ready() -> bool:
@@ -51,28 +62,18 @@ def _refresh_controls() -> None:
 
 
 # -----------------------------
-# Goal-based output (NEW canonical)
+# Goal payload (canonical)
 # -----------------------------
 def _get_goal_payload() -> Optional[Dict[str, Any]]:
-    """
-    Canonical source: st.session_state.goal_recommendations
-
-    Back-compat fallbacks:
-      - st.session_state.goal_rankings (older)
-      - st.session_state.goal_recs (bridge payload written by Trackman tab)
-    """
     gr = st.session_state.get("goal_recommendations", None)
     if isinstance(gr, dict) and gr:
         return gr
-
     gr2 = st.session_state.get("goal_rankings", None)
     if isinstance(gr2, dict) and gr2:
         return gr2
-
     gr3 = st.session_state.get("goal_recs", None)
     if isinstance(gr3, dict) and gr3:
         return gr3
-
     return None
 
 
@@ -116,353 +117,19 @@ def _tested_shaft_ids() -> Set[str]:
     return out
 
 
-def _index_is_row_numbers(idx: pd.Index) -> bool:
-    """
-    True if idx looks like 0..N-1 or 1..N, which is almost always a row-number index.
-    """
-    try:
-        vals = list(idx.tolist())
-        if len(vals) == 0:
-            return True
-
-        if isinstance(idx, pd.RangeIndex) and idx.start == 0 and idx.step == 1:
-            return True
-
-        nums = pd.to_numeric(pd.Series(vals), errors="coerce")
-        if nums.isna().any():
-            return False
-
-        n = len(vals)
-        seq0 = list(range(0, n))
-        seq1 = list(range(1, n + 1))
-
-        if nums.astype(int).tolist() == seq0:
-            return True
-        if nums.astype(int).tolist() == seq1:
-            return True
-
-        return False
-    except Exception:
-        return True
-
-
-def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
-    """
-    Prefer an explicit ID column.
-
-    IMPORTANT:
-      Do NOT use dataframe index as ID if the index is numeric,
-      because subsets of the Shafts sheet often preserve original row index (0-based),
-      which creates off-by-one bugs (index=10 vs ID=11).
-    """
-    if d is None or d.empty:
-        return None
-
-    cols = [str(c) for c in d.columns]
-    if "ID" in cols:
-        return d["ID"].astype(str).str.strip()
-
-    for k in ["Shaft ID", "shaft_id", "shaftId", "ShaftId"]:
-        if k in cols:
-            return d[k].astype(str).str.strip()
-
-    # Never trust numeric index as ID
-    try:
-        nums = pd.to_numeric(pd.Series(d.index.tolist()), errors="coerce")
-        if not nums.isna().any():
-            return None
-    except Exception:
-        return None
-
-    # If index is non-numeric AND not row numbers, it might be a true ID
-    try:
-        if _index_is_row_numbers(d.index):
-            return None
-        return pd.Series([str(x).strip() for x in d.index.tolist()])
-    except Exception:
-        return None
-
-
-def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensures a stable 'ID' column without crashing if 'ID' already exists.
-    Avoids inserting wrong row-number IDs.
-    """
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    d = df.copy()
-
-    if "ID" in d.columns:
-        try:
-            d["ID"] = d["ID"].astype(str).str.strip()
-            d["ID"] = d["ID"].replace({"nan": "", "None": "", "NaN": ""})
-        except Exception:
-            pass
-        cols = ["ID"] + [c for c in d.columns if c != "ID"]
-        return d[cols].reset_index(drop=True)
-
-    id_series = _extract_id_series(d)
-    if id_series is not None:
-        d = d.copy()
-        d.insert(0, "ID", [str(x).strip() for x in id_series.values])
-        d["ID"] = d["ID"].astype(str).str.strip().replace({"nan": "", "None": "", "NaN": ""})
-        cols = ["ID"] + [c for c in d.columns if c != "ID"]
-        return d[cols].reset_index(drop=True)
-
-    return d.reset_index(drop=True)
-
-
-def _gamer_identity(ans: Dict[str, Any]) -> Tuple[str, str, str]:
-    brand = str(ans.get("Q10", "")).strip().lower()
-    model = str(ans.get("Q12", "")).strip().lower()
-    flex = str(ans.get("Q11", "")).strip().lower()
-    return brand, model, flex
-
-
-def _lookup_gamer_weight(ans: Dict[str, Any], shafts_df: Optional[pd.DataFrame]) -> str:
-    """
-    Attempts to find the gamer in the Shafts sheet and return Weight (g).
-    Matches by Brand + Model (+ Flex when present).
-    """
-    if shafts_df is None or not isinstance(shafts_df, pd.DataFrame) or shafts_df.empty:
-        return "—"
-
-    g_brand, g_model, g_flex = _gamer_identity(ans)
-    if not g_brand or not g_model:
-        return "—"
-
-    m = shafts_df.copy()
-    for c in ["Brand", "Model", "Flex", "Weight (g)", "Weight"]:
-        if c in m.columns:
-            m[c] = m[c].astype(str).str.strip()
-
-    if "Brand" not in m.columns or "Model" not in m.columns:
-        return "—"
-
-    hit = m[
-        (m["Brand"].astype(str).str.strip().str.lower() == g_brand)
-        & (m["Model"].astype(str).str.strip().str.lower() == g_model)
-    ]
-
-    if g_flex and "Flex" in m.columns:
-        hit2 = hit[hit["Flex"].astype(str).str.strip().str.lower() == g_flex]
-        if not hit2.empty:
-            hit = hit2
-
-    if hit.empty:
-        return "—"
-
-    r = hit.iloc[0]
-    w = ""
-    if "Weight (g)" in hit.columns:
-        w = str(r.get("Weight (g)", "")).strip()
-    if not w and "Weight" in hit.columns:
-        w = str(r.get("Weight", "")).strip()
-
-    if not w or w.lower() in {"nan", "none"}:
-        return "—"
-
-    # Clean things like "129.0"
-    try:
-        fw = float(w)
-        if fw.is_integer():
-            return str(int(fw))
-        return str(fw)
-    except Exception:
-        return w
-
-
-def _gamer_row(ans: Dict[str, Any], shafts_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
-    brand = str(ans.get("Q10", "")).strip()
-    model = str(ans.get("Q12", "")).strip()
-    flex = str(ans.get("Q11", "")).strip()
-    label = " ".join([x for x in [brand, model] if x]).strip() or "Current Gamer"
-
-    w = _lookup_gamer_weight(ans, shafts_df)
-
-    return {
-        "ID": "GAMER",
-        "Brand": brand or "—",
-        "Model": model or label,
-        "Flex": flex or "—",
-        "Weight (g)": w or "—",
-    }
-
-
-def _goal_key_from_q23(q23: str) -> str:
-    s = (q23 or "").strip().lower()
-
-    if any(k in s for k in ["lower", "bring down", "flatten", "reduce height", "too high"]):
-        return "lower"
-    if any(k in s for k in ["higher", "more height", "launch", "help launch", "get up"]):
-        return "higher"
-    if any(k in s for k in ["dispersion", "tighten", "accuracy", "left/right", "stable", "stability"]):
-        return "stability"
-    if any(k in s for k in ["feel", "smooth", "load", "harsh", "boardy"]):
-        return "feel"
-    return "balanced"
-
-
-def _bucket_priority_from_q23(q23: str) -> List[str]:
-    key = _goal_key_from_q23(q23)
-
-    if key == "higher":
-        return ["Launch & Height", "Balanced", "Feel & Smoothness", "Maximum Stability"]
-    if key == "lower":
-        return ["Maximum Stability", "Balanced", "Feel & Smoothness", "Launch & Height"]
-    if key == "stability":
-        return ["Maximum Stability", "Balanced", "Launch & Height", "Feel & Smoothness"]
-    if key == "feel":
-        return ["Feel & Smoothness", "Balanced", "Maximum Stability", "Launch & Height"]
-    return ["Balanced", "Maximum Stability", "Launch & Height", "Feel & Smoothness"]
-
-
-def _normalize_shortlist(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    d = df.copy()
-
-    for c in ["ID", "Brand", "Model", "Flex", "Weight (g)"]:
-        if c not in d.columns:
-            d[c] = ""
-        try:
-            d[c] = d[c].astype(str).str.strip()
-        except Exception:
-            pass
-
-    d["ID"] = d["ID"].replace({"nan": "", "None": "", "NaN": ""})
-
-    keep = ["ID", "Brand", "Model", "Flex", "Weight (g)"]
-    return d[keep].reset_index(drop=True)
-
-
-def _dedupe_shortlist(df: pd.DataFrame, gamer_ans: Dict[str, Any]) -> pd.DataFrame:
-    """
-    - Remove anything that matches gamer identity (brand/model/flex) so gamer doesn't appear twice.
-    - Remove duplicates by ID if present, otherwise by (brand, model, flex).
-    """
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    d = _normalize_shortlist(df)
-
-    g_brand, g_model, g_flex = _gamer_identity(gamer_ans)
-
-    def _norm(x: str) -> str:
-        return (x or "").strip().lower()
-
-    # Drop gamer duplicates (not the GAMER row)
-    keep_rows: List[int] = []
-    for i, r in d.iterrows():
-        rid = _norm(str(r.get("ID", "")))
-        b = _norm(str(r.get("Brand", "")))
-        m = _norm(str(r.get("Model", "")))
-        f = _norm(str(r.get("Flex", "")))
-
-        if rid != "gamer" and b == g_brand and m == g_model and f == g_flex:
-            continue
-        keep_rows.append(i)
-
-    d = d.iloc[keep_rows].reset_index(drop=True)
-
-    seen_ids: Set[str] = set()
-    seen_keys: Set[Tuple[str, str, str]] = set()
-    out_rows: List[Dict[str, Any]] = []
-
-    for _, r in d.iterrows():
-        rid = str(r.get("ID", "")).strip()
-        b = str(r.get("Brand", "")).strip()
-        m = str(r.get("Model", "")).strip()
-        f = str(r.get("Flex", "")).strip()
-
-        key = (_norm(b), _norm(m), _norm(f))
-
-        if rid and rid.upper() != "GAMER":
-            if rid in seen_ids:
-                continue
-            seen_ids.add(rid)
-        else:
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-
-        out_rows.append(
-            {"ID": rid, "Brand": b, "Model": m, "Flex": f, "Weight (g)": str(r.get("Weight (g)", "")).strip()}
-        )
-
-    return pd.DataFrame(out_rows)
-
-
-def _pick_interview_short_list(
-    all_winners: Dict[str, pd.DataFrame],
-    ans: Dict[str, Any],
-    max_additional: int = 3,
-) -> pd.DataFrame:
-    """
-    Picks 2–3 shafts based on Q23 priority, using the FIRST row of each prioritized bucket.
-
-    IMPORTANT:
-      We expect all_winners tables to already contain a real 'ID' column (from app.py fix).
-      We still call _table_with_id() for safety, but it will never invent numeric IDs from index now.
-    """
-    picks: List[pd.DataFrame] = []
-    used: Set[str] = set()
-
-    priorities = _bucket_priority_from_q23(str(ans.get("Q23", "")).strip())
-
-    for key in priorities:
-        df = all_winners.get(key, None)
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            continue
-
-        t = _table_with_id(df)
-        t = _normalize_shortlist(t)
-        if t.empty:
-            continue
-
-        r = t.iloc[[0]].copy()
-
-        rid = str(r.iloc[0].get("ID", "")).strip()
-        if rid:
-            if rid in used:
-                continue
-            used.add(rid)
-        else:
-            b = str(r.iloc[0].get("Brand", "")).strip().lower()
-            m = str(r.iloc[0].get("Model", "")).strip().lower()
-            f = str(r.iloc[0].get("Flex", "")).strip().lower()
-            k = f"{b}|{m}|{f}"
-            if k in used:
-                continue
-            used.add(k)
-
-        picks.append(r)
-
-        if len(picks) >= max_additional:
-            break
-
-    if not picks:
-        return pd.DataFrame()
-
-    out = pd.concat(picks, axis=0, ignore_index=True)
-    return _normalize_shortlist(out)
-
-
 def _result_to_row(r: Any) -> Dict[str, Any]:
     if r is None:
         return {}
     if isinstance(r, dict):
         return {
-            "Shaft ID": str(r.get("shaft_id", "")).strip() or str(r.get("Shaft ID", "")).strip(),
-            "Shaft": str(r.get("shaft_label", "")).strip() or str(r.get("Shaft", "")).strip(),
+            "Shaft ID": _safe_str(r.get("shaft_id", "")) or _safe_str(r.get("Shaft ID", "")),
+            "Shaft": _safe_str(r.get("shaft_label", "")) or _safe_str(r.get("Shaft", "")),
             "Score": float(r.get("overall_score", r.get("Score", 0.0)) or 0.0),
-            "Why": " | ".join([str(x) for x in (r.get("reasons") or [])][:3]) or str(r.get("Why", "") or ""),
+            "Why": " | ".join([str(x) for x in (r.get("reasons") or [])][:3]) or _safe_str(r.get("Why", "")),
         }
     return {
-        "Shaft ID": str(getattr(r, "shaft_id", "")).strip(),
-        "Shaft": str(getattr(r, "shaft_label", "")).strip(),
+        "Shaft ID": _safe_str(getattr(r, "shaft_id", "")),
+        "Shaft": _safe_str(getattr(r, "shaft_label", "")),
         "Score": float(getattr(r, "overall_score", 0.0) or 0.0),
         "Why": " | ".join([str(x) for x in (getattr(r, "reasons", None) or [])][:3]),
     }
@@ -473,13 +140,13 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
         return
 
     if isinstance(best, dict):
-        lab = str(best.get("shaft_label", "")).strip() or str(best.get("Shaft", "")).strip()
-        sid = str(best.get("shaft_id", "")).strip() or str(best.get("Shaft ID", "")).strip()
+        lab = _safe_str(best.get("shaft_label", "")) or _safe_str(best.get("Shaft", ""))
+        sid = _safe_str(best.get("shaft_id", "")) or _safe_str(best.get("Shaft ID", ""))
         reasons = best.get("reasons") or []
         g_scores = best.get("goal_scores") or {}
     else:
-        lab = str(getattr(best, "shaft_label", "")).strip()
-        sid = str(getattr(best, "shaft_id", "")).strip()
+        lab = _safe_str(getattr(best, "shaft_label", ""))
+        sid = _safe_str(getattr(best, "shaft_id", ""))
         reasons = getattr(best, "reasons", []) or []
         g_scores = getattr(best, "goal_scores", {}) or {}
 
@@ -501,7 +168,7 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
 
 
 def _next_round_from_goal_payload(gr: Dict[str, Any], max_n: int = 3) -> List[Dict[str, Any]]:
-    baseline_id = str(gr.get("baseline_shaft_id", "") or "").strip()
+    baseline_id = _safe_str(gr.get("baseline_shaft_id", "") or "")
     results = gr.get("results", []) or []
 
     tested = _tested_shaft_ids()
@@ -511,7 +178,7 @@ def _next_round_from_goal_payload(gr: Dict[str, Any], max_n: int = 3) -> List[Di
     out: List[Dict[str, Any]] = []
     for r in results:
         row = _result_to_row(r)
-        sid = str(row.get("Shaft ID", "")).strip()
+        sid = _safe_str(row.get("Shaft ID", ""))
         if not sid:
             continue
         if sid in tested:
@@ -523,29 +190,125 @@ def _next_round_from_goal_payload(gr: Dict[str, Any], max_n: int = 3) -> List[Di
     return out
 
 
+# -----------------------------
+# Gamer row (now pulls weight if possible)
+# -----------------------------
+def _gamer_identity(ans: Dict[str, Any]) -> Tuple[str, str, str]:
+    brand = _safe_str(ans.get("Q10", "")).lower()
+    model = _safe_str(ans.get("Q12", "")).lower()
+    flex = _safe_str(ans.get("Q11", "")).lower()
+    return brand, model, flex
+
+
+def _lookup_gamer_weight(shafts_df: pd.DataFrame, ans: Dict[str, Any]) -> str:
+    """
+    Try to find the gamer in the Shafts sheet and return Weight (g).
+    We match Brand + Model + Flex (case-insensitive).
+    """
+    if not isinstance(shafts_df, pd.DataFrame) or shafts_df.empty:
+        return "—"
+
+    b, m, f = _gamer_identity(ans)
+    if not b or not m:
+        return "—"
+
+    df = shafts_df.copy()
+
+    for c in ["Brand", "Model", "Flex", "Weight (g)"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].astype(str).str.strip()
+
+    hit = df[
+        (df["Brand"].str.lower() == b)
+        & (df["Model"].str.lower() == m)
+        & ((df["Flex"].str.lower() == f) if f else True)
+    ]
+
+    if hit.empty and f:
+        # fallback if flex mismatch in sheet
+        hit = df[(df["Brand"].str.lower() == b) & (df["Model"].str.lower() == m)]
+
+    if hit.empty:
+        return "—"
+
+    w = _safe_str(hit.iloc[0].get("Weight (g)", ""))
+    return w if w else "—"
+
+
+def _gamer_row(ans: Dict[str, Any], shafts_df: pd.DataFrame) -> Dict[str, Any]:
+    brand = _safe_str(ans.get("Q10", ""))
+    model = _safe_str(ans.get("Q12", ""))
+    flex = _safe_str(ans.get("Q11", ""))
+    label = " ".join([x for x in [brand, model] if x]).strip() or "Current Gamer"
+    weight = _lookup_gamer_weight(shafts_df, ans)
+
+    return {
+        "ID": "GAMER",
+        "Brand": brand or "—",
+        "Model": model or label,
+        "Flex": flex or "—",
+        "Weight (g)": weight,
+    }
+
+
+def _dedupe_shortlist(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    d = df.copy()
+    for c in ["ID", "Brand", "Model", "Flex", "Weight (g)"]:
+        if c not in d.columns:
+            d[c] = ""
+        d[c] = d[c].astype(str).str.strip()
+
+    # Dedupe by ID (except GAMER stays)
+    out_rows = []
+    seen: Set[str] = set()
+
+    for _, r in d.iterrows():
+        rid = _safe_str(r.get("ID", ""))
+        key = rid if rid and rid.upper() != "GAMER" else f"GAMER|{_safe_str(r.get('Brand',''))}|{_safe_str(r.get('Model',''))}|{_safe_str(r.get('Flex',''))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out_rows.append(
+            {
+                "ID": rid,
+                "Brand": _safe_str(r.get("Brand", "")),
+                "Model": _safe_str(r.get("Model", "")),
+                "Flex": _safe_str(r.get("Flex", "")),
+                "Weight (g)": _safe_str(r.get("Weight (g)", "")),
+            }
+        )
+
+    return pd.DataFrame(out_rows)
+
+
+# -----------------------------
+# MAIN RENDER
+# -----------------------------
 def render_recommendations_tab(
     *,
     p_name: str,
     p_email: str,
     ans: Dict[str, Any],
-    all_winners: Dict[str, pd.DataFrame],
-    verdicts: Dict[str, str],
+    all_winners: Dict[str, pd.DataFrame],  # kept for legacy sections
+    verdicts: Dict[str, str],              # kept for legacy sections
     environment: str,
-    shafts_df: Optional[pd.DataFrame] = None,
 ) -> None:
     _refresh_controls()
 
-    # Q23 = main driver
-    q23 = str(ans.get("Q23", "")).strip()
+    q23 = _safe_str(ans.get("Q23", ""))
 
-    # Flight/Feel mapping (safe if blank)
-    flight_current = str(ans.get("Q16_1", "")).strip()
-    flight_happy = str(ans.get("Q16_2", "")).strip()
-    flight_target = str(ans.get("Q16_3", "")).strip()
+    # Flight/Feel mapping from your question list
+    flight_current = _safe_str(ans.get("Q16_1", ""))
+    flight_happy = _safe_str(ans.get("Q16_2", ""))
+    flight_target = _safe_str(ans.get("Q16_3", ""))
 
-    feel_current = str(ans.get("Q19_1", "")).strip()
-    feel_happy = str(ans.get("Q19_2", "")).strip()
-    feel_target = str(ans.get("Q19_3", "")).strip()
+    feel_current = _safe_str(ans.get("Q19_1", ""))
+    feel_happy = _safe_str(ans.get("Q19_2", ""))
+    feel_target = _safe_str(ans.get("Q19_3", ""))
 
     flight_line = flight_current
     if flight_happy:
@@ -559,7 +322,6 @@ def render_recommendations_tab(
     if feel_target:
         feel_line = _fmt_pref_line(feel_line, feel_target)
 
-    # Header bar
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -576,10 +338,9 @@ def render_recommendations_tab(
     )
 
     # -----------------------------
-    # Goal-based recommendations (Trackman / Goal Engine)
+    # Goal-Based (post Trackman)
     # -----------------------------
     gr = _get_goal_payload()
-
     has_results = isinstance(gr, dict) and isinstance(gr.get("results", None), list) and len(gr.get("results", [])) > 0
     has_winner_only = isinstance(gr, dict) and isinstance(gr.get("winner_summary", None), dict)
 
@@ -588,9 +349,7 @@ def render_recommendations_tab(
 
         baseline_id = None
         if isinstance(gr, dict):
-            baseline_id = gr.get("baseline_shaft_id", None) or gr.get("baseline_tag_id", None) or st.session_state.get(
-                "baseline_tag_id", None
-            )
+            baseline_id = gr.get("baseline_shaft_id", None) or gr.get("baseline_tag_id", None) or st.session_state.get("baseline_tag_id", None)
 
         if has_results:
             results = gr.get("results", [])
@@ -636,13 +395,12 @@ def render_recommendations_tab(
     else:
         st.info(
             "Goal-based recommendations will appear here after you upload Trackman data in **🧪 Trackman Lab** "
-            "and click **➕ Add** at least once.\n\n"
-            "This section reads from `st.session_state.goal_recommendations`."
+            "and click **➕ Add** at least once."
         )
         st.divider()
 
     # -----------------------------
-    # Winner summary (Trackman Lab intelligence)
+    # Winner summary (Trackman intelligence)
     # -----------------------------
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
@@ -655,49 +413,25 @@ def render_recommendations_tab(
             st.caption(explain)
 
     # -----------------------------
-    # Pre-test shortlist (interview-driven)
+    # Pre-test shortlist (INTERVIEW-DRIVEN, ALWAYS)
     # -----------------------------
-    if not _baseline_logged():
-        st.subheader("🧠 Pre-Test Short List (before baseline testing is logged)")
-        st.caption("Driven by Q23. Stays short until baseline is logged; then Trackman/goal scoring takes over.")
+    shafts_df = st.session_state.get("shafts_df_for_ui", None)
+    if not isinstance(shafts_df, pd.DataFrame) or shafts_df.empty:
+        # fallback: app.py should set this, but if not, we try to pull it from a cached all_data if present
+        shafts_df = st.session_state.get("all_shafts_df", pd.DataFrame())
 
-        gamer = pd.DataFrame([_gamer_row(ans, shafts_df=shafts_df)])
-        shortlist = _pick_interview_short_list(all_winners, ans, max_additional=3)
+    st.subheader("🧪 Pre-Test Short List (Interview-Driven)")
+    st.caption("Always: Gamer + 2–3 shafts (5 swings each). Driven by Q23 + Q16 flight constraints. Uses Shafts!ID.")
 
-        combined = gamer
-        if isinstance(shortlist, pd.DataFrame) and not shortlist.empty:
-            combined = pd.concat([gamer, shortlist], axis=0, ignore_index=True)
+    gamer = pd.DataFrame([_gamer_row(ans, shafts_df)])
 
-        combined = _dedupe_shortlist(combined, ans)
-        st.dataframe(_table_with_id(combined), use_container_width=True, hide_index=True)
-        st.divider()
-    else:
-        with st.expander("Show legacy interview section (optional)", expanded=False):
-            st.subheader("🧠 Interview Starting Point (reference only)")
-            st.caption("Baseline is logged — Trackman/goal scoring should be your main decision driver now.")
+    shortlist = build_pretest_shortlist(shafts_df, ans, n=3)
+    combined = pd.concat([gamer, shortlist], axis=0, ignore_index=True) if isinstance(shortlist, pd.DataFrame) and not shortlist.empty else gamer
+    combined = _dedupe_shortlist(combined)
 
-            cats = [
-                ("Balanced", "⚖️ Balanced"),
-                ("Maximum Stability", "🛡️ Stability"),
-                ("Launch & Height", "🚀 Launch"),
-                ("Feel & Smoothness", "☁️ Feel"),
-            ]
-            col1, col2 = st.columns(2)
-            v_items = list(verdicts.items())
+    st.dataframe(combined, use_container_width=True, hide_index=True)
 
-            for i, (cat, c_name) in enumerate(cats):
-                with col1 if i < 2 else col2:
-                    st.markdown(f"### {c_name}")
-                    df = all_winners.get(cat, None)
-                    if isinstance(df, pd.DataFrame) and not df.empty:
-                        st.dataframe(_table_with_id(df), use_container_width=True, hide_index=True)
-                        blurb = v_items[i][1] if i < len(v_items) else "Optimized."
-                        st.markdown(
-                            f"<div class='verdict-text'><b>Verdict:</b> {blurb}</div>",
-                            unsafe_allow_html=True,
-                        )
-
-        st.divider()
+    st.divider()
 
     # -----------------------------
     # PDF sending
