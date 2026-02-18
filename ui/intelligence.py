@@ -27,6 +27,23 @@ def _safe_str(x: Any) -> str:
         return ""
 
 
+def _to_float(x: Any, default: float = 0.0) -> float:
+    """
+    Never-throw numeric coercion. Streamlit redacts tracebacks, so we keep this strict.
+    """
+    try:
+        if x is None:
+            return float(default)
+        if isinstance(x, str):
+            s = x.strip()
+            if s == "" or s.lower() in {"nan", "none", "—", "-", "na", "n/a"}:
+                return float(default)
+            return float(s)
+        return float(x)
+    except Exception:
+        return float(default)
+
+
 def _extract_id_from_label(label: str) -> Optional[str]:
     """
     Attempts to parse "(ID 28)" style suffixes used in your UI labels.
@@ -77,14 +94,8 @@ def _build_fallback_goal_rankings(
         if c not in df.columns:
             df[c] = None
 
-    def _to_float(v: Any) -> float:
-        try:
-            return float(v)
-        except Exception:
-            return 0.0
-
-    df["_eff"] = df["Efficiency"].apply(_to_float)
-    df["_conf"] = df["Confidence"].apply(_to_float)
+    df["_eff"] = df["Efficiency"].apply(lambda v: _to_float(v, 0.0))
+    df["_conf"] = df["Confidence"].apply(lambda v: _to_float(v, 0.0))
 
     df = df.sort_values(by=["_eff", "_conf"], ascending=[False, False])
 
@@ -100,6 +111,7 @@ def _build_fallback_goal_rankings(
         sd = row.get("Spin Δ", None)
         disp = row.get("Dispersion", None)
 
+        # Keep reasons short + readable
         if cd is not None and _safe_str(cd):
             reasons.append(f"Carry Δ: {cd}")
         if ld is not None and _safe_str(ld):
@@ -109,7 +121,7 @@ def _build_fallback_goal_rankings(
         if disp is not None and _safe_str(disp):
             reasons.append(f"Dispersion: {disp}")
 
-        overall_score = _to_float(row.get("Efficiency", 0.0))
+        overall_score = _to_float(row.get("Efficiency", 0.0), 0.0)
 
         results.append(
             {
@@ -118,7 +130,7 @@ def _build_fallback_goal_rankings(
                 "overall_score": overall_score,
                 "reasons": reasons[:3],
                 "goal_scores": {"Efficiency": overall_score},
-                "raw": row,
+                "raw": row,  # keep raw row for debugging / future engine
             }
         )
 
@@ -145,37 +157,41 @@ def _write_goal_payloads(
 
     Legacy/back-compat:
       st.session_state.goal_rankings
-      st.session_state.goal_recs (bridge dict used elsewhere)
+      st.session_state.goal_recs
 
     Returns the canonical dict written.
     """
-    # Normalize baseline + meta
     base_id = _safe_str(baseline_shaft_id) if baseline_shaft_id else None
     q23 = _safe_str(answers.get("Q23", ""))
-    q16 = _safe_str(answers.get("Q16_2", ""))  # "Higher/Lower/Not sure" style intent
+    q16_intent = _safe_str(answers.get("Q16_2", ""))  # "Higher/Lower/Not sure" intent
 
     canonical: Dict[str, Any] = dict(payload) if isinstance(payload, dict) else {}
     canonical.setdefault("baseline_shaft_id", base_id)
-    canonical["baseline_tag_id"] = base_id  # some tabs used this naming earlier
-    canonical["environment"] = environment
+
+    # Compatibility alias (some tabs historically used this)
+    canonical["baseline_tag_id"] = base_id
+
+    canonical["environment"] = _safe_str(environment) or "Indoors (Mat)"
+    canonical["generated_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+
     canonical["meta"] = {
         "primary_goal_q23": q23,
-        "flight_intent_q16": q16,
+        "flight_intent_q16": q16_intent,
         "engine": canonical.get("source", "unknown"),
     }
 
     # Canonical for Recommendations tab
     st.session_state.goal_recommendations = canonical
 
-    # Legacy / existing keys (keep until we remove them)
+    # Legacy / existing keys (keep until removed)
     st.session_state.goal_rankings = canonical
 
-    # Bridge key used in some earlier logic
+    # Bridge key used in older logic
     st.session_state.goal_recs = {
         "source": canonical.get("source", "goal_recommendations"),
         "baseline_tag_id": base_id,
-        "environment": environment,
-        "generated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "environment": canonical.get("environment"),
+        "generated_at": canonical.get("generated_at"),
         "winner_summary": st.session_state.get("winner_summary", None),
     }
 
@@ -233,9 +249,11 @@ def render_intelligence_block(
         WARN_SMASH_SD=float(WARN_SMASH_SD),
     )
 
+    base_id = _safe_str(baseline_shaft_id) if baseline_shaft_id else None
+
     comparison_df = build_comparison_table(
         lab_df,
-        baseline_shaft_id=_safe_str(baseline_shaft_id) if baseline_shaft_id else None,
+        baseline_shaft_id=base_id,
         cfg=eff_cfg,
     )
 
@@ -288,7 +306,7 @@ def render_intelligence_block(
     # ---------------- Tour Proven matrix ----------------
     render_tour_proven_matrix(
         comparison_df,
-        baseline_shaft_id=_safe_str(baseline_shaft_id) if baseline_shaft_id else None,
+        baseline_shaft_id=base_id,
         answers=answers,
         environment_override=environment,
     )
@@ -296,12 +314,12 @@ def render_intelligence_block(
     # ---------------- Goal recommendations payload (canonical) ----------------
     fallback_payload = _build_fallback_goal_rankings(
         comparison_df,
-        baseline_shaft_id=_safe_str(baseline_shaft_id) if baseline_shaft_id else None,
+        baseline_shaft_id=base_id,
     )
 
     canonical = _write_goal_payloads(
         fallback_payload,
-        baseline_shaft_id=_safe_str(baseline_shaft_id) if baseline_shaft_id else None,
+        baseline_shaft_id=base_id,
         environment=environment,
         answers=answers,
     )
