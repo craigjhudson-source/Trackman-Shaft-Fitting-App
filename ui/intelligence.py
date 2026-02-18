@@ -1,4 +1,3 @@
-# ui/intelligence.py
 from __future__ import annotations
 
 import re
@@ -56,10 +55,10 @@ def _build_fallback_goal_rankings(
     baseline_shaft_id: Optional[str],
 ) -> Dict[str, Any]:
     """
-    This is a TEMPORARY bridge so Recommendations can show something meaningful
-    immediately after Trackman logging, even before we fully activate Q23/Q16 goal scoring.
+    TEMP bridge so Recommendations can show meaningful Trackman-based rankings
+    immediately after logging, even before the full Q23/Q16 goal engine is wired.
 
-    We rank by Efficiency (then Confidence), and provide a small explanation list.
+    We rank by Efficiency (then Confidence), and provide short reasons.
     """
     out: Dict[str, Any] = {
         "baseline_shaft_id": _safe_str(baseline_shaft_id) if baseline_shaft_id else None,
@@ -73,12 +72,11 @@ def _build_fallback_goal_rankings(
 
     df = comparison_df.copy()
 
-    # Ensure we have columns we expect
+    # Ensure expected columns exist
     for c in ["Efficiency", "Confidence", "Carry Δ", "Launch Δ", "Spin Δ", "Dispersion", "Smash", "Shaft", "Shaft ID"]:
         if c not in df.columns:
             df[c] = None
 
-    # Sort best-first
     def _to_float(v: Any) -> float:
         try:
             return float(v)
@@ -102,7 +100,6 @@ def _build_fallback_goal_rankings(
         sd = row.get("Spin Δ", None)
         disp = row.get("Dispersion", None)
 
-        # Keep reasons short + readable
         if cd is not None and _safe_str(cd):
             reasons.append(f"Carry Δ: {cd}")
         if ld is not None and _safe_str(ld):
@@ -127,11 +124,62 @@ def _build_fallback_goal_rankings(
 
     out["results"] = results
 
-    # Provide a single "goal" card so Recommendations can render "Best by goal"
     if results:
         out["top_by_goal"] = {"Efficiency": results[0]}
 
     return out
+
+
+def _write_goal_payloads(
+    payload: Dict[str, Any],
+    *,
+    baseline_shaft_id: Optional[str],
+    environment: str,
+    answers: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Writes canonical + legacy session payloads for the Recommendations tab.
+
+    Canonical:
+      st.session_state.goal_recommendations
+
+    Legacy/back-compat:
+      st.session_state.goal_rankings
+      st.session_state.goal_recs (bridge dict used elsewhere)
+
+    Returns the canonical dict written.
+    """
+    # Normalize baseline + meta
+    base_id = _safe_str(baseline_shaft_id) if baseline_shaft_id else None
+    q23 = _safe_str(answers.get("Q23", ""))
+    q16 = _safe_str(answers.get("Q16_2", ""))  # "Higher/Lower/Not sure" style intent
+
+    canonical: Dict[str, Any] = dict(payload) if isinstance(payload, dict) else {}
+    canonical.setdefault("baseline_shaft_id", base_id)
+    canonical["baseline_tag_id"] = base_id  # some tabs used this naming earlier
+    canonical["environment"] = environment
+    canonical["meta"] = {
+        "primary_goal_q23": q23,
+        "flight_intent_q16": q16,
+        "engine": canonical.get("source", "unknown"),
+    }
+
+    # Canonical for Recommendations tab
+    st.session_state.goal_recommendations = canonical
+
+    # Legacy / existing keys (keep until we remove them)
+    st.session_state.goal_rankings = canonical
+
+    # Bridge key used in some earlier logic
+    st.session_state.goal_recs = {
+        "source": canonical.get("source", "goal_recommendations"),
+        "baseline_tag_id": base_id,
+        "environment": environment,
+        "generated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "winner_summary": st.session_state.get("winner_summary", None),
+    }
+
+    return canonical
 
 
 def render_intelligence_block(
@@ -153,15 +201,17 @@ def render_intelligence_block(
       - Tour Proven recommendation + matrix
       - Phase 6 suggestions
 
-    IMPORTANT SIDE EFFECT (required by your app UX):
-      - Writes st.session_state.winner_summary so Recommendations can unlock PDF + show winner
-      - Writes st.session_state.goal_rankings so Recommendations can show Trackman-based rankings
+    IMPORTANT SIDE EFFECTS:
+      - Writes st.session_state.winner_summary
+      - Writes st.session_state.goal_recommendations (canonical) + legacy payloads
+      - Writes st.session_state.phase6_recs
     """
     out: Dict[str, Any] = {
         "winner": None,
         "winner_summary": None,
         "comparison_df": pd.DataFrame(),
         "goal_rankings": None,
+        "goal_recommendations": None,
         "phase6_recs": None,
     }
 
@@ -220,7 +270,6 @@ def render_intelligence_block(
         "raw": winner,
     }
 
-    # Persist so Recommendations can see it reliably
     st.session_state.winner_summary = winner_summary
     out["winner_summary"] = winner_summary
 
@@ -236,7 +285,7 @@ def render_intelligence_block(
     if flags.get("high_smash_sd"):
         st.warning(f"⚠️ Smash SD high (> {float(WARN_SMASH_SD):.3f}). Confidence reduced.")
 
-    # ---------------- Tour Proven matrix (still renders as before) ----------------
+    # ---------------- Tour Proven matrix ----------------
     render_tour_proven_matrix(
         comparison_df,
         baseline_shaft_id=_safe_str(baseline_shaft_id) if baseline_shaft_id else None,
@@ -244,13 +293,21 @@ def render_intelligence_block(
         environment_override=environment,
     )
 
-    # ---------------- Goal rankings (bridge so Recommendations changes after upload) ----------------
-    goal_rankings = _build_fallback_goal_rankings(
+    # ---------------- Goal recommendations payload (canonical) ----------------
+    fallback_payload = _build_fallback_goal_rankings(
         comparison_df,
         baseline_shaft_id=_safe_str(baseline_shaft_id) if baseline_shaft_id else None,
     )
-    st.session_state.goal_rankings = goal_rankings
-    out["goal_rankings"] = goal_rankings
+
+    canonical = _write_goal_payloads(
+        fallback_payload,
+        baseline_shaft_id=_safe_str(baseline_shaft_id) if baseline_shaft_id else None,
+        environment=environment,
+        answers=answers,
+    )
+
+    out["goal_rankings"] = canonical
+    out["goal_recommendations"] = canonical
 
     # ---------------- Phase 6 ----------------
     st.subheader("Phase 6 Optimization Suggestions")
