@@ -1,4 +1,3 @@
-# ui/recommendations_tab.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, List, Set, Tuple
@@ -50,9 +49,30 @@ def _refresh_controls() -> None:
             st.session_state.recs_seen_tm_version = current_v
 
 
-def _get_goal_rankings() -> Optional[Dict[str, Any]]:
-    gr = st.session_state.get("goal_rankings", None)
-    return gr if isinstance(gr, dict) else None
+# -----------------------------
+# Goal-based output (NEW canonical)
+# -----------------------------
+def _get_goal_payload() -> Optional[Dict[str, Any]]:
+    """
+    Canonical source: st.session_state.goal_recommendations
+
+    Back-compat fallbacks:
+      - st.session_state.goal_rankings (older)
+      - st.session_state.goal_recs (bridge payload written by Trackman tab)
+    """
+    gr = st.session_state.get("goal_recommendations", None)
+    if isinstance(gr, dict) and gr:
+        return gr
+
+    gr2 = st.session_state.get("goal_rankings", None)
+    if isinstance(gr2, dict) and gr2:
+        return gr2
+
+    gr3 = st.session_state.get("goal_recs", None)
+    if isinstance(gr3, dict) and gr3:
+        return gr3
+
+    return None
 
 
 def _baseline_logged() -> bool:
@@ -104,11 +124,9 @@ def _index_is_row_numbers(idx: pd.Index) -> bool:
         if len(vals) == 0:
             return True
 
-        # RangeIndex that starts at 0, step 1 is row numbers
         if isinstance(idx, pd.RangeIndex) and idx.start == 0 and idx.step == 1:
             return True
 
-        # Try numeric compare
         nums = pd.to_numeric(pd.Series(vals), errors="coerce")
         if nums.isna().any():
             return False
@@ -117,7 +135,6 @@ def _index_is_row_numbers(idx: pd.Index) -> bool:
         seq0 = list(range(0, n))
         seq1 = list(range(1, n + 1))
 
-        # If exactly sequential, it's row numbers
         if nums.astype(int).tolist() == seq0:
             return True
         if nums.astype(int).tolist() == seq1:
@@ -131,7 +148,7 @@ def _index_is_row_numbers(idx: pd.Index) -> bool:
 def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
     """
     Prefer an explicit ID column, otherwise use a non-row-number index (even if numeric),
-    because your shaft IDs (24, 51, 27, ...) are numeric.
+    because shaft IDs can be numeric.
     """
     if d is None or d.empty:
         return None
@@ -144,7 +161,6 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
         if k in cols:
             return d[k].astype(str).str.strip()
 
-    # Fallback: use index if it doesn't look like row numbers
     try:
         if _index_is_row_numbers(d.index):
             return None
@@ -154,10 +170,6 @@ def _extract_id_series(d: pd.DataFrame) -> Optional[pd.Series]:
 
 
 def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensures a stable 'ID' column without crashing if 'ID' already exists.
-    Avoids inserting wrong row-number IDs.
-    """
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -174,7 +186,6 @@ def _table_with_id(df: pd.DataFrame) -> pd.DataFrame:
 
     id_series = _extract_id_series(d)
     if id_series is not None:
-        d = d.copy()
         d.insert(0, "ID", [str(x).strip() for x in id_series.values])
         d["ID"] = d["ID"].astype(str).str.strip().replace({"nan": "", "None": "", "NaN": ""})
         cols = ["ID"] + [c for c in d.columns if c != "ID"]
@@ -205,13 +216,8 @@ def _gamer_row(ans: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _goal_key_from_q23(q23: str) -> str:
-    """
-    Decide which interview bucket(s) to prioritize from Q23.
-    Q23 is intended to be the MAIN driver for initial suggestions.
-    """
     s = (q23 or "").strip().lower()
 
-    # Adjust these keywords to match your actual Q23 wording
     if any(k in s for k in ["lower", "bring down", "flatten", "reduce height", "too high"]):
         return "lower"
     if any(k in s for k in ["higher", "more height", "launch", "help launch", "get up"]):
@@ -226,11 +232,9 @@ def _goal_key_from_q23(q23: str) -> str:
 def _bucket_priority_from_q23(q23: str) -> List[str]:
     key = _goal_key_from_q23(q23)
 
-    # Keys must match your all_winners dict keys exactly
     if key == "higher":
         return ["Launch & Height", "Balanced", "Feel & Smoothness", "Maximum Stability"]
     if key == "lower":
-        # Lower flight generally = keep it stable / reduce dynamic loft tendencies
         return ["Maximum Stability", "Balanced", "Feel & Smoothness", "Launch & Height"]
     if key == "stability":
         return ["Maximum Stability", "Balanced", "Launch & Height", "Feel & Smoothness"]
@@ -245,7 +249,6 @@ def _normalize_shortlist(df: pd.DataFrame) -> pd.DataFrame:
 
     d = df.copy()
 
-    # Normalize columns
     for c in ["ID", "Brand", "Model", "Flex", "Weight (g)"]:
         if c not in d.columns:
             d[c] = ""
@@ -254,29 +257,21 @@ def _normalize_shortlist(df: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             pass
 
-    # Replace common pandas string-nans
     d["ID"] = d["ID"].replace({"nan": "", "None": "", "NaN": ""})
-
     keep = ["ID", "Brand", "Model", "Flex", "Weight (g)"]
     return d[keep].reset_index(drop=True)
 
 
 def _dedupe_shortlist(df: pd.DataFrame, gamer_ans: Dict[str, Any]) -> pd.DataFrame:
-    """
-    - Remove anything that matches gamer identity (brand/model/flex) so gamer doesn't appear twice.
-    - Remove duplicates by ID if present, otherwise by (brand, model, flex).
-    """
     if df is None or df.empty:
         return pd.DataFrame()
 
     d = _normalize_shortlist(df)
-
     g_brand, g_model, g_flex = _gamer_identity(gamer_ans)
 
     def _norm(x: str) -> str:
         return (x or "").strip().lower()
 
-    # Drop gamer duplicates (not the GAMER row)
     keep_rows: List[int] = []
     for i, r in d.iterrows():
         rid = _norm(str(r.get("ID", "")))
@@ -307,7 +302,6 @@ def _dedupe_shortlist(df: pd.DataFrame, gamer_ans: Dict[str, Any]) -> pd.DataFra
                 continue
             seen_ids.add(rid)
         else:
-            # No ID? Dedupe by identity
             if key in seen_keys:
                 continue
             seen_keys.add(key)
@@ -319,11 +313,11 @@ def _dedupe_shortlist(df: pd.DataFrame, gamer_ans: Dict[str, Any]) -> pd.DataFra
     return pd.DataFrame(out_rows)
 
 
-def _pick_interview_short_list(all_winners: Dict[str, pd.DataFrame], ans: Dict[str, Any], max_additional: int = 3) -> pd.DataFrame:
-    """
-    Picks 2–3 shafts based on Q23 priority, using the FIRST row of each prioritized bucket,
-    but ensures we keep true shaft IDs (from column ID or from non-row-number index).
-    """
+def _pick_interview_short_list(
+    all_winners: Dict[str, pd.DataFrame],
+    ans: Dict[str, Any],
+    max_additional: int = 3,
+) -> pd.DataFrame:
     picks: List[pd.DataFrame] = []
     used: Set[str] = set()
 
@@ -347,7 +341,6 @@ def _pick_interview_short_list(all_winners: Dict[str, pd.DataFrame], ans: Dict[s
                 continue
             used.add(rid)
         else:
-            # If no ID, use identity as uniqueness
             b = str(r.iloc[0].get("Brand", "")).strip().lower()
             m = str(r.iloc[0].get("Model", "")).strip().lower()
             f = str(r.iloc[0].get("Flex", "")).strip().lower()
@@ -373,10 +366,10 @@ def _result_to_row(r: Any) -> Dict[str, Any]:
         return {}
     if isinstance(r, dict):
         return {
-            "Shaft ID": str(r.get("shaft_id", "")).strip(),
-            "Shaft": str(r.get("shaft_label", "")).strip(),
-            "Score": float(r.get("overall_score", 0.0) or 0.0),
-            "Why": " | ".join([str(x) for x in (r.get("reasons") or [])][:3]),
+            "Shaft ID": str(r.get("shaft_id", "")).strip() or str(r.get("Shaft ID", "")).strip(),
+            "Shaft": str(r.get("shaft_label", "")).strip() or str(r.get("Shaft", "")).strip(),
+            "Score": float(r.get("overall_score", r.get("Score", 0.0)) or 0.0),
+            "Why": " | ".join([str(x) for x in (r.get("reasons") or [])][:3]) or str(r.get("Why", "") or ""),
         }
     return {
         "Shaft ID": str(getattr(r, "shaft_id", "")).strip(),
@@ -391,8 +384,8 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
         return
 
     if isinstance(best, dict):
-        lab = str(best.get("shaft_label", "")).strip()
-        sid = str(best.get("shaft_id", "")).strip()
+        lab = str(best.get("shaft_label", "")).strip() or str(best.get("Shaft", "")).strip()
+        sid = str(best.get("shaft_id", "")).strip() or str(best.get("Shaft ID", "")).strip()
         reasons = best.get("reasons") or []
         g_scores = best.get("goal_scores") or {}
     else:
@@ -418,7 +411,7 @@ def _goal_best_to_card(best: Any, goal_name: str, baseline_id: Optional[str]) ->
             st.write(f"- {b}")
 
 
-def _next_round_from_goal_rankings(gr: Dict[str, Any], max_n: int = 3) -> List[Dict[str, Any]]:
+def _next_round_from_goal_payload(gr: Dict[str, Any], max_n: int = 3) -> List[Dict[str, Any]]:
     baseline_id = str(gr.get("baseline_shaft_id", "") or "").strip()
     results = gr.get("results", []) or []
 
@@ -455,7 +448,7 @@ def render_recommendations_tab(
     # Q23 = main driver
     q23 = str(ans.get("Q23", "")).strip()
 
-    # Flight/Feel mapping
+    # Flight/Feel mapping (keep your current fields; safe if blank)
     flight_current = str(ans.get("Q16_1", "")).strip()
     flight_happy = str(ans.get("Q16_2", "")).strip()
     flight_target = str(ans.get("Q16_3", "")).strip()
@@ -476,7 +469,7 @@ def render_recommendations_tab(
     if feel_target:
         feel_line = _fmt_pref_line(feel_line, feel_target)
 
-    # Header bar (now includes Q23)
+    # Header bar (includes Q23)
     st.markdown(
         f"""<div class="profile-bar"><div class="profile-grid">
 <div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
@@ -492,54 +485,81 @@ def render_recommendations_tab(
         unsafe_allow_html=True,
     )
 
-    # Goal-based recommendations (Trackman Lab)
-    gr = _get_goal_rankings()
-    if gr and gr.get("results"):
-        st.subheader("🎯 Goal-Based Recommendations (from Trackman Lab)")
+    # -----------------------------
+    # Goal-based recommendations (Trackman / Goal Engine)
+    # -----------------------------
+    gr = _get_goal_payload()
 
-        baseline_id = gr.get("baseline_shaft_id", None)
-        results = gr.get("results", [])
-        top = results[0] if results else None
+    # Normalize: we accept either "results" or a winner_summary-only payload
+    has_results = isinstance(gr, dict) and isinstance(gr.get("results", None), list) and len(gr.get("results", [])) > 0
+    has_winner_only = isinstance(gr, dict) and isinstance(gr.get("winner_summary", None), dict)
 
-        if top is not None:
-            row = _result_to_row(top)
-            st.success(f"**Best for your goals:** {row.get('Shaft','')}  (ID {row.get('Shaft ID','')})")
-            why = row.get("Why", "")
-            if why:
-                st.caption(why)
+    if has_results or has_winner_only:
+        st.subheader("🎯 Goal-Based Recommendations (post-Trackman)")
 
-        top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
-        if top_by_goal:
-            st.markdown("#### Best shaft by goal")
-            gcols = st.columns(2)
-            items = list(top_by_goal.items())
-            for i, (goal_name, best) in enumerate(items):
-                with gcols[0] if i % 2 == 0 else gcols[1]:
-                    _goal_best_to_card(best, goal_name, baseline_id)
+        baseline_id = None
+        if isinstance(gr, dict):
+            baseline_id = gr.get("baseline_shaft_id", None) or gr.get("baseline_tag_id", None) or st.session_state.get(
+                "baseline_tag_id", None
+            )
 
-        st.markdown("#### Goal Scorecard Leaderboard")
-        rows = [_result_to_row(r) for r in results[:8]]
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        # Top result
+        if has_results:
+            results = gr.get("results", [])
+            top = results[0] if results else None
+            if top is not None:
+                row = _result_to_row(top)
+                st.success(f"**Best for your goals:** {row.get('Shaft','')}  (ID {row.get('Shaft ID','')})")
+                why = row.get("Why", "")
+                if why:
+                    st.caption(why)
 
-        next_round = _next_round_from_goal_rankings(gr, max_n=3)
-        if next_round:
+            # Per-goal winners (optional)
+            top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
+            if top_by_goal:
+                st.markdown("#### Best shaft by goal")
+                gcols = st.columns(2)
+                items = list(top_by_goal.items())
+                for i, (goal_name, best) in enumerate(items):
+                    with gcols[0] if i % 2 == 0 else gcols[1]:
+                        _goal_best_to_card(best, goal_name, str(baseline_id) if baseline_id else None)
+
+            # Leaderboard
+            st.markdown("#### Goal Scorecard Leaderboard")
+            rows = [_result_to_row(r) for r in results[:8]]
+            if rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            # Next round suggestions (optional)
+            next_round = _next_round_from_goal_payload(gr, max_n=3)
             st.subheader("🧪 Next Round to Test (after first round)")
-            st.caption("Filtered to avoid repeating shafts already logged in Trackman Lab.")
-            st.dataframe(pd.DataFrame(next_round), use_container_width=True, hide_index=True)
-        else:
-            st.subheader("🧪 Next Round to Test (after first round)")
-            st.info("No new shafts to recommend yet — log additional candidates or widen the test set.")
+            if next_round:
+                st.caption("Filtered to avoid repeating shafts already logged in Trackman Lab.")
+                st.dataframe(pd.DataFrame(next_round), use_container_width=True, hide_index=True)
+            else:
+                st.info("No new shafts to recommend yet — log additional candidates or widen the test set.")
+
+        # Winner-only payload (bridge mode)
+        if (not has_results) and has_winner_only:
+            ws = gr.get("winner_summary", {})
+            shaft_label = ws.get("shaft_label") or "Winner selected"
+            explain = ws.get("explain") or ""
+            st.success(f"**Best for your goals:** {shaft_label}")
+            if explain:
+                st.caption(explain)
 
         st.divider()
     else:
         st.info(
             "Goal-based recommendations will appear here after you upload Trackman data in **🧪 Trackman Lab** "
-            "and click **➕ Add** at least once (and the goal scorer writes `goal_rankings`)."
+            "and click **➕ Add** at least once.\n\n"
+            "This section reads from `st.session_state.goal_recommendations`."
         )
         st.divider()
 
+    # -----------------------------
     # Winner summary (Trackman Lab intelligence)
+    # -----------------------------
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
@@ -550,7 +570,9 @@ def render_recommendations_tab(
         if explain:
             st.caption(explain)
 
-    # Pre-test (before baseline logged): show gamer + 2–3 based on Q23 priority
+    # -----------------------------
+    # Pre-test shortlist (interview-driven)
+    # -----------------------------
     if not _baseline_logged():
         st.subheader("🧠 Pre-Test Short List (before baseline testing is logged)")
         st.caption("Driven by Q23. Stays short until baseline is logged; then Trackman/goal scoring takes over.")
@@ -594,7 +616,9 @@ def render_recommendations_tab(
 
         st.divider()
 
+    # -----------------------------
     # PDF sending
+    # -----------------------------
     st.subheader("📄 Send PDF Report")
 
     if not p_email:
