@@ -9,8 +9,10 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from core.session_state import init_session_state
-from core.shaft_predictor import predict_shaft_winners
 from core.sheet_validation import validate_sheet_data, render_report_streamlit
+
+# NEW: interview-driven shortlist (Stage-1)
+from core.pretest_shortlist import build_pretest_shortlist
 
 
 # ------------------ Streamlit config ------------------
@@ -162,7 +164,6 @@ def save_to_fittings(answers: Dict[str, Any], all_data: Dict[str, pd.DataFrame])
         if hn == "timestamp":
             row_out.append(now_ts)
         else:
-            # If header is a QID itself, map directly; otherwise leave blank
             if str(h).strip().upper().startswith("Q"):
                 qid = str(h).strip().upper().replace(".", "_")
                 row_out.append(answers.get(qid, ""))
@@ -183,8 +184,7 @@ if report.errors:
     st.error("Sheet has fatal errors. Fix the Google Sheet and reload.")
     st.stop()
 
-# ---- NEW: make Shafts df available globally via session_state for UI helpers ----
-# (Fixes gamer weight lookup + keeps shortlist + Trackman dropdown on real Shafts!ID)
+# Make Shafts df available globally via session_state for UI helpers
 try:
     st.session_state.all_shafts_df = all_data.get("Shafts", pd.DataFrame())
     st.session_state.shafts_df_for_ui = st.session_state.all_shafts_df
@@ -209,7 +209,6 @@ categories = list(dict.fromkeys(q_master["Category"].astype(str).tolist()))
 # ------------------ App flow ------------------
 st.title("Tour Proven Shaft Fitting")
 
-# Import UI renderers safely (this is what will show you the real SyntaxError)
 render_interview = _safe_import(
     "ui.interview.render_interview",
     lambda: __import__("ui.interview", fromlist=["render_interview"]).render_interview,
@@ -256,26 +255,17 @@ if c2.button("🆕 New Fitting"):
 st.divider()
 tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
+# ------------------ NEW: Stage-1 shortlist (interview-driven) ------------------
+shafts_df = all_data.get("Shafts", pd.DataFrame())
 try:
-    carry_6i = float(ans.get("Q15", 150))
+    st.session_state.pretest_shortlist_df = build_pretest_shortlist(shafts_df, ans, n=3)
 except Exception:
-    carry_6i = 150.0
+    st.session_state.pretest_shortlist_df = pd.DataFrame(columns=["ID", "Brand", "Model", "Flex", "Weight (g)"])
 
-# NOTE: still used for your legacy matrix/verdicts/PDF until you replace it
-all_winners = predict_shaft_winners(all_data.get("Shafts", pd.DataFrame()), carry_6i)
-
+# ------------------ Legacy outputs removed ------------------
+# Keep these placeholders ONLY so ui modules that still expect them won't crash.
+all_winners: Dict[str, pd.DataFrame] = {}
 verdicts: Dict[str, str] = {}
-desc = all_data.get("Descriptions", pd.DataFrame())
-desc_map = {}
-if isinstance(desc, pd.DataFrame) and not desc.empty and "Model" in desc.columns and "Blurb" in desc.columns:
-    desc_map = dict(zip(desc["Model"], desc["Blurb"]))
-
-for k in all_winners:
-    try:
-        model = all_winners[k].iloc[0]["Model"]
-        verdicts[f"{k}: {model}"] = desc_map.get(model, "Optimized.")
-    except Exception:
-        verdicts[f"{k}:"] = "Optimized."
 
 with tab_report:
     if render_recommendations_tab is None:
@@ -284,8 +274,8 @@ with tab_report:
         p_name=p_name,
         p_email=p_email,
         ans=ans,
-        all_winners=all_winners,
-        verdicts=verdicts,
+        all_winners=all_winners,      # legacy placeholder
+        verdicts=verdicts,            # legacy placeholder
         environment=st.session_state.environment,
     )
 
@@ -295,7 +285,7 @@ with tab_lab:
     render_trackman_tab(
         all_data=all_data,
         answers=st.session_state.answers,
-        all_winners=all_winners,
+        all_winners=all_winners,      # legacy placeholder
         MIN_SHOTS=MIN_SHOTS,
         WARN_FACE_TO_PATH_SD=WARN_FACE_TO_PATH_SD,
         WARN_CARRY_SD=WARN_CARRY_SD,
