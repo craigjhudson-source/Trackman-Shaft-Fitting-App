@@ -18,17 +18,29 @@ from core.pretest_shortlist import build_pretest_shortlist
 
 
 # ------------------ HARD LEGACY DISCONNECT (core/shaft_predictor.py) ------------------
-# Patch-1 requirement: shaft_predictor must be fully disconnected so nothing can leak to UI/PDF.
-# We do this in app.py (single-file patch) by blocking imports at runtime.
-class _BlockedModule(types.ModuleType):
+# Patch requirement: core/shaft_predictor.py must be fully disconnected so nothing can leak to UI/PDF.
+# NOTE: Streamlit (via inspect) iterates sys.modules and asks for module.__file__/dunder attrs.
+# So our blocker must be "inspect-safe" (never raises on dunder metadata access).
+class _BlockedLegacyModule(types.ModuleType):
     def __init__(self, name: str, msg: str):
         super().__init__(name)
         self.__blocked_msg = msg
 
-    def __getattr__(self, item: str):
-        raise RuntimeError(self.__blocked_msg)
+        # Make common introspection attributes safe
+        self.__file__ = "<blocked legacy module>"
+        self.__package__ = name.rpartition(".")[0]
+        self.__path__ = []  # type: ignore[assignment]
+        self.__spec__ = None  # type: ignore[assignment]
+        self.__loader__ = None  # type: ignore[assignment]
 
-    def __call__(self, *args: Any, **kwargs: Any):
+    def __getattr__(self, item: str):
+        # Never break introspection / inspect() / hasattr()
+        if item.startswith("__"):
+            return None
+        if item in ("__file__", "__spec__", "__path__", "__loader__", "__package__", "__name__"):
+            return None
+
+        # Anything non-dunder is an attempted legacy access -> hard fail
         raise RuntimeError(self.__blocked_msg)
 
 
@@ -39,7 +51,7 @@ _LEGACY_BLOCK_MSG = (
 
 # Block both common import paths (defensive)
 for _modname in ("core.shaft_predictor", "shaft_predictor"):
-    sys.modules[_modname] = _BlockedModule(_modname, _LEGACY_BLOCK_MSG)
+    sys.modules[_modname] = _BlockedLegacyModule(_modname, _LEGACY_BLOCK_MSG)
 
 
 # ------------------ Streamlit config ------------------
@@ -97,8 +109,7 @@ st.markdown(
 # ✅ MUST happen before any UI uses session_state
 init_session_state(st)
 
-# Persist a clear signal for downstream UI modules (non-breaking)
-# (We are not changing architecture; this is a safety flag.)
+# Non-breaking signal for downstream UI modules
 st.session_state["legacy_predictor_disabled"] = True
 
 
