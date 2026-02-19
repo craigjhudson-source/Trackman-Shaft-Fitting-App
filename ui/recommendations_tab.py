@@ -331,3 +331,288 @@ def _fallback_next_round_candidates(
         if rr and rr.get("Shaft ID"):
             out.append(rr)
         if len(out) >= max_n:
+            return out
+
+    # If still empty, widen based on gamer family/brand
+    gamer_brand = _safe_str(ans.get("Q10", ""))
+    gamer_model = _safe_str(ans.get("Q12", ""))
+    gamer_flex = _safe_str(ans.get("Q11", ""))
+    gamer_weight_str = _lookup_gamer_weight(df, ans)
+    gamer_weight = None
+    try:
+        gamer_weight = float(str(gamer_weight_str).replace("g", "").strip())
+    except Exception:
+        gamer_weight = None
+
+    candidates = df.copy()
+    # Filter out tested/baseline
+    candidates = candidates[~candidates["ID"].isin(list(tested))]
+
+    # Prefer same Brand+Model family first
+    fam = candidates[
+        (candidates["Brand"].str.lower() == gamer_brand.lower())
+        & (candidates["Model"].str.lower() == gamer_model.lower())
+    ]
+
+    # If gamer flex exists, slightly prefer it (but don't require)
+    if gamer_flex and not fam.empty:
+        fam = fam.copy()
+        fam["__flex_match__"] = (fam["Flex"].str.lower() == gamer_flex.lower()).astype(int)
+    else:
+        fam = fam.copy()
+        fam["__flex_match__"] = 0
+
+    def _weight_num(x: Any) -> Optional[float]:
+        try:
+            s = str(x).strip()
+            if not s:
+                return None
+            return float(s)
+        except Exception:
+            return None
+
+    fam["__w__"] = fam["Weight (g)"].apply(_weight_num)
+    if gamer_weight is not None:
+        fam["__w_diff__"] = fam["__w__"].apply(lambda w: abs(w - gamer_weight) if w is not None else 9999.0)
+    else:
+        fam["__w_diff__"] = 9999.0
+
+    # Sort: flex match desc, weight diff asc
+    fam = fam.sort_values(by=["__flex_match__", "__w_diff__"], ascending=[False, True])
+
+    def _append_from(sub: pd.DataFrame, why: str) -> None:
+        nonlocal out
+        for _, r in sub.iterrows():
+            sid = _safe_str(r.get("ID", ""))
+            if not sid or sid in tested:
+                continue
+            label = " ".join([x for x in [r.get("Brand", ""), r.get("Model", ""), r.get("Flex", "")] if str(x).strip()])
+            out.append(
+                {
+                    "Shaft ID": sid,
+                    "Shaft": label.strip(),
+                    "Score": 0.0,
+                    "Why": why,
+                }
+            )
+            if len(out) >= max_n:
+                return
+
+    if not fam.empty and len(out) < max_n:
+        _append_from(fam, "Similar to gamer (same Brand+Model family)")
+
+    # If still short, widen to same Brand (closest weight)
+    if len(out) < max_n and gamer_brand:
+        brand = candidates[candidates["Brand"].str.lower() == gamer_brand.lower()].copy()
+        brand["__w__"] = brand["Weight (g)"].apply(_weight_num)
+        if gamer_weight is not None:
+            brand["__w_diff__"] = brand["__w__"].apply(lambda w: abs(w - gamer_weight) if w is not None else 9999.0)
+        else:
+            brand["__w_diff__"] = 9999.0
+        brand = brand.sort_values(by=["__w_diff__"], ascending=[True])
+        _append_from(brand, "Same brand (closest weight to gamer)")
+
+    return out[:max_n]
+
+
+# -----------------------------
+# MAIN RENDER
+# -----------------------------
+def render_recommendations_tab(
+    *,
+    p_name: str,
+    p_email: str,
+    ans: Dict[str, Any],
+    all_winners: Dict[str, pd.DataFrame],  # kept only for PDF signature compatibility
+    verdicts: Dict[str, str],              # kept only for PDF signature compatibility
+    environment: str,
+) -> None:
+    _refresh_controls()
+
+    primary_objective = _safe_str(ans.get("Q23", ""))
+
+    flight_current = _safe_str(ans.get("Q16_1", ""))
+    flight_happy = _safe_str(ans.get("Q16_2", ""))
+    flight_target = _safe_str(ans.get("Q16_3", ""))
+
+    feel_current = _safe_str(ans.get("Q19_1", ""))
+    feel_happy = _safe_str(ans.get("Q19_2", ""))
+    feel_target = _safe_str(ans.get("Q19_3", ""))
+
+    flight_line = flight_current
+    if flight_happy:
+        flight_line = f"{flight_line} ({flight_happy})" if flight_line else f"({flight_happy})"
+    if flight_target:
+        flight_line = _fmt_pref_line(flight_line, flight_target)
+
+    feel_line = feel_current
+    if feel_happy:
+        feel_line = f"{feel_line} ({feel_happy})" if feel_line else f"({feel_happy})"
+    if feel_target:
+        feel_line = _fmt_pref_line(feel_line, feel_target)
+
+    st.markdown(
+        f"""<div class="profile-bar"><div class="profile-grid">
+<div><b>CARRY:</b> {ans.get('Q15','')}yd</div>
+<div><b>HEAD:</b> {ans.get('Q08','')} {ans.get('Q09','')}</div>
+<div><b>CURRENT:</b> {ans.get('Q12','')} ({ans.get('Q11','')})</div>
+<div><b>SPECS:</b> {ans.get('Q13','')} L / {ans.get('Q14','')} SW</div>
+<div><b>GRIP/BALL:</b> {ans.get('Q06','')}/{ans.get('Q07','')}</div>
+<div><b>ENVIRONMENT:</b> {environment}</div>
+<div><b>FLIGHT:</b> {flight_line or "<span class='smallcap'>not answered</span>"}</div>
+<div><b>FEEL:</b> {feel_line or "<span class='smallcap'>not answered</span>"}</div>
+<div><b>PRIMARY PERFORMANCE OBJECTIVE:</b> {primary_objective or "<span class='smallcap'>not answered</span>"}</div>
+</div></div>""",
+        unsafe_allow_html=True,
+    )
+
+    # -----------------------------
+    # Post-TrackMan (goal payload)
+    # -----------------------------
+    gr = _get_goal_payload()
+    has_results = isinstance(gr, dict) and isinstance(gr.get("results", None), list) and len(gr.get("results", [])) > 0
+    has_winner_only = isinstance(gr, dict) and isinstance(gr.get("winner_summary", None), dict)
+
+    if has_results or has_winner_only:
+        st.subheader("🎯 Goal-Based Recommendations (post-TrackMan)")
+
+        baseline_id = None
+        if isinstance(gr, dict):
+            baseline_id = (
+                gr.get("baseline_shaft_id", None)
+                or gr.get("baseline_tag_id", None)
+                or st.session_state.get("baseline_tag_id", None)
+            )
+
+        if has_results:
+            results = gr.get("results", [])
+            top = results[0] if results else None
+            if top is not None:
+                row = _result_to_row(top)
+                st.success(f"**Best for your goals:** {row.get('Shaft','')}  (ID {row.get('Shaft ID','')})")
+                why = row.get("Why", "")
+                if why:
+                    st.caption(why)
+
+            top_by_goal = gr.get("top_by_goal", {}) if isinstance(gr.get("top_by_goal", {}), dict) else {}
+            if top_by_goal:
+                st.markdown("#### Best shaft by goal")
+                gcols = st.columns(2)
+                items = list(top_by_goal.items())
+                for i, (goal_name, best) in enumerate(items):
+                    with gcols[0] if i % 2 == 0 else gcols[1]:
+                        _goal_best_to_card(best, goal_name, str(baseline_id) if baseline_id else None)
+
+            st.markdown("#### Goal Scorecard Leaderboard")
+            rows = [_result_to_row(r) for r in results[:8]]
+            if rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            next_round = _next_round_from_goal_payload(gr, max_n=3)
+            st.subheader("🧪 Next Round to Test (after first round)")
+            if next_round:
+                st.caption("Filtered to avoid repeating shafts already logged in TrackMan Lab.")
+                st.dataframe(pd.DataFrame(next_round), use_container_width=True, hide_index=True)
+            else:
+                # Fallback: Stage-1 shortlist + safe widening from Shafts sheet
+                shafts_df = _get_shafts_df_for_ui()
+                fb = _fallback_next_round_candidates(shafts_df, ans, max_n=3)
+                if fb:
+                    st.caption("No new goal-ranked shafts yet — showing next-round candidates from Stage-1 shortlist / similar shafts (untested).")
+                    st.dataframe(pd.DataFrame(fb), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No new shafts to recommend yet — log additional candidates or widen the test set.")
+
+        if (not has_results) and has_winner_only:
+            ws = gr.get("winner_summary", {})
+            shaft_label = ws.get("shaft_label") or "Winner selected"
+            explain = ws.get("explain") or ""
+            st.success(f"**Best for your goals:** {shaft_label}")
+            if explain:
+                st.caption(explain)
+
+        st.divider()
+    else:
+        st.info(
+            "Goal-based recommendations appear after you upload TrackMan data in **🧪 TrackMan Lab** "
+            "and click **➕ Add** at least once."
+        )
+        st.divider()
+
+    # -----------------------------
+    # Winner summary (TrackMan intelligence)
+    # -----------------------------
+    ws = st.session_state.get("winner_summary", None)
+    if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
+        headline = ws.get("headline") or "Tour Proven Winner"
+        shaft_label = ws.get("shaft_label") or "Winner selected"
+        explain = ws.get("explain") or ""
+        st.subheader("🏆 Winner (from TrackMan Lab Intelligence)")
+        st.success(f"**{headline}:** {shaft_label}")
+        if explain:
+            st.caption(explain)
+
+    # -----------------------------
+    # Pre-test shortlist (INTERVIEW-DRIVEN, ALWAYS)
+    # -----------------------------
+    shafts_df = _get_shafts_df_for_ui()
+
+    st.subheader("🧪 Pre-Test Short List (Interview-Driven)")
+    st.caption("Always: Gamer + 2–3 shafts (5 swings each). Driven by Q23 + Q16 constraints. Uses Shafts!ID.")
+
+    gamer = pd.DataFrame([_gamer_row(ans, shafts_df)])
+
+    shortlist = st.session_state.get("pretest_shortlist_df", None)
+    if isinstance(shortlist, pd.DataFrame) and not shortlist.empty:
+        shortlist_df = shortlist.copy()
+    else:
+        shortlist_df = build_pretest_shortlist(shafts_df, ans, n=3)
+
+    combined = (
+        pd.concat([gamer, shortlist_df], axis=0, ignore_index=True)
+        if isinstance(shortlist_df, pd.DataFrame) and not shortlist_df.empty
+        else gamer
+    )
+    combined = _dedupe_shortlist(combined)
+
+    st.dataframe(combined, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # -----------------------------
+    # PDF sending (still uses legacy signature for now)
+    # -----------------------------
+    st.subheader("📄 Send PDF Report")
+
+    if not p_email:
+        st.info("Add the player's email in the interview to enable PDF sending.")
+        return
+
+    if st.session_state.get("email_sent", False):
+        st.success(f"📬 PDF already sent to {p_email}.")
+        return
+
+    if not _winner_ready():
+        st.warning(
+            "PDF sending is enabled **after** you choose a winner in **🧪 TrackMan Lab**.\n\n"
+            "Log swings and let the Intelligence block generate the winner. Then return here to send the PDF."
+        )
+        return
+
+    want_send = st.checkbox(f"Yes — send the PDF to {p_email}", value=False)
+    if st.button("Generate & Send PDF", disabled=not want_send):
+        with st.spinner("Generating PDF and sending email..."):
+            pdf_bytes = create_pdf_bytes(
+                p_name,
+                all_winners,
+                ans,
+                verdicts,
+                phase6_recs=st.session_state.get("phase6_recs", None),
+                environment=environment,
+            )
+            ok = send_email_with_pdf(p_email, p_name, pdf_bytes, environment=environment)
+            if ok is True:
+                st.success(f"📬 Sent to {p_email}!")
+                st.session_state.email_sent = True
+            else:
+                st.error(f"Email failed: {ok}")
