@@ -238,7 +238,11 @@ def _dedupe_shortlist(df: pd.DataFrame) -> pd.DataFrame:
 
     for _, r in d.iterrows():
         rid = _safe_str(r.get("ID", ""))
-        key = rid if rid and rid.upper() != "GAMER" else f"GAMER|{_safe_str(r.get('Brand',''))}|{_safe_str(r.get('Model',''))}|{_safe_str(r.get('Flex',''))}"
+        key = (
+            rid
+            if rid and rid.upper() != "GAMER"
+            else f"GAMER|{_safe_str(r.get('Brand',''))}|{_safe_str(r.get('Model',''))}|{_safe_str(r.get('Flex',''))}"
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -277,6 +281,13 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],              # kept only for PDF signature compatibility
     environment: str,
 ) -> None:
+    # ✅ First-load auto-render:
+    # Some flows land here with stale/empty UI until a manual rerun (Refresh button).
+    # We do a single, safe rerun once per fitting to ensure the tab paints immediately.
+    if not bool(st.session_state.get("recs_autoload_done", False)):
+        st.session_state.recs_autoload_done = True
+        st.rerun()
+
     _refresh_controls()
 
     # Rename display label (keep Q23 key for data contract)
