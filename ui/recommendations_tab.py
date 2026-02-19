@@ -39,6 +39,40 @@ def _fmt_pref_line(primary: str, followup: str) -> str:
     return p
 
 
+def _maybe_autorefresh_tick(enabled: bool) -> None:
+    """
+    Streamlit tabs don't always trigger a rerun when you click between tabs.
+    If enabled, we do a light periodic rerun so the Recommendations tab picks up
+    new TrackMan results after you hit ➕ Add, without needing the manual button.
+
+    This is intentionally conservative:
+      - only when enabled (Auto-refresh checked)
+      - only a small interval
+      - only while this tab is rendered
+    """
+    if not enabled:
+        return
+
+    # Try Streamlit's built-in (if present in your version)
+    try:
+        # Some Streamlit versions expose this directly
+        if hasattr(st, "autorefresh"):
+            st.autorefresh(interval=1500, limit=None, key="recs_autorefresh_tick")  # type: ignore[arg-type]
+            return
+    except Exception:
+        pass
+
+    # Fallback: external component if installed
+    try:
+        from streamlit_autorefresh import st_autorefresh  # type: ignore
+
+        st_autorefresh(interval=1500, limit=10_000, key="recs_autorefresh_tick")
+        return
+    except Exception:
+        # No-op if neither is available
+        return
+
+
 def _refresh_controls() -> None:
     c1, c2, c3 = st.columns([1, 1, 3])
 
@@ -50,21 +84,19 @@ def _refresh_controls() -> None:
         c3.caption(f"Last Trackman update: {last}")
 
     auto = c2.checkbox("Auto-refresh", value=True)
+
+    # ✅ Add the tick rerun while auto-refresh is enabled.
+    # This solves: "after ➕ Add, recs don't appear until I hit refresh"
+    _maybe_autorefresh_tick(auto)
+
     if auto:
         current_v = int(st.session_state.get("tm_data_version", 0) or 0)
         seen_v = int(st.session_state.get("recs_seen_tm_version", -1) or -1)
-
-        # ✅ If TrackMan data version changed, always rerun when we actually have data (>0).
-        # This fixes the "must click refresh after Add" problem when seen_v is still -1.
         if current_v != seen_v:
             st.session_state.recs_seen_tm_version = current_v
-            st.session_state.recs_seen_tm_version = current_v
-
-            # Only rerun if TrackMan has been updated/added at least once.
+            # If TrackMan has data (>0), rerun immediately to pull new goal payload.
             if current_v > 0:
                 st.rerun()
-
-        # Keep the "seen" version in sync even when version is 0 (no lab data yet)
         else:
             st.session_state.recs_seen_tm_version = current_v
 
@@ -246,11 +278,7 @@ def _dedupe_shortlist(df: pd.DataFrame) -> pd.DataFrame:
 
     for _, r in d.iterrows():
         rid = _safe_str(r.get("ID", ""))
-        key = (
-            rid
-            if rid and rid.upper() != "GAMER"
-            else f"GAMER|{_safe_str(r.get('Brand',''))}|{_safe_str(r.get('Model',''))}|{_safe_str(r.get('Flex',''))}"
-        )
+        key = rid if rid and rid.upper() != "GAMER" else f"GAMER|{_safe_str(r.get('Brand',''))}|{_safe_str(r.get('Model',''))}|{_safe_str(r.get('Flex',''))}"
         if key in seen:
             continue
         seen.add(key)
@@ -289,11 +317,6 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],              # kept only for PDF signature compatibility
     environment: str,
 ) -> None:
-    # ✅ First-load auto-render: single rerun once per fitting
-    if not bool(st.session_state.get("recs_autoload_done", False)):
-        st.session_state.recs_autoload_done = True
-        st.rerun()
-
     _refresh_controls()
 
     # Rename display label (keep Q23 key for data contract)
@@ -423,7 +446,6 @@ def render_recommendations_tab(
 
     gamer = pd.DataFrame([_gamer_row(ans, shafts_df)])
 
-    # Prefer shortlist precomputed in app.py (so we avoid double logic / drift)
     shortlist = st.session_state.get("pretest_shortlist_df", None)
     if isinstance(shortlist, pd.DataFrame) and not shortlist.empty:
         shortlist_df = shortlist.copy()
