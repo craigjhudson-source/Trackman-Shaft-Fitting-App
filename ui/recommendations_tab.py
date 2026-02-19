@@ -77,29 +77,6 @@ def _get_goal_payload() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _baseline_logged() -> bool:
-    lab = st.session_state.get("tm_lab_data", None)
-    if not isinstance(lab, list) or len(lab) == 0:
-        return False
-
-    baseline_id = st.session_state.get("baseline_tag_id", None)
-    if baseline_id is None:
-        return False
-
-    try:
-        b = str(baseline_id).strip()
-        if not b:
-            return False
-        df = pd.DataFrame(lab)
-        if df.empty:
-            return False
-        if "Shaft ID" in df.columns:
-            return (df["Shaft ID"].astype(str).str.strip() == b).any()
-        return True
-    except Exception:
-        return True
-
-
 def _tested_shaft_ids() -> Set[str]:
     out: Set[str] = set()
     try:
@@ -191,7 +168,7 @@ def _next_round_from_goal_payload(gr: Dict[str, Any], max_n: int = 3) -> List[Di
 
 
 # -----------------------------
-# Gamer row (now pulls weight if possible)
+# Gamer row (pull weight if possible)
 # -----------------------------
 def _gamer_identity(ans: Dict[str, Any]) -> Tuple[str, str, str]:
     brand = _safe_str(ans.get("Q10", "")).lower()
@@ -201,10 +178,6 @@ def _gamer_identity(ans: Dict[str, Any]) -> Tuple[str, str, str]:
 
 
 def _lookup_gamer_weight(shafts_df: pd.DataFrame, ans: Dict[str, Any]) -> str:
-    """
-    Try to find the gamer in the Shafts sheet and return Weight (g).
-    We match Brand + Model + Flex (case-insensitive).
-    """
     if not isinstance(shafts_df, pd.DataFrame) or shafts_df.empty:
         return "—"
 
@@ -213,7 +186,6 @@ def _lookup_gamer_weight(shafts_df: pd.DataFrame, ans: Dict[str, Any]) -> str:
         return "—"
 
     df = shafts_df.copy()
-
     for c in ["Brand", "Model", "Flex", "Weight (g)"]:
         if c not in df.columns:
             df[c] = ""
@@ -226,7 +198,6 @@ def _lookup_gamer_weight(shafts_df: pd.DataFrame, ans: Dict[str, Any]) -> str:
     ]
 
     if hit.empty and f:
-        # fallback if flex mismatch in sheet
         hit = df[(df["Brand"].str.lower() == b) & (df["Model"].str.lower() == m)]
 
     if hit.empty:
@@ -262,7 +233,6 @@ def _dedupe_shortlist(df: pd.DataFrame) -> pd.DataFrame:
             d[c] = ""
         d[c] = d[c].astype(str).str.strip()
 
-    # Dedupe by ID (except GAMER stays)
     out_rows = []
     seen: Set[str] = set()
 
@@ -285,6 +255,16 @@ def _dedupe_shortlist(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out_rows)
 
 
+def _get_shafts_df_for_ui() -> pd.DataFrame:
+    shafts_df = st.session_state.get("shafts_df_for_ui", None)
+    if isinstance(shafts_df, pd.DataFrame) and not shafts_df.empty:
+        return shafts_df
+    shafts_df = st.session_state.get("all_shafts_df", None)
+    if isinstance(shafts_df, pd.DataFrame) and not shafts_df.empty:
+        return shafts_df
+    return pd.DataFrame()
+
+
 # -----------------------------
 # MAIN RENDER
 # -----------------------------
@@ -293,15 +273,15 @@ def render_recommendations_tab(
     p_name: str,
     p_email: str,
     ans: Dict[str, Any],
-    all_winners: Dict[str, pd.DataFrame],  # kept for legacy sections
-    verdicts: Dict[str, str],              # kept for legacy sections
+    all_winners: Dict[str, pd.DataFrame],  # kept only for PDF signature compatibility
+    verdicts: Dict[str, str],              # kept only for PDF signature compatibility
     environment: str,
 ) -> None:
     _refresh_controls()
 
-    q23 = _safe_str(ans.get("Q23", ""))
+    # Rename display label (keep Q23 key for data contract)
+    primary_objective = _safe_str(ans.get("Q23", ""))
 
-    # Flight/Feel mapping from your question list
     flight_current = _safe_str(ans.get("Q16_1", ""))
     flight_happy = _safe_str(ans.get("Q16_2", ""))
     flight_target = _safe_str(ans.get("Q16_3", ""))
@@ -332,24 +312,28 @@ def render_recommendations_tab(
 <div><b>ENVIRONMENT:</b> {environment}</div>
 <div><b>FLIGHT:</b> {flight_line or "<span class='smallcap'>not answered</span>"}</div>
 <div><b>FEEL:</b> {feel_line or "<span class='smallcap'>not answered</span>"}</div>
-<div><b>PRIMARY GOAL (Q23):</b> {q23 or "<span class='smallcap'>not answered</span>"}</div>
+<div><b>PRIMARY PERFORMANCE OBJECTIVE:</b> {primary_objective or "<span class='smallcap'>not answered</span>"}</div>
 </div></div>""",
         unsafe_allow_html=True,
     )
 
     # -----------------------------
-    # Goal-Based (post Trackman)
+    # Post-TrackMan (goal payload)
     # -----------------------------
     gr = _get_goal_payload()
     has_results = isinstance(gr, dict) and isinstance(gr.get("results", None), list) and len(gr.get("results", [])) > 0
     has_winner_only = isinstance(gr, dict) and isinstance(gr.get("winner_summary", None), dict)
 
     if has_results or has_winner_only:
-        st.subheader("🎯 Goal-Based Recommendations (post-Trackman)")
+        st.subheader("🎯 Goal-Based Recommendations (post-TrackMan)")
 
         baseline_id = None
         if isinstance(gr, dict):
-            baseline_id = gr.get("baseline_shaft_id", None) or gr.get("baseline_tag_id", None) or st.session_state.get("baseline_tag_id", None)
+            baseline_id = (
+                gr.get("baseline_shaft_id", None)
+                or gr.get("baseline_tag_id", None)
+                or st.session_state.get("baseline_tag_id", None)
+            )
 
         if has_results:
             results = gr.get("results", [])
@@ -378,7 +362,7 @@ def render_recommendations_tab(
             next_round = _next_round_from_goal_payload(gr, max_n=3)
             st.subheader("🧪 Next Round to Test (after first round)")
             if next_round:
-                st.caption("Filtered to avoid repeating shafts already logged in Trackman Lab.")
+                st.caption("Filtered to avoid repeating shafts already logged in TrackMan Lab.")
                 st.dataframe(pd.DataFrame(next_round), use_container_width=True, hide_index=True)
             else:
                 st.info("No new shafts to recommend yet — log additional candidates or widen the test set.")
@@ -394,20 +378,20 @@ def render_recommendations_tab(
         st.divider()
     else:
         st.info(
-            "Goal-based recommendations will appear here after you upload Trackman data in **🧪 Trackman Lab** "
+            "Goal-based recommendations appear after you upload TrackMan data in **🧪 TrackMan Lab** "
             "and click **➕ Add** at least once."
         )
         st.divider()
 
     # -----------------------------
-    # Winner summary (Trackman intelligence)
+    # Winner summary (TrackMan intelligence)
     # -----------------------------
     ws = st.session_state.get("winner_summary", None)
     if isinstance(ws, dict) and (ws.get("shaft_label") or ws.get("explain")):
         headline = ws.get("headline") or "Tour Proven Winner"
         shaft_label = ws.get("shaft_label") or "Winner selected"
         explain = ws.get("explain") or ""
-        st.subheader("🏆 Winner (from Trackman Lab Intelligence)")
+        st.subheader("🏆 Winner (from TrackMan Lab Intelligence)")
         st.success(f"**{headline}:** {shaft_label}")
         if explain:
             st.caption(explain)
@@ -415,18 +399,25 @@ def render_recommendations_tab(
     # -----------------------------
     # Pre-test shortlist (INTERVIEW-DRIVEN, ALWAYS)
     # -----------------------------
-    shafts_df = st.session_state.get("shafts_df_for_ui", None)
-    if not isinstance(shafts_df, pd.DataFrame) or shafts_df.empty:
-        # fallback: app.py should set this, but if not, we try to pull it from a cached all_data if present
-        shafts_df = st.session_state.get("all_shafts_df", pd.DataFrame())
+    shafts_df = _get_shafts_df_for_ui()
 
     st.subheader("🧪 Pre-Test Short List (Interview-Driven)")
-    st.caption("Always: Gamer + 2–3 shafts (5 swings each). Driven by Q23 + Q16 flight constraints. Uses Shafts!ID.")
+    st.caption("Always: Gamer + 2–3 shafts (5 swings each). Driven by Q23 + Q16 constraints. Uses Shafts!ID.")
 
     gamer = pd.DataFrame([_gamer_row(ans, shafts_df)])
 
-    shortlist = build_pretest_shortlist(shafts_df, ans, n=3)
-    combined = pd.concat([gamer, shortlist], axis=0, ignore_index=True) if isinstance(shortlist, pd.DataFrame) and not shortlist.empty else gamer
+    # Prefer shortlist precomputed in app.py (so we avoid double logic / drift)
+    shortlist = st.session_state.get("pretest_shortlist_df", None)
+    if isinstance(shortlist, pd.DataFrame) and not shortlist.empty:
+        shortlist_df = shortlist.copy()
+    else:
+        shortlist_df = build_pretest_shortlist(shafts_df, ans, n=3)
+
+    combined = (
+        pd.concat([gamer, shortlist_df], axis=0, ignore_index=True)
+        if isinstance(shortlist_df, pd.DataFrame) and not shortlist_df.empty
+        else gamer
+    )
     combined = _dedupe_shortlist(combined)
 
     st.dataframe(combined, use_container_width=True, hide_index=True)
@@ -434,7 +425,7 @@ def render_recommendations_tab(
     st.divider()
 
     # -----------------------------
-    # PDF sending
+    # PDF sending (still uses legacy signature for now)
     # -----------------------------
     st.subheader("📄 Send PDF Report")
 
@@ -448,7 +439,7 @@ def render_recommendations_tab(
 
     if not _winner_ready():
         st.warning(
-            "PDF sending is enabled **after** you choose a winner in **🧪 Trackman Lab**.\n\n"
+            "PDF sending is enabled **after** you choose a winner in **🧪 TrackMan Lab**.\n\n"
             "Log swings and let the Intelligence block generate the winner. Then return here to send the PDF."
         )
         return
@@ -456,6 +447,7 @@ def render_recommendations_tab(
     want_send = st.checkbox(f"Yes — send the PDF to {p_email}", value=False)
     if st.button("Generate & Send PDF", disabled=not want_send):
         with st.spinner("Generating PDF and sending email..."):
+            # Legacy PDF function currently expects these params; app.py now passes empty dicts.
             pdf_bytes = create_pdf_bytes(
                 p_name,
                 all_winners,
