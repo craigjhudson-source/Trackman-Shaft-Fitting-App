@@ -313,18 +313,8 @@ except Exception:
 all_winners: Dict[str, pd.DataFrame] = {}
 verdicts: Dict[str, str] = {}
 
-with tab_report:
-    if render_recommendations_tab is None:
-        st.stop()
-    render_recommendations_tab(
-        p_name=p_name,
-        p_email=p_email,
-        ans=ans,
-        all_winners=all_winners,  # legacy placeholder (kept empty)
-        verdicts=verdicts,        # legacy placeholder (kept empty)
-        environment=st.session_state.environment,
-    )
-
+# ✅ IMPORTANT: Render TrackMan FIRST so intelligence/session_state is updated
+# before the Recommendations tab renders on the same rerun.
 with tab_lab:
     if render_trackman_tab is None:
         st.stop()
@@ -336,4 +326,16 @@ with tab_lab:
         WARN_FACE_TO_PATH_SD=WARN_FACE_TO_PATH_SD,
         WARN_CARRY_SD=WARN_CARRY_SD,
         WARN_SMASH_SD=WARN_SMASH_SD,
+    )
+
+with tab_report:
+    if render_recommendations_tab is None:
+        st.stop()
+    render_recommendations_tab(
+        p_name=p_name,
+        p_email=p_email,
+        ans=ans,
+        all_winners=all_winners,  # legacy placeholder (kept empty)
+        verdicts=verdicts,        # legacy placeholder (kept empty)
+        environment=st.session_state.environment,
     )
