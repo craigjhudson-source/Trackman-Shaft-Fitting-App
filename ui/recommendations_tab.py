@@ -53,10 +53,18 @@ def _refresh_controls() -> None:
     if auto:
         current_v = int(st.session_state.get("tm_data_version", 0) or 0)
         seen_v = int(st.session_state.get("recs_seen_tm_version", -1) or -1)
+
+        # ✅ If TrackMan data version changed, always rerun when we actually have data (>0).
+        # This fixes the "must click refresh after Add" problem when seen_v is still -1.
         if current_v != seen_v:
             st.session_state.recs_seen_tm_version = current_v
-            if seen_v != -1:
+            st.session_state.recs_seen_tm_version = current_v
+
+            # Only rerun if TrackMan has been updated/added at least once.
+            if current_v > 0:
                 st.rerun()
+
+        # Keep the "seen" version in sync even when version is 0 (no lab data yet)
         else:
             st.session_state.recs_seen_tm_version = current_v
 
@@ -281,9 +289,7 @@ def render_recommendations_tab(
     verdicts: Dict[str, str],              # kept only for PDF signature compatibility
     environment: str,
 ) -> None:
-    # ✅ First-load auto-render:
-    # Some flows land here with stale/empty UI until a manual rerun (Refresh button).
-    # We do a single, safe rerun once per fitting to ensure the tab paints immediately.
+    # ✅ First-load auto-render: single rerun once per fitting
     if not bool(st.session_state.get("recs_autoload_done", False)):
         st.session_state.recs_autoload_done = True
         st.rerun()
@@ -458,7 +464,6 @@ def render_recommendations_tab(
     want_send = st.checkbox(f"Yes — send the PDF to {p_email}", value=False)
     if st.button("Generate & Send PDF", disabled=not want_send):
         with st.spinner("Generating PDF and sending email..."):
-            # Legacy PDF function currently expects these params; app.py now passes empty dicts.
             pdf_bytes = create_pdf_bytes(
                 p_name,
                 all_winners,
