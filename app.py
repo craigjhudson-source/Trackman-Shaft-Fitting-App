@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from typing import Dict, Any, Optional, List, Callable
+import sys
+import types
 
 import pandas as pd
 import streamlit as st
@@ -11,8 +13,33 @@ from google.oauth2.service_account import Credentials
 from core.session_state import init_session_state
 from core.sheet_validation import validate_sheet_data, render_report_streamlit
 
-# NEW: interview-driven shortlist (Stage-1)
+# ✅ Stage-1 ONLY engine (frozen architecture)
 from core.pretest_shortlist import build_pretest_shortlist
+
+
+# ------------------ HARD LEGACY DISCONNECT (core/shaft_predictor.py) ------------------
+# Patch-1 requirement: shaft_predictor must be fully disconnected so nothing can leak to UI/PDF.
+# We do this in app.py (single-file patch) by blocking imports at runtime.
+class _BlockedModule(types.ModuleType):
+    def __init__(self, name: str, msg: str):
+        super().__init__(name)
+        self.__blocked_msg = msg
+
+    def __getattr__(self, item: str):
+        raise RuntimeError(self.__blocked_msg)
+
+    def __call__(self, *args: Any, **kwargs: Any):
+        raise RuntimeError(self.__blocked_msg)
+
+
+_LEGACY_BLOCK_MSG = (
+    "Legacy engine is disabled: core/shaft_predictor.py must not be imported or used. "
+    "Stage-1 must come ONLY from core/pretest_shortlist.py."
+)
+
+# Block both common import paths (defensive)
+for _modname in ("core.shaft_predictor", "shaft_predictor"):
+    sys.modules[_modname] = _BlockedModule(_modname, _LEGACY_BLOCK_MSG)
 
 
 # ------------------ Streamlit config ------------------
@@ -69,6 +96,10 @@ st.markdown(
 
 # ✅ MUST happen before any UI uses session_state
 init_session_state(st)
+
+# Persist a clear signal for downstream UI modules (non-breaking)
+# (We are not changing architecture; this is a safety flag.)
+st.session_state["legacy_predictor_disabled"] = True
 
 
 # ------------------ Google Sheets helpers ------------------
@@ -131,6 +162,9 @@ def get_data_from_gsheet() -> Optional[Dict[str, pd.DataFrame]]:
 def _safe_import(name: str, importer: Callable[[], Callable[..., None]]) -> Optional[Callable[..., None]]:
     """
     Import a render function safely so SyntaxError in a module doesn't crash the whole app.
+
+    NOTE: legacy predictor is hard-blocked above. If any UI module still tries to import it,
+    it will raise a RuntimeError with a clear message (preventing silent leaks to UI/PDF).
     """
     try:
         return importer()
@@ -255,7 +289,7 @@ if c2.button("🆕 New Fitting"):
 st.divider()
 tab_report, tab_lab = st.tabs(["📄 Recommendations", "🧪 Trackman Lab"])
 
-# ------------------ NEW: Stage-1 shortlist (interview-driven) ------------------
+# ------------------ Stage-1 shortlist (interview-driven ONLY) ------------------
 shafts_df = all_data.get("Shafts", pd.DataFrame())
 try:
     st.session_state.pretest_shortlist_df = build_pretest_shortlist(shafts_df, ans, n=3)
@@ -264,6 +298,7 @@ except Exception:
 
 # ------------------ Legacy outputs removed ------------------
 # Keep these placeholders ONLY so ui modules that still expect them won't crash.
+# They must remain EMPTY so nothing "legacy" can leak into UI/PDF.
 all_winners: Dict[str, pd.DataFrame] = {}
 verdicts: Dict[str, str] = {}
 
@@ -274,8 +309,8 @@ with tab_report:
         p_name=p_name,
         p_email=p_email,
         ans=ans,
-        all_winners=all_winners,      # legacy placeholder
-        verdicts=verdicts,            # legacy placeholder
+        all_winners=all_winners,  # legacy placeholder (kept empty)
+        verdicts=verdicts,        # legacy placeholder (kept empty)
         environment=st.session_state.environment,
     )
 
@@ -285,7 +320,7 @@ with tab_lab:
     render_trackman_tab(
         all_data=all_data,
         answers=st.session_state.answers,
-        all_winners=all_winners,      # legacy placeholder
+        all_winners=all_winners,  # legacy placeholder (kept empty)
         MIN_SHOTS=MIN_SHOTS,
         WARN_FACE_TO_PATH_SD=WARN_FACE_TO_PATH_SD,
         WARN_CARRY_SD=WARN_CARRY_SD,
