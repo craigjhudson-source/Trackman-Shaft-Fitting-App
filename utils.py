@@ -1,204 +1,15 @@
-import re
 import smtplib
-import datetime
 import streamlit as st
-from fpdf import FPDF
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
 
-def clean_text(text):
-    return re.sub(r"[^\x00-\x7F]+", "", str(text)) if text else ""
-
-
-class ProFittingPDF(FPDF):
-    # ---------- hardening helpers ----------
-    def _printable_w(self) -> float:
-        # Printable width = page width - margins
-        return float(self.w - self.l_margin - self.r_margin)
-
-    def _reset_x(self) -> None:
-        # Always reset X before multi_cell. This is the root fix.
-        self.set_x(self.l_margin)
-
-    def safe_multi_cell(self, txt: str, h: float = 4.0) -> None:
-        """
-        Hardened multi_cell to prevent:
-          fpdf.errors.FPDFException: Not enough horizontal space to render a single character
-        """
-        self._reset_x()
-        w = self._printable_w()
-
-        # Defensive: if margins/x got corrupted, force sane values
-        if w <= 5:
-            self.set_left_margin(10)
-            self.set_right_margin(10)
-            self._reset_x()
-            w = float(self.w - 20)
-
-        # Final defensive: never call with 0/near-0 width
-        if w <= 5:
-            w = 100.0
-
-        self.multi_cell(w, h, clean_text(txt))
-    # --------------------------------------
-
-    def header(self):
-        self.set_fill_color(20, 40, 80)
-        self.rect(0, 0, 210, 25, "F")
-        self.set_font("helvetica", "B", 14)
-        self.set_text_color(255, 255, 255)
-        self.cell(0, 10, "TOUR PROVEN PERFORMANCE REPORT", 0, 1, "C")
-        self.set_font("helvetica", "", 8)
-        self.cell(0, -2, f"Date: {datetime.date.today().strftime('%B %d, %Y')}", 0, 1, "C")
-        self.ln(12)
-
-    def draw_player_header(self, answers, environment: str | None = None):
-        self.set_font("helvetica", "B", 9)
-        self.set_text_color(20, 40, 80)
-        self.cell(0, 6, f"PLAYER: {clean_text(answers.get('Q01','')).upper()}", 0, 1, "L")
-
-        self.set_font("helvetica", "", 8)
-        self.set_text_color(0, 0, 0)
-
-        l1 = (
-            f"6i Carry: {answers.get('Q15','')}yd | Flight: {answers.get('Q16','')} | "
-            f"Target: {answers.get('Q17','')} | Miss: {answers.get('Q18','')}"
-        )
-        l2 = (
-            f"Current Head: {answers.get('Q08','')} {answers.get('Q09','')} | "
-            f"Current Shaft: {answers.get('Q12','')} ({answers.get('Q11','')})"
-        )
-        l3 = (
-            f"Length: {answers.get('Q13','')} | Swing Weight: {answers.get('Q14','')} | "
-            f"Grip: {answers.get('Q06','')} | Ball: {answers.get('Q07','')}"
-        )
-
-        self.cell(0, 4, clean_text(l1), 0, 1, "L")
-        self.cell(0, 4, clean_text(l2), 0, 1, "L")
-        self.cell(0, 4, clean_text(l3), 0, 1, "L")
-
-        if environment:
-            self.set_font("helvetica", "B", 8)
-            self.set_text_color(20, 40, 80)
-            self.cell(0, 4, f"Environment: {clean_text(environment)}", 0, 1, "L")
-            self.set_text_color(0, 0, 0)
-            self.set_font("helvetica", "", 8)
-
-        self.ln(2)
-        self.line(10, self.get_y(), 200, self.get_y())
-        self.ln(4)
-
-    def draw_recommendation_block(self, title, df, verdict_text):
-        self.set_font("helvetica", "B", 10)
-        self.set_text_color(180, 0, 0)
-        self.cell(0, 6, clean_text(title.upper()), 0, 1, "L")
-
-        self.set_font("helvetica", "B", 8)
-        self.set_fill_color(240, 240, 240)
-        self.set_text_color(0, 0, 0)
-
-        cols, w = ["Brand", "Model", "Flex", "Weight"], [40, 85, 30, 30]
-        for i, col in enumerate(cols):
-            self.cell(w[i], 6, col, 1, 0, "C", True)
-        self.ln()
-
-        self.set_font("helvetica", "", 8)
-        for _, row in df.iterrows():
-            for i, c in enumerate(["Brand", "Model", "Flex", "Weight (g)"]):
-                self.cell(w[i], 5, clean_text(row.get(c, "")), 1, 0, "C")
-            self.ln()
-
-        self.set_font("helvetica", "B", 8)
-        self.cell(0, 4, "Fitter's Technical Verdict:", 0, 1)
-        self.set_font("helvetica", "I", 8)
-
-        # 🔒 hardened multi-cell
-        self.safe_multi_cell(str(verdict_text), h=4)
-        self.ln(4)
-
-    def draw_phase6_section(self, recs, environment: str | None = None):
-        """
-        recs expected format (recommended):
-        [
-          {"type": "Lie", "severity": "warn|info", "text": "..."},
-          ...
-        ]
-        But we also accept list[str] safely.
-        """
-        if not recs:
-            return
-
-        header = "PHASE 6: OPTIMIZATION SUGGESTIONS"
-        if environment:
-            header = f"{header} ({clean_text(environment)})"
-
-        self.set_font("helvetica", "B", 10)
-        self.set_text_color(20, 40, 80)
-        self.cell(0, 6, header, 0, 1, "L")
-        self.set_text_color(0, 0, 0)
-        self.set_font("helvetica", "", 8)
-
-        # normalize input
-        if isinstance(recs, list) and len(recs) > 0 and isinstance(recs[0], dict):
-            normalized = recs
-        elif isinstance(recs, list):
-            normalized = [{"type": "Note", "severity": "info", "text": str(x)} for x in recs]
-        else:
-            normalized = [{"type": "Note", "severity": "info", "text": str(recs)}]
-
-        for r in normalized:
-            r_type = clean_text(r.get("type", "Note"))
-            sev = (r.get("severity", "info") or "info").lower()
-            txt = clean_text(r.get("text", ""))
-
-            if sev == "warn":
-                self.set_text_color(180, 0, 0)
-                bullet = "!"
-            else:
-                self.set_text_color(0, 0, 0)
-                bullet = "-"
-
-            # 🔒 hardened multi-cell (NO width=0)
-            self.safe_multi_cell(f"{bullet} {r_type}: {txt}", h=4)
-
-        self.set_text_color(0, 0, 0)
-        self.ln(2)
-
-
-def create_pdf_bytes(player_name, all_winners, answers, verdicts, phase6_recs=None, environment=None):
+def send_email_with_pdf(recipient_email: str, player_name: str, pdf_bytes: bytes, environment: str | None = None):
     """
-    Backwards compatible:
-      - existing calls work (phase6_recs/environment default to None)
-      - if phase6_recs is provided, a Phase 6 section is added at the end
-      - if environment is provided, it prints in header + Phase 6 header
+    Email sender only.
+    PDF generation lives in utils_pdf.py (single source of truth).
     """
-    pdf = ProFittingPDF()
-    pdf.add_page()
-    pdf.draw_player_header(answers, environment=environment)
-
-    mapping = {
-        "Balanced Choice": "Balanced",
-        "Maximum Stability (Anti-Hook)": "Maximum Stability",
-        "Launch & Height Optimizer": "Launch & Height",
-        "Feel & Smoothness": "Feel & Smoothness",
-    }
-
-    # Stable order for verdicts: match mapping order if possible
-    v_items = list(verdicts.items())
-
-    for i, (label, calc_key) in enumerate(mapping.items()):
-        verdict_text = v_items[i][1] if i < len(v_items) else ""
-        pdf.draw_recommendation_block(label, all_winners[calc_key], verdict_text)
-
-    if phase6_recs:
-        pdf.draw_phase6_section(phase6_recs, environment=environment)
-
-    return bytes(pdf.output())
-
-
-def send_email_with_pdf(recipient_email, player_name, pdf_bytes, environment=None):
     try:
         user = st.secrets["email"]["user"]
         pwd = st.secrets["email"]["password"].replace(" ", "").strip()
@@ -206,14 +17,32 @@ def send_email_with_pdf(recipient_email, player_name, pdf_bytes, environment=Non
         msg = MIMEMultipart()
         msg["From"] = f"Tour Proven <{user}>"
         msg["To"] = recipient_email
-        msg["Subject"] = f"Fitting Report: {player_name}"
+        msg["Subject"] = f"Tour Proven Iron Build Report: {player_name}"
 
-        env_line = f"\nEnvironment: {environment}\n" if environment else "\n"
-        body = f"Hello {player_name},{env_line}\nAttached is your Performance Report."
-        msg.attach(MIMEText(body, "plain"))
+        # Best-effort: include goal if present (no hard dependency on any QID names)
+        goal = ""
+        try:
+            answers = st.session_state.get("answers", {}) if hasattr(st, "session_state") else {}
+            if isinstance(answers, dict):
+                goal = str(answers.get("Q23", "") or "").strip()
+        except Exception:
+            goal = ""
 
-        part = MIMEApplication(pdf_bytes, Name=f"Report_{player_name}.pdf")
-        part["Content-Disposition"] = f'attachment; filename="Report_{player_name}.pdf"'
+        lines = [f"Hello {player_name},", ""]
+        if environment:
+            lines.append(f"Environment: {environment}")
+        if goal:
+            lines.append(f"Primary Performance Objective: {goal}")
+        lines += ["", "Attached is your Tour Proven report.", "", "— Tour Proven"]
+
+        msg.attach(MIMEText("\n".join(lines), "plain"))
+
+        safe_name = "".join([c for c in (player_name or "Player") if c.isalnum() or c in (" ", "_", "-")]).strip()
+        safe_name = safe_name.replace(" ", "_") or "Player"
+        filename = f"TourProven_Report_{safe_name}.pdf"
+
+        part = MIMEApplication(pdf_bytes, Name=filename)
+        part["Content-Disposition"] = f'attachment; filename="{filename}"'
         msg.attach(part)
 
         server = smtplib.SMTP("smtp.gmail.com", 587)
