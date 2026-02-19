@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Set, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -66,16 +66,220 @@ def _coerce_shaft_id(row: Dict[str, Any]) -> Optional[str]:
     return _extract_id_from_label(_safe_str(row.get("Shaft", "")))
 
 
+def _tested_shaft_ids_from_lab(lab_df: pd.DataFrame) -> Set[str]:
+    out: Set[str] = set()
+    try:
+        if lab_df is None or lab_df.empty:
+            return out
+        if "Shaft ID" in lab_df.columns:
+            vals = lab_df["Shaft ID"].astype(str).str.strip()
+            out.update([v for v in vals.tolist() if v])
+    except Exception:
+        return out
+    return out
+
+
+def _get_shafts_df_for_pool() -> pd.DataFrame:
+    """
+    Candidate pool must come from Shafts sheet and use Shafts!ID (never dataframe index).
+    We rely on app.py setting:
+      st.session_state.shafts_df_for_ui / st.session_state.all_shafts_df
+    """
+    df = st.session_state.get("shafts_df_for_ui", None)
+    if isinstance(df, pd.DataFrame) and not df.empty:
+        return df
+    df = st.session_state.get("all_shafts_df", None)
+    if isinstance(df, pd.DataFrame) and not df.empty:
+        return df
+    return pd.DataFrame()
+
+
+def _weight_num(x: Any) -> Optional[float]:
+    try:
+        s = str(x).strip()
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _lookup_gamer_identity(answers: Dict[str, Any]) -> Tuple[str, str, str]:
+    # Q10 = Brand, Q12 = Model, Q11 = Flex
+    b = _safe_str(answers.get("Q10", "")).lower()
+    m = _safe_str(answers.get("Q12", "")).lower()
+    f = _safe_str(answers.get("Q11", "")).lower()
+    return b, m, f
+
+
+def _lookup_gamer_weight(shafts_df: pd.DataFrame, answers: Dict[str, Any]) -> Optional[float]:
+    if shafts_df is None or shafts_df.empty:
+        return None
+
+    b, m, f = _lookup_gamer_identity(answers)
+    if not b or not m:
+        return None
+
+    df = shafts_df.copy()
+    for c in ["ID", "Brand", "Model", "Flex", "Weight (g)", "Weight"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].astype(str).str.strip()
+
+    hit = df[(df["Brand"].str.lower() == b) & (df["Model"].str.lower() == m)]
+    if f:
+        hit_f = hit[hit["Flex"].str.lower() == f]
+        if not hit_f.empty:
+            hit = hit_f
+
+    if hit.empty:
+        return None
+
+    w = hit.iloc[0].get("Weight (g)", "") or hit.iloc[0].get("Weight", "")
+    wn = _weight_num(w)
+    return wn
+
+
+def _label_for_id(shafts_df: pd.DataFrame, sid: str) -> str:
+    """
+    Build a consistent label for display (but ID is always the canonical join key).
+    """
+    if shafts_df is None or shafts_df.empty:
+        return f"Unknown Shaft (ID {sid})"
+
+    df = shafts_df.copy()
+    for c in ["ID", "Brand", "Model", "Flex", "Weight (g)", "Weight"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].astype(str).str.strip()
+
+    hit = df[df["ID"] == str(sid).strip()]
+    if hit.empty:
+        return f"Unknown Shaft (ID {sid})"
+
+    r = hit.iloc[0]
+    brand = _safe_str(r.get("Brand", ""))
+    model = _safe_str(r.get("Model", ""))
+    flex = _safe_str(r.get("Flex", ""))
+    wt = _safe_str(r.get("Weight (g)", "")) or _safe_str(r.get("Weight", ""))
+
+    label = " ".join([x for x in [brand, model, flex] if x]).strip() or f"Shaft (ID {sid})"
+    if wt:
+        label = f"{label} | {wt}g"
+    return f"{label} (ID {sid})"
+
+
+def _build_next_round_pool(
+    shafts_df: pd.DataFrame,
+    *,
+    answers: Dict[str, Any],
+    baseline_shaft_id: Optional[str],
+    tested_ids: Set[str],
+    max_n: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Produces UNTESTED next-round candidates using only Shafts!ID.
+
+    Priority:
+      1) Stage-1 shortlist IDs (st.session_state.pretest_shortlist_df)
+      2) Widen within same Brand closest weight to gamer
+    """
+    out: List[Dict[str, Any]] = []
+
+    # Defensive baseline filter
+    base_id = _safe_str(baseline_shaft_id) if baseline_shaft_id else ""
+    if base_id:
+        tested_ids = set(tested_ids)
+        tested_ids.add(base_id)
+
+    if shafts_df is None or shafts_df.empty:
+        return out
+
+    df = shafts_df.copy()
+    for c in ["ID", "Brand", "Model", "Flex", "Weight (g)", "Weight"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].astype(str).str.strip()
+
+    # --- 1) Stage-1 shortlist IDs
+    seed_ids: List[str] = []
+    pre = st.session_state.get("pretest_shortlist_df", None)
+    if isinstance(pre, pd.DataFrame) and not pre.empty and "ID" in pre.columns:
+        seed_ids = [str(x).strip() for x in pre["ID"].tolist() if str(x).strip()]
+
+    seed_ids = [sid for sid in seed_ids if sid not in tested_ids]
+
+    for sid in seed_ids:
+        out.append(
+            {
+                "shaft_id": sid,
+                "shaft_label": _label_for_id(df, sid),
+                "overall_score": 0.0,
+                "reasons": ["Next round candidate (from Stage-1 shortlist)", "Not yet tested in TrackMan Lab"],
+                "goal_scores": {"Next Round": 0.0},
+                "source": "next_round_pool",
+            }
+        )
+        if len(out) >= max_n:
+            return out
+
+    # --- 2) Widen by same Brand, closest weight to gamer
+    gamer_brand = _safe_str(answers.get("Q10", ""))
+    gamer_weight = _lookup_gamer_weight(df, answers)
+
+    candidates = df.copy()
+    candidates = candidates[~candidates["ID"].isin(list(tested_ids))]
+
+    if gamer_brand:
+        candidates = candidates[candidates["Brand"].str.lower() == gamer_brand.lower()]
+
+    # compute weight diffs
+    candidates["__w__"] = candidates["Weight (g)"].apply(_weight_num)
+    if gamer_weight is not None:
+        candidates["__w_diff__"] = candidates["__w__"].apply(lambda w: abs(w - gamer_weight) if w is not None else 9999.0)
+    else:
+        candidates["__w_diff__"] = 9999.0
+
+    candidates = candidates.sort_values(by=["__w_diff__"], ascending=[True])
+
+    for _, r in candidates.iterrows():
+        sid = _safe_str(r.get("ID", ""))
+        if not sid or sid in tested_ids:
+            continue
+        why = ["Next round candidate (same brand, closest weight to gamer)", "Not yet tested in TrackMan Lab"]
+        out.append(
+            {
+                "shaft_id": sid,
+                "shaft_label": _label_for_id(df, sid),
+                "overall_score": 0.0,
+                "reasons": why[:3],
+                "goal_scores": {"Next Round": 0.0},
+                "source": "next_round_pool",
+            }
+        )
+        if len(out) >= max_n:
+            break
+
+    return out
+
+
 def _build_fallback_goal_rankings(
     comparison_df: pd.DataFrame,
     *,
     baseline_shaft_id: Optional[str],
+    shafts_df: pd.DataFrame,
+    answers: Dict[str, Any],
+    tested_ids: Set[str],
 ) -> Dict[str, Any]:
     """
-    TEMP bridge so Recommendations can show meaningful Trackman-based rankings
-    immediately after logging, even before the full Q23/Q16 goal engine is wired.
+    Bridge so Recommendations can show meaningful Trackman-based rankings
+    immediately after logging.
 
     We rank by Efficiency (then Confidence), and provide short reasons.
+
+    PLUS:
+      - append a small "next round pool" of UNTESTED Shafts!ID candidates
+        so Recommendations can populate "Next Round to Test".
     """
     out: Dict[str, Any] = {
         "baseline_shaft_id": _safe_str(baseline_shaft_id) if baseline_shaft_id else None,
@@ -85,6 +289,17 @@ def _build_fallback_goal_rankings(
     }
 
     if comparison_df is None or comparison_df.empty:
+        # Still include next-round pool if possible
+        pool = _build_next_round_pool(
+            shafts_df,
+            answers=answers,
+            baseline_shaft_id=baseline_shaft_id,
+            tested_ids=tested_ids,
+            max_n=3,
+        )
+        out["results"] = list(pool)
+        if pool:
+            out["top_by_goal"] = {"Next Round": pool[0]}
         return out
 
     df = comparison_df.copy()
@@ -111,7 +326,6 @@ def _build_fallback_goal_rankings(
         sd = row.get("Spin Δ", None)
         disp = row.get("Dispersion", None)
 
-        # Keep reasons short + readable
         if cd is not None and _safe_str(cd):
             reasons.append(f"Carry Δ: {cd}")
         if ld is not None and _safe_str(ld):
@@ -134,10 +348,32 @@ def _build_fallback_goal_rankings(
             }
         )
 
-    out["results"] = results
+    # Append NEXT ROUND pool (untested)
+    pool = _build_next_round_pool(
+        shafts_df,
+        answers=answers,
+        baseline_shaft_id=baseline_shaft_id,
+        tested_ids=tested_ids,
+        max_n=3,
+    )
 
+    # Only append truly untested IDs (defensive)
+    pool2: List[Dict[str, Any]] = []
+    for p in pool:
+        sid = _safe_str(p.get("shaft_id", ""))
+        if not sid:
+            continue
+        if sid in tested_ids:
+            continue
+        pool2.append(p)
+
+    results.extend(pool2)
+
+    out["results"] = results
     if results:
         out["top_by_goal"] = {"Efficiency": results[0]}
+        if pool2:
+            out["top_by_goal"]["Next Round"] = pool2[0]
 
     return out
 
@@ -168,9 +404,7 @@ def _write_goal_payloads(
     canonical: Dict[str, Any] = dict(payload) if isinstance(payload, dict) else {}
     canonical.setdefault("baseline_shaft_id", base_id)
 
-    # Compatibility alias (some tabs historically used this)
     canonical["baseline_tag_id"] = base_id
-
     canonical["environment"] = _safe_str(environment) or "Indoors (Mat)"
     canonical["generated_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -180,13 +414,9 @@ def _write_goal_payloads(
         "engine": canonical.get("source", "unknown"),
     }
 
-    # Canonical for Recommendations tab
     st.session_state.goal_recommendations = canonical
-
-    # Legacy / existing keys (keep until removed)
     st.session_state.goal_rankings = canonical
 
-    # Bridge key used in older logic
     st.session_state.goal_recs = {
         "source": canonical.get("source", "goal_recommendations"),
         "baseline_tag_id": base_id,
@@ -312,9 +542,15 @@ def render_intelligence_block(
     )
 
     # ---------------- Goal recommendations payload (canonical) ----------------
+    shafts_df = _get_shafts_df_for_pool()
+    tested_ids = _tested_shaft_ids_from_lab(lab_df)
+
     fallback_payload = _build_fallback_goal_rankings(
         comparison_df,
         baseline_shaft_id=base_id,
+        shafts_df=shafts_df,
+        answers=answers,
+        tested_ids=tested_ids,
     )
 
     canonical = _write_goal_payloads(
